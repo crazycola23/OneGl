@@ -1,8 +1,8 @@
-# OneGl — Doubao Citation Intelligence MVP
+# OneGl — Phase 0 Doubao Browser Spike
 
 OneGl is a China-first GEO / AI Citation Intelligence experiment built from the architectural
 ideas of the open-source [OneGlanse](https://github.com/aryamantodkar/oneglanse) project.
-Phase 1 supports **Doubao Web only** and focuses on proving a trustworthy capture chain:
+Phase 0 supports **Doubao Web only** and exists solely to prove a trustworthy capture chain:
 
 ```text
 Prompt -> Doubao Web UI -> Answer -> Visible Citation -> Article
@@ -13,7 +13,7 @@ OneGlanse monorepo. The target repository was empty when this MVP slice started,
 commit intentionally keeps the surface small and testable instead of copying a large stack that
 has not yet been validated against Doubao.
 
-## What this MVP does
+## What this Phase 0 spike does
 
 - launches Doubao with **Camoufox + Playwright Core** by default;
 - waits for a **manual first login**, then stores Playwright `storageState` locally;
@@ -108,7 +108,7 @@ data against the captured screenshot before we build scoring or trend analytics.
 
 ## Source semantics
 
-Phase 1 stores a source as visible only when it is confirmed in the rendered UI:
+Phase 0 stores a source as visible only when it is confirmed in the rendered UI:
 
 ```json
 {
@@ -121,7 +121,22 @@ Phase 1 stores a source as visible only when it is confirmed in the rendered UI:
 If Doubao says `参考 5 篇资料` but the extractor only obtains 3 unique visible URLs, the run is
 `partial` with `CITATION_PARSE_FAILED`. It is not reported as a clean success.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/MVP_STATUS.md](docs/MVP_STATUS.md).
+See [docs/PHASE0_VALIDATION.md](docs/PHASE0_VALIDATION.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [docs/MVP_STATUS.md](docs/MVP_STATUS.md).
+
+## Phase 0 real-account validation
+
+The next task is **not** to add product infrastructure. Run the fixed 30-case suite against a real logged-in Doubao account:
+
+```bash
+npm run batch -- --file validation/phase0-prompts.json --delay-ms 8000
+npm run validate:scaffold -- --project phase0-doubao-validation
+# Fill .onegl/phase0-review.json while comparing the real Doubao UI and saved artifacts.
+npm run validate:evaluate -- --file .onegl/phase0-review.json
+```
+
+Every run keeps the five primary audit artifacts (`screenshot.png`, `page.html`, `run.json`, `answer.md`, `citations.json`) and also writes `dom-observation.json` to record the DOM assumptions under test. Citation-count mismatches remain failures; the validation tooling never changes the UI-declared expected count to make a run pass.
+
+The full protocol, metric definitions, failure taxonomy, session-expiry drill, and merge-back gate are in [docs/PHASE0_VALIDATION.md](docs/PHASE0_VALIDATION.md).
 
 ## Browser fallback
 
