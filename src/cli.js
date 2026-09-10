@@ -14,6 +14,7 @@ import {
   SESSION_BLOCKING_CODES,
 } from "./errors.js";
 import { RunStore } from "./store.js";
+import { captureDomObservation } from "./dom-observer.js";
 
 function parseArgs(tokens) {
   const args = { _: [] };
@@ -48,7 +49,7 @@ The auth command opens a headful browser, waits for manual login, and stores onl
 Playwright storageState under .onegl/. Do not paste cookies or tokens into chat.`);
 }
 
-async function captureArtifacts(store, runId, page) {
+async function captureArtifacts(store, runId, page, prompt = null) {
   if (!page) return;
   try {
     await store.writeArtifact(runId, "page.html", await page.content());
@@ -64,13 +65,24 @@ async function captureArtifacts(store, runId, page) {
   } catch {
     // Same rule as above.
   }
+  try {
+    const observation = await captureDomObservation(page, { prompt });
+    await store.writeArtifact(
+      runId,
+      "dom-observation.json",
+      `${JSON.stringify(observation, null, 2)}\n`,
+    );
+  } catch {
+    // Structured DOM evidence is diagnostic only; never mask the primary result.
+  }
 }
 
-async function executeOne({ page, store, config, prompt, project }) {
+async function executeOne({ page, store, config, prompt, project, validation = null }) {
   const run = await store.createRun({ prompt, project });
+  if (validation) await store.updateRun(run.id, { validation });
   try {
     const result = await executeDoubaoPrompt(page, prompt, config);
-    await captureArtifacts(store, run.id, page);
+    await captureArtifacts(store, run.id, page, prompt);
     await store.writeArtifact(run.id, "answer.md", `${result.answer}\n`);
     await store.writeArtifact(
       run.id,
@@ -104,9 +116,11 @@ async function executeOne({ page, store, config, prompt, project }) {
     );
     return saved;
   } catch (error) {
-    await captureArtifacts(store, run.id, page);
+    await captureArtifacts(store, run.id, page, prompt);
     const normalized = normalizeError(error);
     const partialAnswer = normalized.details?.partialAnswer || null;
+    await store.writeArtifact(run.id, "answer.md", partialAnswer ? `${partialAnswer}\n` : "");
+    await store.writeArtifact(run.id, "citations.json", "[]\n");
     if (partialAnswer) {
       await store.writeArtifact(run.id, "partial-answer.md", `${partialAnswer}\n`);
     }
@@ -195,9 +209,13 @@ async function batchCommand(args) {
   const batch = normalizePromptFile(payload, args);
   const prompts = batch.prompts
     .filter((item) => item && item.enabled !== false)
-    .map((item) => (typeof item === "string" ? item : item.text))
-    .filter((text) => typeof text === "string" && text.trim())
-    .map((text) => text.trim());
+    .map((item, index) =>
+      typeof item === "string"
+        ? { id: `prompt_${index + 1}`, text: item, enabled: true }
+        : item,
+    )
+    .filter((item) => typeof item?.text === "string" && item.text.trim())
+    .map((item) => ({ ...item, text: item.text.trim() }));
 
   const config = loadConfig();
   const store = new RunStore(config);
@@ -213,8 +231,17 @@ async function batchCommand(args) {
           page: session.page,
           store,
           config,
-          prompt: prompts[index],
+          prompt: prompts[index].text,
           project: batch.project,
+          validation: {
+            caseId: prompts[index].id || `prompt_${index + 1}`,
+            targetScenario: prompts[index].targetScenario || null,
+            tags: Array.isArray(prompts[index].tags) ? prompts[index].tags : [],
+            reviewFocus: prompts[index].reviewFocus || null,
+            forbiddenLeakTokens: Array.isArray(prompts[index].forbiddenLeakTokens)
+              ? prompts[index].forbiddenLeakTokens
+              : [],
+          },
         });
         if (run.status === "success") success += 1;
         else partial += 1;
