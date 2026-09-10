@@ -185,7 +185,16 @@ export async function waitForManualLogin(page, config) {
 }
 
 export async function requireHealthySession(page, config) {
-  const state = await inspectSession(page);
+  // Doubao is an SPA that reports `unknown` while it boots, and a cold browser can need
+  // several seconds before the composer renders. Wait that gap out instead of reporting
+  // a page change; definitive login/verification states are still reported immediately.
+  const settleMs = Math.min(config.timeoutMs, 30_000);
+  const deadline = Date.now() + settleMs;
+  let state = await inspectSession(page);
+  while (state.state === "unknown" && Date.now() < deadline) {
+    await page.waitForTimeout(config.pollMs);
+    state = await inspectSession(page);
+  }
   if (state.state === "healthy") return state;
 
   const hadStoredAuth = await fileExists(config.authStatePath);
@@ -289,6 +298,41 @@ async function answerTexts(page) {
   }, ANSWER_SELECTOR);
 }
 
+// Doubao renders the user's own message bubble with the same `.md-box-root` class it
+// uses for assistant answers, so a bare selector match makes the extractor mistake the
+// submitted prompt for the answer. User bubbles are right-aligned inside a `justify-end`
+// row, while an assistant message that is still being written carries
+// `data-streaming="true"`. Both facts were verified against the live DOM.
+async function answerCandidates(page) {
+  return page.evaluate((selector) => {
+    const visible = (element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    };
+
+    const isUserBubble = (element) => {
+      let node = element;
+      for (let depth = 0; node && depth < 6; depth += 1) {
+        const tokens = String(node.getAttribute("class") || "").split(/\s+/);
+        if (tokens.includes("justify-end")) return true;
+        node = node.parentElement;
+      }
+      return false;
+    };
+
+    return [...document.querySelectorAll(selector)]
+      .filter(visible)
+      .map((element) => ({
+        text: (element.innerText || element.textContent || "").trim(),
+        isUser: isUserBubble(element),
+        streaming: element.getAttribute("data-streaming") === "true",
+      }))
+      .filter((item) => item.text);
+  }, ANSWER_SELECTOR);
+}
+
 async function isGenerating(page) {
   return page.evaluate(() => {
     const visible = (element) => {
@@ -342,8 +386,15 @@ async function tryClickSend(page) {
         (await button.isVisible().catch(() => false)) &&
         (await button.isEnabled().catch(() => false))
       ) {
-        await button.click();
-        return true;
+        try {
+          // Doubao re-renders the composer, so after the first turn in a session the
+          // resolved button node can go stale and the click never lands. Treat that as
+          // "not sent" so submitPrompt falls back to the Enter-key path.
+          await button.click({ timeout: 5_000 });
+          return true;
+        } catch {
+          // Fall through and let the caller try Enter instead of failing the run.
+        }
       }
     }
   }
@@ -426,11 +477,18 @@ async function waitForAnswer(page, baselineAnswers, config) {
       });
     }
 
-    const current = (await answerTexts(page))
-      .map(normalizeText)
-      .filter((text) => text && !baseline.has(text) && !PLACEHOLDER_ANSWERS.has(text));
+    const usable = (await answerCandidates(page)).filter(
+      (item) =>
+        !item.isUser &&
+        !baseline.has(normalizeText(item.text)) &&
+        !PLACEHOLDER_ANSWERS.has(normalizeText(item.text)),
+    );
+    const current = usable.map((item) => normalizeText(item.text));
     const answer = current.at(-1) || "";
-    const running = await isGenerating(page);
+    // The "停止生成" button that isGenerating looks for is not rendered on current
+    // Doubao builds, so the streaming attribute on the answer node is what actually
+    // tells us the answer is still being written.
+    const running = usable.some((item) => item.streaming) || (await isGenerating(page));
 
     if (answer.length > best.length) best = answer;
     if (answer && answer === last) stable += 1;
@@ -489,7 +547,21 @@ async function sourceSnapshot(page, clickIfNeeded = false) {
           }))
           .filter((row) => external(row.url));
 
-      const answers = [...document.querySelectorAll(answerSelector)].filter(visible);
+      // Same rule as answerCandidates: the user's own bubble shares `.md-box-root`,
+      // so it must not be mistaken for the answer root.
+      const isUserBubble = (element) => {
+        let node = element;
+        for (let depth = 0; node && depth < 6; depth += 1) {
+          const tokens = String(node.getAttribute("class") || "").split(/\s+/);
+          if (tokens.includes("justify-end")) return true;
+          node = node.parentElement;
+        }
+        return false;
+      };
+
+      const answers = [...document.querySelectorAll(answerSelector)]
+        .filter(visible)
+        .filter((element) => !isUserBubble(element));
       const answer = answers.at(-1) || null;
       if (!answer) {
         return { sourceFound: false, answerFound: false, links: [], relations: [] };
