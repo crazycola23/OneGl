@@ -1,0 +1,35 @@
+name: Bootstrap OneGlanse baseline
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    if: github.event.head_commit.message == 'chore: bootstrap OneGlanse source'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout bootstrap repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Import upstream OneGlanse baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tmp_dir="$(mktemp -d)"
+          git clone --depth=1 https://github.com/aryamantodkar/oneglanse.git "$tmp_dir/oneglanse"
+          cd "$tmp_dir/oneglanse"
+          mkdir -p .github/workflows
+          cp "$GITHUB_WORKSPACE/.github/workflows/bootstrap.yml" .github/workflows/bootstrap.yml
+          git config user.name "OneGl Bootstrap"
+          git config user.email "actions@users.noreply.github.com"
+          git add .github/workflows/bootstrap.yml
+          git commit -m "chore: import OneGlanse baseline"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force origin HEAD:main
