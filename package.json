@@ -21,6 +21,11 @@
     "db:status": "node src/db/migrate.js status",
     "db:tunnel": "node src/db/tunnel.js",
     "db:query": "node src/db/query.js",
+    "project:init": "node src/cli.js project-init",
+    "pool:list": "node src/cli.js pool-list",
+    "sample": "node src/cli.js sample",
+    "batch:run": "node src/cli.js batch-run",
+    "report": "node src/cli.js report",
     "fixtures:sanitize": "node tools/sanitize-fixtures.mjs",
     "test": "node --test"
   },

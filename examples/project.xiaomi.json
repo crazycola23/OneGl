@@ -1,0 +1,63 @@
+{
+  "project": "小米汽车",
+  "description": "监控小米汽车在豆包回答中的提及率，以及品牌相关文章进入豆包可见引用源的情况。",
+  "provider": "doubao",
+
+  "brand": {
+    "name": "小米汽车",
+    "aliases": ["小米汽车", "小米", "Xiaomi EV", "Xiaomi Auto"],
+    "productAliases": ["SU7", "YU7", "小米SU7", "小米YU7"],
+    "comment": "在购车语境下『小米』基本等同于小米汽车，但非汽车语境会误伤，所以下面用排除模式把非汽车主体抹掉；重叠匹配时保留最长项，因此『小米汽车』不会被拆成一次『小米』。",
+    "excludePatterns": [
+      "小米手机",
+      "小米集团",
+      "小米之家",
+      "小米手环",
+      "小米电视",
+      "小米平板",
+      "小米生态链",
+      "小米澎湃",
+      "小米商城"
+    ]
+  },
+
+  "accounts": ["account_01"],
+
+  "keywordPool": {
+    "file": "keyword-pool.xiaomi.json",
+    "version": "2026-09-10"
+  },
+
+  "trackedArticles": [
+    {
+      "url": "https://www.iesdouyin.com/share/video/7652753595162561818",
+      "title": "小米SU7到底适合谁，一条视频说清楚它的优缺点",
+      "brand": "小米汽车"
+    },
+    {
+      "url": "http://m.toutiao.com/group/7683798344577057315/",
+      "title": "（真实被引用样本）新能源车市相关报道",
+      "brand": "小米汽车"
+    },
+    {
+      "url": "http://china.cnr.cn/gdgg/20260412/t20260412_527582516.shtml",
+      "title": "（真实被引用样本）央广网新能源汽车报道",
+      "brand": "小米汽车"
+    },
+    {
+      "url": "http://m.toutiao.com/group/7683743376469983786/",
+      "title": "技术栈重合度超70%!近20家车企杀入具身智能",
+      "brand": "小米汽车"
+    },
+    {
+      "url": "http://auto.ce.cn/auto/gundong/202604/t20260428_2935368.shtml",
+      "title": "2026头部车企转向：从价格混战到矩阵作战",
+      "brand": "小米汽车"
+    },
+    {
+      "url": "https://hao.yiche.com/wenzhang/111104996/",
+      "title": "【盘点】2026新能源洗牌盘点：现存车企梯队与购车参考",
+      "brand": "小米汽车"
+    }
+  ]
+}

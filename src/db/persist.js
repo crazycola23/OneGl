@@ -27,15 +27,26 @@ const PROMPT_UPSERT = `
   RETURNING id
 `;
 
+const ACCOUNT_UPSERT = `
+  INSERT INTO accounts (account_key, provider)
+  VALUES ($1, $2)
+  ON CONFLICT (provider, account_key) DO UPDATE
+    SET updated_at = now()
+  RETURNING id
+`;
+
 const RUN_UPSERT = `
   INSERT INTO runs (
     prompt_id, provider, status, started_at, finished_at, answer,
     expected_citation_count, captured_citation_count, citation_state, citation_diagnostics,
     submission_method, conversation_reset, current_url, error_code, error_message, error_details,
-    local_run_id, artifact_path
+    local_run_id, artifact_path,
+    sampling_batch_id, account_key, conversation_reset_confirmed,
+    brand_mentioned, mention_count, first_mention_position, matched_terms, brand_detection_version
   )
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
-          $11, $12, $13, $14, $15, $16::jsonb, $17, $18)
+          $11, $12, $13, $14, $15, $16::jsonb, $17, $18,
+          $19, $20, $21, $22, $23, $24, $25::jsonb, $26)
   ON CONFLICT (local_run_id) DO UPDATE
     SET prompt_id = EXCLUDED.prompt_id,
         provider = EXCLUDED.provider,
@@ -53,7 +64,15 @@ const RUN_UPSERT = `
         error_code = EXCLUDED.error_code,
         error_message = EXCLUDED.error_message,
         error_details = EXCLUDED.error_details,
-        artifact_path = EXCLUDED.artifact_path
+        artifact_path = EXCLUDED.artifact_path,
+        sampling_batch_id = EXCLUDED.sampling_batch_id,
+        account_key = EXCLUDED.account_key,
+        conversation_reset_confirmed = EXCLUDED.conversation_reset_confirmed,
+        brand_mentioned = EXCLUDED.brand_mentioned,
+        mention_count = EXCLUDED.mention_count,
+        first_mention_position = EXCLUDED.first_mention_position,
+        matched_terms = EXCLUDED.matched_terms,
+        brand_detection_version = EXCLUDED.brand_detection_version
   RETURNING id
 `;
 
@@ -73,16 +92,17 @@ const ARTICLE_UPSERT = `
 const CITATION_UPSERT = `
   INSERT INTO citations (
     run_id, article_id, source_position, citation_marker, answer_text,
-    relation_status, captured_from, visible_to_user
+    relation_status, captured_from, visible_to_user, tracked_article_id
   )
-  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
   ON CONFLICT (run_id, source_position) DO UPDATE
     SET article_id = EXCLUDED.article_id,
         citation_marker = EXCLUDED.citation_marker,
         answer_text = EXCLUDED.answer_text,
         relation_status = EXCLUDED.relation_status,
         captured_from = EXCLUDED.captured_from,
-        visible_to_user = EXCLUDED.visible_to_user
+        visible_to_user = EXCLUDED.visible_to_user,
+        tracked_article_id = EXCLUDED.tracked_article_id
 `;
 
 const ALLOWED_RELATION_STATUS = new Set(["matched", "unresolved"]);
@@ -135,6 +155,39 @@ function prepareCitations(citations) {
   return { rows, skipped };
 }
 
+/** Registers the anonymous account identifiers a batch uses. No credentials here. */
+export async function ensureAccounts(pool, { accountKeys, provider = "doubao" }) {
+  if (!accountKeys?.length) return [];
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const ids = [];
+    for (const accountKey of accountKeys) {
+      const result = await client.query(ACCOUNT_UPSERT, [accountKey, provider]);
+      ids.push({ accountKey, id: result.rows[0].id });
+    }
+    await client.query("COMMIT");
+    return ids;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw new DatabasePersistError(`Failed to register accounts: ${error.message}`, {
+      cause: error,
+    });
+  } finally {
+    client.release();
+  }
+}
+
+export async function recordAccountHealth(pool, { accountKey, provider = "doubao", status }) {
+  if (!accountKey) return;
+  await pool.query(
+    `UPDATE accounts
+        SET last_health_status = $3, last_health_checked_at = now(), updated_at = now()
+      WHERE provider = $2 AND account_key = $1`,
+    [accountKey, provider, status],
+  );
+}
+
 /**
  * Writes one collector run into PostgreSQL as a single all-or-nothing transaction.
  *
@@ -142,12 +195,22 @@ function prepareCitations(citations) {
  * upsert each Article and attach a Citation. Any failure rolls the whole thing back,
  * so a Run can never end up with half of its Citations written.
  */
-export async function persistRun({ pool, run, project = null, prompt = null, artifactPath = null }) {
+export async function persistRun({
+  pool,
+  run,
+  project = null,
+  prompt = null,
+  artifactPath = null,
+  accountKey = null,
+  samplingBatchId = null,
+}) {
   if (!pool) throw new DatabasePersistError("persistRun requires a connection pool");
 
   const citations = Array.isArray(run?.citations) ? run.citations : [];
   const { rows: citationRows, skipped } = prepareCitations(citations);
   const projectName = project || run?.project || "default";
+  const effectiveAccountKey = accountKey ?? run?.accountKey ?? null;
+  const effectiveBatchId = samplingBatchId ?? run?.samplingBatchId ?? null;
 
   const client = await pool.connect();
   try {
@@ -163,6 +226,15 @@ export async function persistRun({ pool, run, project = null, prompt = null, art
       prompt?.enabled !== false,
     ]);
     const promptId = promptResult.rows[0].id;
+
+    // Tracked articles are matched on canonical URL exact equality in this phase.
+    const trackedResult = await client.query(
+      "SELECT id, canonical_url FROM tracked_articles WHERE project_id = $1",
+      [projectId],
+    );
+    const trackedByUrl = new Map(
+      trackedResult.rows.map((row) => [row.canonical_url, row.id]),
+    );
 
     const runResult = await client.query(RUN_UPSERT, [
       promptId,
@@ -183,6 +255,14 @@ export async function persistRun({ pool, run, project = null, prompt = null, art
       run?.errorDetails == null ? null : JSON.stringify(run.errorDetails),
       run?.id ?? null,
       artifactPath,
+      effectiveBatchId,
+      effectiveAccountKey,
+      run?.conversationResetConfirmed ?? null,
+      run?.brandMentioned ?? null,
+      run?.mentionCount ?? null,
+      run?.firstMentionPosition ?? null,
+      JSON.stringify(Array.isArray(run?.matchedTerms) ? run.matchedTerms : []),
+      run?.brandDetectionVersion ?? null,
     ]);
     const runId = runResult.rows[0].id;
 
@@ -190,6 +270,7 @@ export async function persistRun({ pool, run, project = null, prompt = null, art
     await client.query("DELETE FROM citations WHERE run_id = $1", [runId]);
 
     let articlesCreated = 0;
+    let trackedCitations = 0;
     const articleIds = new Set();
 
     for (const row of citationRows) {
@@ -204,6 +285,9 @@ export async function persistRun({ pool, run, project = null, prompt = null, art
       if (articleResult.rows[0].inserted) articlesCreated += 1;
       articleIds.add(articleId);
 
+      const trackedArticleId = trackedByUrl.get(row.canonicalUrl) ?? null;
+      if (trackedArticleId) trackedCitations += 1;
+
       await client.query(CITATION_UPSERT, [
         runId,
         articleId,
@@ -213,6 +297,7 @@ export async function persistRun({ pool, run, project = null, prompt = null, art
         row.relationStatus,
         row.capturedFrom,
         row.visibleToUser,
+        trackedArticleId,
       ]);
     }
 
@@ -227,6 +312,9 @@ export async function persistRun({ pool, run, project = null, prompt = null, art
       articlesReused: articleIds.size - articlesCreated,
       citationsWritten: citationRows.length,
       citationsSkipped: skipped.length,
+      trackedCitations,
+      accountKey: effectiveAccountKey,
+      samplingBatchId: effectiveBatchId,
     };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
