@@ -1,6 +1,6 @@
 {
   "name": "onegl-doubao-mvp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "China-first GEO / AI citation intelligence MVP for Doubao Web",
@@ -16,10 +16,17 @@
     "serve": "node src/server.js",
     "check": "node --check src/*.js && node -e \"JSON.parse(require('fs').readFileSync('validation/phase0-prompts.json','utf8'))\"",
     "validate:scaffold": "node src/validate.js scaffold",
-    "validate:evaluate": "node src/validate.js evaluate"
+    "validate:evaluate": "node src/validate.js evaluate",
+    "db:migrate": "node src/db/migrate.js",
+    "db:status": "node src/db/migrate.js status",
+    "db:tunnel": "node src/db/tunnel.js",
+    "db:query": "node src/db/query.js",
+    "fixtures:sanitize": "node tools/sanitize-fixtures.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "dotenv": "^17.2.3",
+    "pg": "^8.13.0",
     "playwright-core": "^1.51.1"
   }
 }

@@ -15,6 +15,61 @@ import {
 } from "./errors.js";
 import { RunStore } from "./store.js";
 import { captureDomObservation } from "./dom-observer.js";
+import { createPool, isDatabaseConfigured } from "./db/pool.js";
+import { persistRun } from "./db/persist.js";
+
+// ---------------------------------------------------------------------------
+// PostgreSQL persistence
+//
+// Optional by design: without DATABASE_URL the collector keeps working in
+// artifact-only mode, so the Phase 0 local workflow is unaffected.
+// ---------------------------------------------------------------------------
+
+let sharedPool = null;
+let databaseFailures = 0;
+
+function getPool() {
+  if (!isDatabaseConfigured()) return null;
+  if (!sharedPool) sharedPool = createPool();
+  return sharedPool;
+}
+
+async function closePool() {
+  if (!sharedPool) return;
+  await sharedPool.end().catch(() => undefined);
+  sharedPool = null;
+}
+
+async function persistToDatabase(store, saved, { project, promptMeta }) {
+  const pool = getPool();
+  if (!pool) return;
+
+  try {
+    const summary = await persistRun({
+      pool,
+      run: saved,
+      project,
+      prompt: promptMeta,
+      artifactPath: saved.debugPath ?? null,
+    });
+    await store.updateRun(saved.id, { dbStatus: "success", db: summary });
+    console.log(
+      `${saved.id}: postgres ok | run_id=${summary.runId} ` +
+        `articles=${summary.articlesReferenced} (new ${summary.articlesCreated}) ` +
+        `citations=${summary.citationsWritten}`,
+    );
+  } catch (error) {
+    databaseFailures += 1;
+    await store
+      .updateRun(saved.id, {
+        dbStatus: "failed",
+        dbError: { name: error.name, message: error.message },
+      })
+      .catch(() => undefined);
+    // Local debug artifacts are deliberately kept so the run stays auditable.
+    console.error(`${saved.id}: DATABASE ERROR | ${error.message}`);
+  }
+}
 
 function parseArgs(tokens) {
   const args = { _: [] };
@@ -114,6 +169,10 @@ async function executeOne({ page, store, config, prompt, project, validation = n
           ? ""
           : `/${saved.expectedCitationCount}`),
     );
+    await persistToDatabase(store, saved, {
+      project,
+      promptMeta: validation ? { externalId: validation.caseId ?? null } : null,
+    });
     return saved;
   } catch (error) {
     await captureArtifacts(store, run.id, page, prompt);
@@ -134,6 +193,10 @@ async function executeOne({ page, store, config, prompt, project, validation = n
       currentUrl: page?.url?.() || null,
     });
     console.error(`${saved.id}: failed | ${saved.errorCode}: ${saved.errorMessage}`);
+    await persistToDatabase(store, saved, {
+      project,
+      promptMeta: validation ? { externalId: validation.caseId ?? null } : null,
+    });
     throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
       runId: saved.id,
       normalized,
@@ -310,11 +373,23 @@ async function main() {
     return;
   }
 
-  if (command === "auth") await authCommand();
-  else if (command === "run") await runCommand(args);
-  else if (command === "batch") await batchCommand(args);
-  else if (command === "runs") await runsCommand();
-  else throw new Error(`Unknown command: ${command}`);
+  try {
+    if (command === "auth") await authCommand();
+    else if (command === "run") await runCommand(args);
+    else if (command === "batch") await batchCommand(args);
+    else if (command === "runs") await runsCommand();
+    else throw new Error(`Unknown command: ${command}`);
+  } finally {
+    // A database failure must be visible to whatever invoked the collector, while the
+    // Run itself and its debug artifacts survive.
+    await closePool();
+    if (databaseFailures > 0) {
+      console.error(
+        `Database persistence failed for ${databaseFailures} run(s); local artifacts were kept.`,
+      );
+      process.exitCode = 1;
+    }
+  }
 }
 
 main().catch((error) => {
