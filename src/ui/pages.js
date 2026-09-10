@@ -777,7 +777,9 @@ export function sourcesPage({ db, sources, projects, projectId }) {
 
 /* ------------------------------------------------------------------ 项目 */
 
-export function projectsPage({ db, projects }) {
+/* ------------------------------------------------------------------ 项目列表 */
+
+export function projectsPage({ db, projects, notice: noticeMessage = null }) {
   if (!db.ready) {
     return layout({
       title: "项目配置",
@@ -792,13 +794,32 @@ export function projectsPage({ db, projects }) {
     active: "projects",
     dbState: "数据库已连接",
     body: `<h1>项目配置</h1>
-<p class="lead">一个项目对应一个监控主题与一个目标品牌。</p>
+<p class="lead">每个项目拥有完全独立的关键词池，抽样只会从当前项目自己启用的关键词中抽取，项目之间不会互相影响。</p>
+${noticeMessage ? notice(escapeHtml(noticeMessage)) : ""}
+${panel("新建项目", {
+  hint: "创建后在「关键词池」页面人工录入关键词",
+  body: `<div class="panel-body padded">
+    <form method="post" action="/projects" class="form-row">
+      <div class="field grow"><label>项目名称</label>
+        <input type="text" name="name" required maxlength="120" placeholder="例如：小米汽车" /></div>
+      <div class="field grow"><label>目标品牌（可选，用于品牌提及检测）</label>
+        <input type="text" name="targetBrand" maxlength="120" placeholder="例如：小米汽车" /></div>
+      <div class="field grow"><label>说明（可选）</label>
+        <input type="text" name="description" maxlength="300" placeholder="例如：监控小米汽车在豆包回答中的提及率" /></div>
+      <button type="submit">新建项目</button>
+    </form>
+  </div>`,
+})}
 ${panel(`项目（${projects.length}）`, {
   body: dataTable({
     columns: [
       { label: "项目", render: (row) => `<a href="/projects/${row.id}">${escapeHtml(row.name)}</a>` },
       { label: "目标品牌", render: (row) => escapeHtml(row.target_brand ?? "—") },
-      { label: "关键词池", align: "right", render: (row) => `${num(row.pool_enabled)} / ${num(row.pool_size)}` },
+      {
+        label: "关键词池（启用 / 总数）",
+        align: "right",
+        render: (row) => `${num(row.pool_enabled)} / ${num(row.pool_size)}`,
+      },
       { label: "批次", align: "right", render: (row) => num(row.batch_count) },
       { label: "运行", align: "right", render: (row) => num(row.run_count) },
       { label: "引用", align: "right", render: (row) => num(row.citation_count) },
@@ -806,30 +827,66 @@ ${panel(`项目（${projects.length}）`, {
       { label: "创建时间", className: "nowrap", render: (row) => dateTime(row.created_at) },
     ],
     rows: projects,
-    empty: "还没有项目。执行 npm run project:init -- --file <配置文件> 创建。",
+    empty: "还没有项目，用上面的表单新建一个。",
   }),
 })}`,
   });
 }
 
-export function projectPage({ project, pool, tracked, accounts }) {
-  const aliases = (project.brand_aliases ?? []).map((term) => `<span class="term">${escapeHtml(term)}</span>`).join(" ") || "—";
-  const products = (project.brand_product_aliases ?? []).map((term) => `<span class="term">${escapeHtml(term)}</span>`).join(" ") || "—";
-  const excludes = (project.brand_exclude_patterns ?? []).map((term) => `<code>${escapeHtml(term)}</code>`).join(" ") || "—";
+/* ------------------------------------------------------------------ 项目标签页 */
 
-  const poolTotal = pool.reduce((sum, row) => sum + Number(row.prompts), 0);
+function projectTabs(projectId, active) {
+  const items = [
+    ["overview", "", "项目概览"],
+    ["keywords", "/keywords", "关键词池"],
+    ["sampling", "/sampling", "抽样"],
+    ["runs", "/runs", "运行记录"],
+    ["sources", "/sources", "引用来源"],
+  ];
+  return `<nav class="tabs">${items
+    .map(
+      ([key, suffix, label]) =>
+        `<a href="/projects/${projectId}${suffix}"${active === key ? ' class="active"' : ""}>${escapeHtml(label)}</a>`,
+    )
+    .join("")}</nav>`;
+}
+
+function projectHeader(project, active, noticeMessage) {
+  return `${projectTabs(project.id, active)}
+<h1>${escapeHtml(project.name)}</h1>
+<p class="lead">${escapeHtml(project.description ?? "（无描述）")}</p>
+${noticeMessage ? notice(escapeHtml(noticeMessage)) : ""}`;
+}
+
+/* ------------------------------------------------------------------ 项目概览 */
+
+export function projectOverviewPage({ project, pool, tracked, accounts, batches, keywordStats }) {
+  const aliases =
+    (project.brand_aliases ?? []).map((term) => `<span class="term">${escapeHtml(term)}</span>`).join(" ") || "—";
+  const products =
+    (project.brand_product_aliases ?? []).map((term) => `<span class="term">${escapeHtml(term)}</span>`).join(" ") || "—";
+  const excludes =
+    (project.brand_exclude_patterns ?? []).map((term) => `<code>${escapeHtml(term)}</code>`).join(" ") || "—";
 
   return layout({
     title: project.name,
     active: "projects",
     dbState: "数据库已连接",
-    body: `<h1>${escapeHtml(project.name)}</h1>
-<p class="lead">${escapeHtml(project.description ?? "（无描述）")}</p>
+    body: `${projectHeader(project, "overview", null)}
 ${metricGrid([
-  metric({ label: "目标品牌", value: project.target_brand ?? "未配置" }),
-  metric({ label: "关键词池", value: num(poolTotal), hint: `${pool.length} 个分类` }),
-  metric({ label: "监控文章", value: num(tracked.length), hint: `${tracked.filter((row) => Number(row.citations) > 0).length} 篇已被引用过` }),
-  metric({ label: "账号", value: num(accounts.length), hint: accounts.map((row) => row.account_key).join(", ") || "未配置" }),
+  metric({ label: "目标品牌", value: project.target_brand ?? "未配置", hint: "未配置则不做品牌提及判定" }),
+  metric({
+    label: "关键词池",
+    value: num(keywordStats.enabled),
+    hint: `启用 ${num(keywordStats.enabled)} / 未删除 ${num(keywordStats.total)}，已删除 ${num(keywordStats.deleted)}`,
+  }),
+  metric({ label: "抽样批次", value: num(batches.length), hint: "抽样只从本项目的关键词池抽取" }),
+  metric({
+    label: "监控文章",
+    value: num(tracked.length),
+    hint: `${tracked.filter((row) => Number(row.citations) > 0).length} 篇已被引用过`,
+  }),
+  metric({ label: "可用账号", value: num(accounts.length), hint: accounts.map((row) => row.account_key).join(", ") || "未配置" }),
 ])}
 ${panel("品牌识别规则", {
   hint: "第一阶段为规则检测，原始回答始终保留以便人工审计",
@@ -838,23 +895,24 @@ ${panel("品牌识别规则", {
     ["产品名", products],
     ["排除模式", excludes],
     ["命中规则", "重叠时保留最长匹配；排除模式覆盖的区域先被抹除再匹配"],
+    ["改动方式", "<code>npm run project:init -- --file &lt;配置文件&gt;</code> 或直接在数据库中调整"],
   ]),
 })}
-${panel(`关键词池（${num(poolTotal)}）`, {
-  hint: "分层抽样按各分类占比按比例分配",
+${panel(`关键词池分类（${num(pool.reduce((sum, row) => sum + Number(row.prompts), 0))} 条）`, {
+  hint: "分层抽样按各分类占比按比例分配名额",
   body: dataTable({
     columns: [
       { label: "分类", render: (row) => escapeHtml(row.category) },
-      { label: "Prompt 数", align: "right", render: (row) => num(row.prompts) },
+      { label: "关键词数", align: "right", render: (row) => num(row.prompts) },
       { label: "启用", align: "right", render: (row) => num(row.enabled) },
       { label: "池版本", render: (row) => escapeHtml(row.pool_version ?? "—") },
     ],
     rows: pool,
-    empty: "关键词池为空。",
+    empty: "关键词池为空，去「关键词池」页面录入。",
   }),
 })}
 ${panel(`监控文章（${tracked.length}）`, {
-  hint: "canonical URL 精确匹配；命中后可直接查看被哪些问题、哪些账号引用",
+  hint: "canonical URL 精确匹配；命中后可查看被哪些提问、哪些账号引用",
   body: dataTable({
     columns: [
       {
@@ -875,6 +933,232 @@ ${panel(`监控文章（${tracked.length}）`, {
     ],
     rows: tracked,
     empty: "还没有配置监控文章。",
+  }),
+})}`,
+  });
+}
+
+/* ------------------------------------------------------------------ 关键词池 */
+
+function keywordStatus(keyword) {
+  if (keyword.deleted_at) return badge("已删除", "bad");
+  if (keyword.enabled) return badge("启用中", "ok");
+  return badge("已禁用", "muted");
+}
+
+function keywordActions(projectId, keyword) {
+  const base = `/projects/${projectId}/keywords/${keyword.id}`;
+  if (keyword.deleted_at) {
+    return `<form class="inline-form" method="post" action="${base}/restore">
+      <button class="ghost" type="submit">恢复</button></form>`;
+  }
+  const nextEnabled = keyword.enabled ? "false" : "true";
+  return `<div class="actions">
+    <form class="inline-form" method="post" action="${base}/toggle">
+      <input type="hidden" name="enabled" value="${nextEnabled}" />
+      <button class="ghost" type="submit">${keyword.enabled ? "禁用" : "启用"}</button>
+    </form>
+    <form class="inline-form" method="post" action="${base}/delete"
+          onsubmit="return confirm('确认删除这个关键词？历史运行记录与批次会保留。');">
+      <button class="ghost danger" type="submit">删除</button>
+    </form>
+  </div>`;
+}
+
+export function projectKeywordsPage({ project, keywords, stats, notice: noticeMessage }) {
+  const alive = keywords.filter((keyword) => !keyword.deleted_at);
+
+  return layout({
+    title: `${project.name} · 关键词池`,
+    active: "projects",
+    dbState: "数据库已连接",
+    body: `${projectHeader(project, "keywords", noticeMessage)}
+${metricGrid([
+  metric({ label: "启用中", value: num(stats.enabled), hint: "只有启用中的关键词会被抽样" }),
+  metric({ label: "未删除", value: num(stats.total) }),
+  metric({ label: "已删除", value: num(stats.deleted), hint: "删除为软删除，历史记录不受影响" }),
+])}
+${panel("添加到关键词池", {
+  hint: "人工录入，多个关键词用 # 分隔",
+  body: `<div class="panel-body padded">
+    <form method="post" action="/projects/${project.id}/keywords" class="form-block">
+      <textarea name="input" required
+        placeholder="输入搜索关键词，多个关键词用 # 分隔&#10;例如：20万新能源SUV推荐#国产新能源车哪个好#家庭第一辆电动车怎么选"></textarea>
+      <div class="form-row">
+        <div class="field grow"><label>分类（可选，用于分层抽样）</label>
+          <input type="text" name="category" maxlength="60" placeholder="例如：购买推荐" /></div>
+        <button type="submit">添加到关键词池</button>
+      </div>
+    </form>
+    <details class="help"><summary>输入清洗规则</summary>
+      <div>
+        以 <code>#</code>（兼容全角 <code>＃</code> 与换行）分隔；每项去掉首尾空白；忽略空项；<br>
+        同一项目内自动去重并保留首次出现顺序；中文标点原样保留，不改动关键词正文；<br>
+        不同项目之间互不影响，同一个关键词可以在多个项目里各存在一条。
+      </div>
+    </details>
+  </div>`,
+})}
+${panel(`关键词（共 ${num(alive.length)} 条，含已删除 ${num(keywords.length)} 条）`, {
+  hint: "抽样只会使用「启用中」的关键词",
+  body: dataTable({
+    columns: [
+      { label: "关键词", render: (row) => escapeHtml(row.prompt) },
+      { label: "分类", render: (row) => escapeHtml(row.category ?? "—") },
+      { label: "状态", render: (row) => keywordStatus(row) },
+      { label: "来源", render: (row) => badge(row.source === "pool" ? "导入" : "录入", "muted") },
+      {
+        label: "被抽样",
+        align: "right",
+        render: (row) => (Number(row.run_count) > 0 ? `${num(row.run_count)} 次` : "—"),
+      },
+      { label: "创建时间", className: "nowrap", render: (row) => dateTime(row.created_at) },
+      { label: "操作", render: (row) => keywordActions(project.id, row) },
+    ],
+    rows: keywords,
+    empty: "还没有关键词，用上面的输入框添加。",
+  }),
+})}`,
+  });
+}
+
+/* ------------------------------------------------------------------ 抽样 */
+
+export function projectSamplingPage({ project, batches, accounts, stats, notice: noticeMessage }) {
+  const accountList = accounts.map((row) => row.account_key).join(",");
+
+  return layout({
+    title: `${project.name} · 抽样`,
+    active: "projects",
+    dbState: "数据库已连接",
+    body: `${projectHeader(project, "sampling", noticeMessage)}
+${metricGrid([
+  metric({ label: "可抽样关键词", value: num(stats.enabled), hint: "来自本项目的关键词池，已启用的部分" }),
+  metric({ label: "历史批次", value: num(batches.length), hint: "批次保留当时抽中的关键词，不受后续改动影响" }),
+])}
+${panel("从本项目关键词池抽样", {
+  hint: `当前可抽 ${num(stats.enabled)} 条`,
+  body: `<div class="panel-body padded">
+    <form method="post" action="/projects/${project.id}/sampling" class="form-row">
+      <div class="field narrow"><label>抽样数量</label>
+        <input type="number" name="size" min="1" max="${Math.max(1, Number(stats.enabled))}" value="${Math.min(20, Math.max(1, Number(stats.enabled)))}" required /></div>
+      <div class="field"><label>抽样方式</label>
+        <select name="method">
+          <option value="stratified">分层抽样（按分类按比例）</option>
+          <option value="random">纯随机抽样</option>
+        </select></div>
+      <div class="field grow"><label>账号（逗号分隔）</label>
+        <input type="text" name="accounts" value="${escapeHtml(accountList || "account_01")}" required /></div>
+      <div class="field narrow"><label>每问重复次数</label>
+        <input type="number" name="repeats" min="1" value="1" /></div>
+      <div class="field grow"><label>抽样种子（留空自动生成）</label>
+        <input type="text" name="seed" placeholder="填写同一种子可复现本次抽样" /></div>
+      <button type="submit">抽取并创建批次</button>
+    </form>
+    <details class="help"><summary>抽样与执行的分工</summary>
+      <div>
+        本页只负责「抽哪些关键词、分给哪个账号」，抽完立即落库并记录种子，过程很快。<br>
+        真正向豆包提问耗时较长，仍通过命令行执行，批次页面会给出对应命令：<br>
+        <code>npm run batch:run -- --batch &lt;批次ID&gt;</code>
+      </div>
+    </details>
+  </div>`,
+})}
+${panel(`本项目批次（${batches.length}）`, {
+  body: dataTable({
+    columns: [
+      { label: "批次", render: (row) => `<a href="/batches/${row.id}">#${row.id} ${escapeHtml(truncate(row.name, 30))}</a>` },
+      { label: "状态", render: (row) => badge(statusLabel(row.status), statusTone(row.status)) },
+      {
+        label: "抽样",
+        render: (row) =>
+          escapeHtml(`${row.sampling_method === "stratified" ? "分层" : "纯随机"} ${row.sample_size}/${row.pool_size}`),
+      },
+      { label: "账号", render: (row) => escapeHtml((row.account_keys ?? []).join(", ") || "—") },
+      { label: "种子", className: "mono", render: (row) => escapeHtml(row.sampling_seed) },
+      { label: "有效/总数", align: "right", render: (row) => `${num(row.valid_runs)} / ${num(row.runs_total)}` },
+      { label: "RUN 提及率", align: "right", render: (row) => escapeHtml(pct(row.mentioned_runs, row.valid_runs)) },
+      { label: "目标文章", align: "right", render: (row) => `${num(row.tracked_cited)} / ${num(row.tracked_total)}` },
+      { label: "创建时间", className: "nowrap", render: (row) => dateTime(row.created_at) },
+    ],
+    rows: batches,
+    empty: "还没有批次，用上面的表单抽取一次。",
+  }),
+})}`,
+  });
+}
+
+/* ------------------------------------------------------------------ 项目下的运行与来源 */
+
+export function projectRunsPage({ project, runs }) {
+  return layout({
+    title: `${project.name} · 运行记录`,
+    active: "projects",
+    dbState: "数据库已连接",
+    body: `${projectHeader(project, "runs", null)}
+${panel(`运行记录（${num(runs.length)}）`, {
+  hint: "只有「已确认新会话」的成功/部分成功运行才计入品牌提及率",
+  body: dataTable({
+    columns: [
+      { label: "运行", render: (row) => runLink(row.local_run_id, truncate(row.local_run_id, 26)) },
+      { label: "批次", render: (row) => (row.sampling_batch_id ? `<a href="/batches/${row.sampling_batch_id}">#${row.sampling_batch_id}</a>` : "—") },
+      { label: "分类", render: (row) => escapeHtml(row.category ?? "—") },
+      { label: "状态", render: (row) => badge(statusLabel(row.status), statusTone(row.status)) },
+      { label: "新会话", render: (row) => resetBadge(row.conversation_reset_confirmed) },
+      { label: "品牌", render: (row) => brandBadge(row.brand_mentioned) },
+      { label: "引用", align: "right", render: (row) => citationCell(row) },
+      { label: "提问", render: (row) => escapeHtml(truncate(row.prompt, 44)) },
+      { label: "时间", className: "nowrap", render: (row) => dateTime(row.started_at) },
+    ],
+    rows: runs,
+    empty: "该项目还没有运行记录。",
+  }),
+})}`,
+  });
+}
+
+export function projectSourcesPage({ project, sources }) {
+  return layout({
+    title: `${project.name} · 引用来源`,
+    active: "projects",
+    dbState: "数据库已连接",
+    body: `${projectHeader(project, "sources", null)}
+${metricGrid([
+  metric({ label: "可见引用", value: num(sources.totals.citations) }),
+  metric({ label: "唯一文章", value: num(sources.totals.articles) }),
+  metric({ label: "唯一域名", value: num(sources.totals.domains) }),
+])}
+${panel("域名分布", {
+  body: dataTable({
+    columns: [
+      { label: "域名", render: (row) => escapeHtml(row.domain) },
+      { label: "引用", align: "right", render: (row) => num(row.citations) },
+      { label: "文章", align: "right", render: (row) => num(row.articles) },
+      {
+        label: "占比",
+        align: "right",
+        render: (row) =>
+          `${escapeHtml(pct(row.citations, sources.totals.citations))} ${bar(row.citations, sources.totals.citations)}`,
+      },
+    ],
+    rows: sources.domains,
+    empty: "该项目还没有引用数据。",
+  }),
+})}
+${panel("被引用最多的文章", {
+  body: dataTable({
+    columns: [
+      {
+        label: "文章",
+        render: (row) =>
+          `<a href="${escapeHtml(row.canonical_url)}" target="_blank" rel="noreferrer">${escapeHtml(truncate(row.title || row.canonical_url, 58))}</a>${row.is_tracked ? ` ${badge("监控中", "info")}` : ""}`,
+      },
+      { label: "域名", render: (row) => escapeHtml(row.normalized_domain ?? row.domain) },
+      { label: "引用", align: "right", render: (row) => num(row.citations) },
+      { label: "提问数", align: "right", render: (row) => num(row.prompts) },
+    ],
+    rows: sources.articles,
+    empty: "该项目还没有引用数据。",
   }),
 })}`,
   });

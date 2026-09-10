@@ -227,4 +227,74 @@ footer {
 }
 
 img.shot { max-width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); display: block; }
+
+/* 表单与标签页 */
+.tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  margin: 0 0 22px;
+  flex-wrap: wrap;
+}
+.tabs a {
+  padding: 9px 14px;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  border-bottom: 2px solid transparent;
+}
+.tabs a:hover { color: var(--text); text-decoration: none; }
+.tabs a.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+input[type="text"], input[type="number"], select, textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 9px 12px;
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+input::placeholder, textarea::placeholder { color: var(--text-dim); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+textarea { min-height: 104px; resize: vertical; }
+
+button {
+  background: var(--accent);
+  color: #06101d;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 9px 16px;
+  font-size: 13.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:hover { filter: brightness(1.1); }
+button.ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  font-weight: 400;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+button.ghost:hover { background: var(--bg-hover); color: var(--text); filter: none; }
+button.ghost.danger { color: var(--bad); border-color: #4d2a27; }
+button.ghost.danger:hover { background: var(--bad-soft); }
+
+.form-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > label { color: var(--text-muted); font-size: 12.5px; }
+.field.grow { flex: 1; min-width: 180px; }
+.field.narrow input { width: 110px; }
+.form-block { display: flex; flex-direction: column; gap: 12px; }
+.inline-form { display: inline; }
+.actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
+details.help { margin: 10px 0 0; }
+details.help summary { color: var(--text-dim); font-size: 12.5px; }
+details.help div { color: var(--text-dim); font-size: 12.5px; line-height: 1.7; padding: 6px 0 0; }
 `;

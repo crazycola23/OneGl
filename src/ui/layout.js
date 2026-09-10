@@ -31,7 +31,8 @@ export function layout({ title, active = "", body, dbState = "" }) {
 </header>
 <main>${body}</main>
 <footer>
-  本页为只读分析界面。抽样、执行与导入等操作仍通过命令行完成，页面会给出需要执行的命令。
+  界面支持新建项目、人工录入关键词池、启用/禁用/删除关键词，以及从本项目关键词池创建抽样批次。
+  向豆包真实提问耗时较长，仍通过命令行执行：<code>npm run batch:run -- --batch &lt;批次ID&gt;</code>
 </footer>
 </body></html>`;
 }
