@@ -333,21 +333,37 @@ async function answerCandidates(page) {
   }, ANSWER_SELECTOR);
 }
 
+// An in-flight progress step such as "正在搜索相关资料 ›" is the reliable signal that a
+// task-mode turn is still running. Matching is restricted to leaf elements with short
+// text so a container whose subtree merely contains the phrase cannot trigger it.
+const IN_PROGRESS_STEP = /正在(搜索|思考|生成|查询|读取|分析|整理|执行|编写|获取|规划|联网)/;
+
 async function isGenerating(page) {
-  return page.evaluate(() => {
+  return page.evaluate((inProgressSource) => {
+    const inProgress = new RegExp(inProgressSource);
     const visible = (element) => {
       if (!(element instanceof HTMLElement)) return false;
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
     };
-    return [...document.querySelectorAll('button, [role="button"]')]
+
+    const stopControl = [...document.querySelectorAll('button, [role="button"]')]
       .filter(visible)
       .some((element) => {
         const text = `${element.getAttribute("aria-label") || ""} ${element.innerText || element.textContent || ""}`;
         return /停止生成|停止回答|停止/.test(text);
       });
-  });
+    if (stopControl) return true;
+
+    return [...document.querySelectorAll("div, span, p, li")]
+      .filter((element) => element.childElementCount === 0)
+      .filter(visible)
+      .some((element) => {
+        const text = (element.textContent || "").trim();
+        return text.length > 0 && text.length <= 40 && inProgress.test(text);
+      });
+  }, IN_PROGRESS_STEP.source);
 }
 
 async function detectProviderError(page) {
@@ -421,22 +437,46 @@ async function waitForSubmissionConfirmation(page, prompt, baselineAnswers) {
   return false;
 }
 
-async function submitPrompt(page, prompt) {
-  const box = await waitForTextbox(page, 15_000);
-  if (!box) {
+// Doubao re-renders the composer (notably when switching conversations, and in task
+// mode), which detaches the textarea node in the middle of fill(). Retry with a fresh
+// node instead of failing the run, while still never sending unverified text.
+async function fillVerifiedPrompt(page, prompt, attempts = 3) {
+  const expected = normalizeText(prompt);
+  let lastFailure = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const box = await waitForTextbox(page, 15_000);
+    if (!box) {
+      lastFailure = { reason: "chat-input-unavailable" };
+    } else {
+      try {
+        await box.fill(prompt);
+        const actual = normalizeText(await readEditableValue(box));
+        if (actual === expected) return box;
+        lastFailure = { reason: "verification-mismatch", expected, actual };
+      } catch (error) {
+        lastFailure = {
+          reason: "fill-failed",
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    if (attempt < attempts) await page.waitForTimeout(1_000);
+  }
+
+  if (lastFailure?.reason === "chat-input-unavailable") {
     throw new DoubaoMvpError(ErrorCode.PAGE_CHANGED, "Doubao chat input is not available.");
   }
 
-  await box.fill(prompt);
-  const actual = normalizeText(await readEditableValue(box));
-  const expected = normalizeText(prompt);
-  if (actual !== expected) {
-    throw new DoubaoMvpError(
-      ErrorCode.SUBMISSION_FAILED,
-      "Prompt input verification failed; submission was stopped to avoid sending corrupted text.",
-      { expected, actual },
-    );
-  }
+  throw new DoubaoMvpError(
+    ErrorCode.SUBMISSION_FAILED,
+    "Prompt input verification failed; submission was stopped to avoid sending corrupted text.",
+    lastFailure,
+  );
+}
+
+async function submitPrompt(page, prompt) {
+  const box = await fillVerifiedPrompt(page, prompt);
 
   const baselineAnswers = await answerTexts(page);
   const sentByButton = await tryClickSend(page);
