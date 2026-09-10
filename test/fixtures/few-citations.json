@@ -1,0 +1,16 @@
+{
+  "name": "few-citations",
+  "description": "The smallest citation set captured during Phase 0.",
+  "prompt": "2026年中国市场值得关注的新能源汽车品牌有哪些？请结合公开资料说明。",
+  "sourceRunId": "run_20260910T061449172Z_6d9e942c",
+  "capturedAt": "2026-09-10T06:15:43.383Z",
+  "expectedState": "found",
+  "expectedCitations": 15,
+  "expectedCount": 15,
+  "answerChars": 2264,
+  "rawHtmlBytes": 820712,
+  "answerHead": "2026 年中国市场值得关注的中国新能源汽车品牌（基于公开财报、车企发布会、乘联会 / 证券媒体公开资料） 2026 年国内新能源市场进入存量博弈，竞争重心从单",
+  "sanitized": true,
+  "originalHtmlBytes": 812470,
+  "sanitizedHtmlBytes": 144602
+}

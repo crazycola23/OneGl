@@ -1,0 +1,16 @@
+{
+  "name": "many-citations",
+  "description": "The densest citation set captured during Phase 0.",
+  "prompt": "如果预算30万元左右购买新能源SUV，主流选择有哪些，各自优势是什么？请给出资料来源。",
+  "sourceRunId": "run_20260910T062318331Z_d2ffc1d3",
+  "capturedAt": "2026-09-10T06:24:53.067Z",
+  "expectedState": "found",
+  "expectedCitations": 33,
+  "expectedCount": 33,
+  "answerChars": 1736,
+  "rawHtmlBytes": 825506,
+  "answerHead": "30 万元左右新能源 SUV 主流车型（2026，指导价 25–32 万区间） 说明：分为纯电、增程、插混三类；信息来源：各品牌官网、懂车帝车型库、汽车之家车型",
+  "sanitized": true,
+  "originalHtmlBytes": 816698,
+  "sanitizedHtmlBytes": 136269
+}

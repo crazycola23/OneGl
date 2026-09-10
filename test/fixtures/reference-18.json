@@ -1,0 +1,16 @@
+{
+  "name": "reference-18",
+  "description": "The reference sample: UI declared 18, extractor captured 18.",
+  "prompt": "2026年中国市场值得关注的新能源汽车品牌有哪些？请结合公开资料说明。",
+  "sourceRunId": "run_20260910T070804309Z_d76f2dfb",
+  "capturedAt": "2026-09-10T07:09:18.162Z",
+  "expectedState": "found",
+  "expectedCitations": 18,
+  "expectedCount": 18,
+  "answerChars": 2166,
+  "rawHtmlBytes": 808979,
+  "answerHead": "2026 年中国市场值得关注的新能源汽车品牌（基于公开行业资料） 2026 年国内新能源市场进入存量竞争，电池闪充、端到端智驾、全域自研、多品牌分层、出海是核心",
+  "sanitized": true,
+  "originalHtmlBytes": 800357,
+  "sanitizedHtmlBytes": 120593
+}

@@ -1,0 +1,16 @@
+{
+  "name": "no-citation",
+  "description": "A rewrite request: the answer needs no web sources at all.",
+  "prompt": "只输出改写后的句子，不要任何解释：我们公司的新产品在性能上有了很大的提升。",
+  "sourceRunId": "run_20260910T071119238Z_3fe6d6b6",
+  "capturedAt": "2026-09-10T07:11:47.651Z",
+  "expectedState": "none_visible",
+  "expectedCitations": 0,
+  "expectedCount": 0,
+  "answerChars": 17,
+  "rawHtmlBytes": 801771,
+  "answerHead": "我司新品在性能方面实现了大幅提升。",
+  "sanitized": true,
+  "originalHtmlBytes": 797841,
+  "sanitizedHtmlBytes": 131859
+}
