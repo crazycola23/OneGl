@@ -141,12 +141,32 @@ async function executeOne({ page, store, config, prompt, project, validation = n
   }
 }
 
+async function waitForSettledSession(page, config) {
+  // Doubao can render the chat textarea before its login button, so a single check
+  // right after load can report "healthy" while the session is still anonymous and
+  // save an unauthenticated storageState. Require the healthy state to hold across
+  // several polls before trusting it.
+  const required = Math.max(config.stablePolls, 3);
+  const deadline = Date.now() + 60_000;
+  let state = await inspectSession(page);
+  let streak = state.state === "healthy" ? 1 : 0;
+  while (streak < required && Date.now() < deadline) {
+    // A definitive login/verification state needs user action, so stop polling and
+    // hand over to waitForManualLogin instead of burning the settle window.
+    if (state.state !== "healthy" && state.state !== "unknown") break;
+    await page.waitForTimeout(config.pollMs);
+    state = await inspectSession(page);
+    streak = state.state === "healthy" ? streak + 1 : 0;
+  }
+  return state;
+}
+
 async function authCommand() {
   const config = loadConfig({ headless: false });
   const session = await launchBrowserSession(config, { forceHeadful: true });
   try {
     await openDoubao(session.page, config);
-    const initial = await inspectSession(session.page);
+    const initial = await waitForSettledSession(session.page, config);
     if (initial.state !== "healthy") {
       console.log(
         "Complete Doubao login in the opened browser window. The process will detect a healthy chat session automatically.",
