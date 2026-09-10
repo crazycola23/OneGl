@@ -43,7 +43,12 @@ export class RunStore {
     return path.join(this.runDir(runId), "run.json");
   }
 
-  async createRun({ prompt, project = "default" }) {
+  async createRun({
+    prompt,
+    project = "default",
+    accountKey = null,
+    samplingBatchId = null,
+  }) {
     await this.init();
     const runId = `run_${safeTimestamp()}_${randomUUID().slice(0, 8)}`;
     await mkdir(this.runDir(runId), { recursive: false });
@@ -52,6 +57,8 @@ export class RunStore {
       project,
       provider: "doubao",
       prompt,
+      accountKey,
+      samplingBatchId,
       status: "running",
       startedAt: new Date().toISOString(),
       completedAt: null,
@@ -59,6 +66,15 @@ export class RunStore {
       citationState: null,
       expectedCitationCount: null,
       citations: [],
+      // Whether this run provably started from an empty conversation. Only confirmed
+      // runs belong in the headline mention-rate statistic.
+      conversationResetConfirmed: null,
+      // Brand detection result, kept alongside the raw answer for audit.
+      brandMentioned: null,
+      mentionCount: null,
+      firstMentionPosition: null,
+      matchedTerms: [],
+      brandDetectionVersion: null,
       errorCode: null,
       errorMessage: null,
       errorDetails: null,

@@ -23,13 +23,30 @@ export function loadConfig(overrides = {}) {
     overrides.browser ?? process.env.ONEGL_BROWSER ?? "camoufox"
   ).toLowerCase();
 
+  // An account is an anonymous identifier; its storage state is kept in a per-account
+  // file so several Doubao profiles stay independent of each other.
+  const accountKeyRaw = overrides.accountKey ?? process.env.ONEGL_ACCOUNT ?? null;
+  const accountKey =
+    accountKeyRaw == null || String(accountKeyRaw).trim() === ""
+      ? null
+      : String(accountKeyRaw).trim();
+  if (accountKey !== null && !/^[A-Za-z0-9._-]{1,64}$/.test(accountKey)) {
+    throw new Error(
+      `ONEGL_ACCOUNT ${JSON.stringify(accountKey)} is invalid; expected [A-Za-z0-9._-]{1,64}`,
+    );
+  }
+
   if (!new Set(["camoufox", "chromium", "firefox"]).has(browser)) {
     throw new Error("ONEGL_BROWSER must be camoufox, chromium, or firefox");
   }
 
   return {
     dataDir,
-    authStatePath: path.join(dataDir, "auth", "doubao.storage.json"),
+    accountKey,
+    authStatePath:
+      accountKey === null
+        ? path.join(dataDir, "auth", "doubao.storage.json")
+        : path.join(dataDir, "auth", "accounts", `${accountKey}.storage.json`),
     doubaoUrl:
       overrides.doubaoUrl ??
       process.env.DOUBAO_URL ??
