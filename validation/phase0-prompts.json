@@ -1,0 +1,218 @@
+{
+  "project": "phase0-doubao-validation",
+  "suiteId": "phase0-doubao-browser-spike-v1",
+  "prompts": [
+    {
+      "id": "P01-multi-current-nev",
+      "targetScenario": "multiple_visible_citations",
+      "tags": ["web-search", "multiple-citations", "current", "automotive"],
+      "reviewFocus": "完整 Answer、多引用数量、标题、URL、顺序",
+      "text": "截至今天，中国新能源汽车市场最值得关注的 6 个品牌有哪些？请结合近期销量、产品动作和市场表现说明，并引用公开网页资料支持关键事实。"
+    },
+    {
+      "id": "P02-multi-deliveries",
+      "targetScenario": "multiple_visible_citations",
+      "tags": ["web-search", "multiple-citations", "current", "numbers"],
+      "reviewFocus": "多个数字事实与来源的对应关系",
+      "text": "请对比比亚迪、吉利汽车、理想汽车、小鹏汽车、蔚来和小米汽车最近一个已公开月份的销量或交付量，并给出每个数字的公开来源。"
+    },
+    {
+      "id": "P03-multi-price-war",
+      "targetScenario": "multiple_visible_citations",
+      "tags": ["web-search", "multiple-citations", "current"],
+      "reviewFocus": "引用是否来自不同文章，顺序是否与 UI 一致",
+      "text": "2026 年以来中国新能源汽车价格竞争有哪些有代表性的变化？请列出至少 5 个具体事件或品牌动作，并用公开资料逐项说明。"
+    },
+    {
+      "id": "P04-multi-export",
+      "targetScenario": "multiple_visible_citations",
+      "tags": ["web-search", "multiple-citations", "current", "data"],
+      "reviewFocus": "数据型回答的引用完整性",
+      "text": "中国新能源汽车出口近期有哪些主要目的地和代表性品牌？请结合海关、行业机构或主流媒体公开数据给出概览，并注明来源。"
+    },
+    {
+      "id": "P05-multi-charging",
+      "targetScenario": "multiple_visible_citations",
+      "tags": ["web-search", "multiple-citations", "infrastructure"],
+      "reviewFocus": "来源块、展开后的完整来源数量",
+      "text": "截至目前，中国公共充电基础设施的发展情况如何？请从充电桩数量、运营商格局、快充趋势三个方面说明，并引用可核验的公开资料。"
+    },
+    {
+      "id": "P06-multi-l3-policy",
+      "targetScenario": "multiple_visible_citations",
+      "tags": ["web-search", "multiple-citations", "policy"],
+      "reviewFocus": "政策类来源标题和 URL",
+      "text": "中国 L3 级自动驾驶相关的准入、试点或道路测试政策目前进展到什么阶段？请按时间线梳理，并优先引用政府或权威机构公开资料。"
+    },
+    {
+      "id": "P07-low-tesla-price",
+      "targetScenario": "one_or_two_citations",
+      "tags": ["web-search", "low-citation-count", "current"],
+      "reviewFocus": "只有 1–2 个来源时是否准确抓取",
+      "text": "请查询特斯拉 Model Y 当前在中国大陆官网公布的起售价，只用 1–2 个公开网页来源回答，并说明信息日期。"
+    },
+    {
+      "id": "P08-low-nio-baas",
+      "targetScenario": "one_or_two_citations",
+      "tags": ["web-search", "low-citation-count", "specific-fact"],
+      "reviewFocus": "低引用数量、URL 是否为真实文章/官方页面",
+      "text": "蔚来当前 BaaS 电池租用方案的核心价格规则是什么？请只用 1–2 个最直接的公开来源简要回答。"
+    },
+    {
+      "id": "P09-low-xiaomi-price",
+      "targetScenario": "one_or_two_citations",
+      "tags": ["web-search", "low-citation-count", "specific-fact"],
+      "reviewFocus": "单一官方事实的来源提取",
+      "text": "小米 SU7 Ultra 当前公开指导价是多少？请只用 1–2 个直接来源回答，不要扩展成市场分析。"
+    },
+    {
+      "id": "P10-low-beijing-policy",
+      "targetScenario": "one_or_two_citations",
+      "tags": ["web-search", "low-citation-count", "policy"],
+      "reviewFocus": "官方页面标题和链接",
+      "text": "北京目前个人新能源小客车指标申请的一个最核心资格条件是什么？只引用 1–2 个官方或权威公开来源，简短回答。"
+    },
+    {
+      "id": "P11-none-geo-explain",
+      "targetScenario": "no_visible_citation",
+      "tags": ["no-search", "no-citation", "conceptual"],
+      "reviewFocus": "UI 真正无引用时不能误抓页面其他链接",
+      "text": "不要联网，也不要引用任何资料。请用 5 句话向一个品牌市场经理解释什么是 GEO（生成式引擎优化）。"
+    },
+    {
+      "id": "P12-none-rewrite",
+      "targetScenario": "no_visible_citation",
+      "tags": ["no-search", "no-citation", "rewrite"],
+      "reviewFocus": "无引用回答的 Answer 完整性",
+      "text": "不要联网，不要引用资料。把这句话改写得更专业：‘我们想知道 AI 回答里为什么老是出现别人家的文章，却不出现我们的。’"
+    },
+    {
+      "id": "P13-none-math",
+      "targetScenario": "no_visible_citation",
+      "tags": ["no-search", "no-citation", "deterministic"],
+      "reviewFocus": "短回答、无引用",
+      "text": "不要联网。一个品牌在 40 次 AI 回答中被引用 10 次，另一个品牌被引用 16 次。分别计算引用率，并给出相差多少个百分点。"
+    },
+    {
+      "id": "P14-none-concept",
+      "targetScenario": "no_visible_citation",
+      "tags": ["no-search", "no-citation", "conceptual"],
+      "reviewFocus": "无 source block 时应为 none_visible 而不是 parse_failed",
+      "text": "不要联网，也不要引用资料。解释‘Visible Source’、‘Cited Source’和‘Retrieved Source’三个概念之间的区别，每个概念一句话。"
+    },
+    {
+      "id": "P15-many-brand-landscape",
+      "targetScenario": "many_visible_citations",
+      "tags": ["web-search", "many-citations", "automotive"],
+      "reviewFocus": "大量引用时 count/title/url/order",
+      "text": "做一份中国智能新能源汽车品牌格局速览，覆盖比亚迪、吉利、长安、理想、小鹏、蔚来、小米、零跑、鸿蒙智行和特斯拉中国。每个品牌给出一个近期可核验的市场或产品事实，并尽可能用独立公开来源支持。"
+    },
+    {
+      "id": "P16-many-adas-suppliers",
+      "targetScenario": "many_visible_citations",
+      "tags": ["web-search", "many-citations", "industry"],
+      "reviewFocus": "来源较多时 reference overlay 是否完整",
+      "text": "梳理中国乘用车智能驾驶供应链中至少 8 家有代表性的公司或方案提供方，说明各自主要角色和近期公开动态，并为关键事实提供来源。"
+    },
+    {
+      "id": "P17-many-battery",
+      "targetScenario": "many_visible_citations",
+      "tags": ["web-search", "many-citations", "battery"],
+      "reviewFocus": "文章级来源去重不能误删不同来源",
+      "text": "请做中国动力电池行业近期格局概览，覆盖宁德时代、比亚迪以及其他主要厂商，结合装机量、技术路线和产能动态，尽可能引用多个独立公开来源。"
+    },
+    {
+      "id": "P18-many-charging-networks",
+      "targetScenario": "many_visible_citations",
+      "tags": ["web-search", "many-citations", "infrastructure"],
+      "reviewFocus": "UI 声明参考篇数与真实可见来源总数",
+      "text": "请比较中国主要公共充电运营商和车企自建充电网络的近期规模与特点，尽量覆盖至少 8 个独立公开网页来源；最终以你实际检索到的可靠资料为准。"
+    },
+    {
+      "id": "P19-inline-sales",
+      "targetScenario": "inline_citation_relation",
+      "tags": ["web-search", "inline-citation", "numbers"],
+      "reviewFocus": "inline marker、answerText 与来源关系",
+      "text": "请比较 3 家中国新能源车企最近一个已公布月份的销量或交付量。要求每个关键数字后面紧跟对应的来源引用，不要把所有来源只堆在回答末尾。"
+    },
+    {
+      "id": "P20-inline-brand-paragraphs",
+      "targetScenario": "inline_citation_relation",
+      "tags": ["web-search", "inline-citation", "automotive"],
+      "reviewFocus": "每段引用与来源的关系是否被正确捕获",
+      "text": "分别用一段话介绍理想、小鹏、蔚来和零跑近期最重要的一项产品或市场动态，并在每一段相关事实后直接给出对应公开来源。"
+    },
+    {
+      "id": "P21-inline-timeline",
+      "targetScenario": "inline_citation_relation",
+      "tags": ["web-search", "inline-citation", "timeline"],
+      "reviewFocus": "同一回答多处 inline citation 的顺序和 relation",
+      "text": "请按时间顺序列出 2026 年以来中国新能源汽车行业 5 个值得关注的公开事件。每一个事件后都紧跟对应来源。"
+    },
+    {
+      "id": "P22-inline-policy",
+      "targetScenario": "inline_citation_relation",
+      "tags": ["web-search", "inline-citation", "policy"],
+      "reviewFocus": "政策事实与引用关系",
+      "text": "总结当前中国新能源汽车购置税、以旧换新或相关消费支持政策中的 4 个关键点。每个政策事实后紧跟其官方或权威来源。"
+    },
+    {
+      "id": "P23-overlay-research",
+      "targetScenario": "reference_overlay",
+      "tags": ["web-search", "reference-overlay", "long-answer"],
+      "reviewFocus": "必须展开参考资料时能否抓全",
+      "text": "写一份较详细的中国新能源汽车消费趋势研究摘要，讨论价格带、插混/纯电选择、智能化、补能和品牌变化，约 1500–2000 字，并用多个近期公开来源支持主要判断。"
+    },
+    {
+      "id": "P24-overlay-export-report",
+      "targetScenario": "reference_overlay",
+      "tags": ["web-search", "reference-overlay", "long-answer", "export"],
+      "reviewFocus": "长回答完成判断与展开来源",
+      "text": "写一份较详细的中国新能源汽车出海现状分析，覆盖出口规模、主要市场、品牌案例、贸易政策和本地化生产，约 1500 字，引用多个公开来源。"
+    },
+    {
+      "id": "P25-long-model-comparison",
+      "targetScenario": "long_generation",
+      "tags": ["web-search", "long-answer", "comparison", "many-facts"],
+      "reviewFocus": "生成时间较久时 Answer 是否提前截断",
+      "text": "对比 8 款当前中国市场主流新能源车型的价格、续航/能耗、补能方式和智能驾驶能力，做成清晰表格并给出分析。关键规格必须引用公开来源，回答尽量完整详细。"
+    },
+    {
+      "id": "P26-long-urban-noa",
+      "targetScenario": "long_generation",
+      "tags": ["web-search", "long-answer", "adas"],
+      "reviewFocus": "长流式输出稳定判断、尾段不能丢失",
+      "text": "系统梳理中国市场城市 NOA/端到端智能驾驶的近期发展，覆盖至少 6 家车企或方案，说明技术路线、落地车型和公开进展，写成约 1800 字的结构化报告并附来源。"
+    },
+    {
+      "id": "P27-isolation-a",
+      "targetScenario": "conversation_isolation_seed",
+      "tags": ["isolation", "sequence-a", "web-search"],
+      "reviewFocus": "本条必须进入独立新对话，并产生唯一泄漏哨兵",
+      "text": "请在回答第一行原样输出 ONEGL-ISO-A-731，然后简要查询并说明当前中国新能源汽车市场一个近期公开趋势，附公开来源。"
+    },
+    {
+      "id": "P28-isolation-a-check",
+      "targetScenario": "conversation_isolation_check",
+      "tags": ["isolation", "sequence-a", "no-search"],
+      "reviewFocus": "新对话中不应残留上一条 Prompt/Answer",
+      "forbiddenLeakTokens": ["ONEGL-ISO-A-731"],
+      "text": "不要联网。用不超过 120 字解释为什么磷酸铁锂电池适合很多家用电动车。"
+    },
+    {
+      "id": "P29-isolation-b",
+      "targetScenario": "conversation_isolation_seed",
+      "tags": ["isolation", "sequence-b", "web-search"],
+      "reviewFocus": "再次验证连续运行的新对话动作",
+      "text": "请在回答第一行原样输出 ONEGL-ISO-B-284，然后查询一个近期公开的中国充电基础设施数据并简要解释，附来源。"
+    },
+    {
+      "id": "P30-isolation-b-check",
+      "targetScenario": "conversation_isolation_check",
+      "tags": ["isolation", "sequence-b", "no-search"],
+      "reviewFocus": "不得出现上一会话哨兵；人工检查 active conversation 只有本轮上下文",
+      "forbiddenLeakTokens": ["ONEGL-ISO-B-284"],
+      "text": "不要联网。用三点说明一个好的市场研究问题应该具备哪些特征。"
+    }
+  ]
+}
