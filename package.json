@@ -1,0 +1,23 @@
+{
+  "name": "onegl-doubao-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "China-first GEO / AI citation intelligence MVP for Doubao Web",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "auth": "node src/cli.js auth",
+    "run": "node src/cli.js run",
+    "batch": "node src/cli.js batch",
+    "runs": "node src/cli.js runs",
+    "serve": "node src/server.js",
+    "check": "node --check src/*.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "playwright-core": "^1.51.1"
+  }
+}
