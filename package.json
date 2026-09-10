@@ -14,7 +14,9 @@
     "batch": "node src/cli.js batch",
     "runs": "node src/cli.js runs",
     "serve": "node src/server.js",
-    "check": "node --check src/*.js"
+    "check": "node --check src/*.js && node -e \"JSON.parse(require('fs').readFileSync('validation/phase0-prompts.json','utf8'))\"",
+    "validate:scaffold": "node src/validate.js scaffold",
+    "validate:evaluate": "node src/validate.js evaluate"
   },
   "dependencies": {
     "dotenv": "^17.2.3",
