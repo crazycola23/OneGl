@@ -279,7 +279,23 @@ export async function startCleanConversation(page, config) {
     await page.keyboard.press("Backspace");
   });
   await page.waitForTimeout(400);
-  return { clickedNewConversation: clicked };
+
+  // Confirm the conversation really is empty before the prompt runs. Clicking 新对话
+  // only reports that a click happened; the SPA may still be swapping the composer.
+  // A run whose answer was shaped by leftover history would silently corrupt the
+  // mention-rate statistic, so this has to be verified rather than assumed.
+  const resetConfirmed = await waitForEmptyConversation(page, 15_000);
+  return { clickedNewConversation: clicked, resetConfirmed };
+}
+
+async function waitForEmptyConversation(page, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const candidates = await answerCandidates(page);
+    if (!candidates.some((item) => !item.isUser)) return true;
+    await page.waitForTimeout(400);
+  }
+  return false;
 }
 
 async function answerTexts(page) {
@@ -452,8 +468,16 @@ async function fillVerifiedPrompt(page, prompt, attempts = 3) {
       try {
         await box.fill(prompt);
         const actual = normalizeText(await readEditableValue(box));
-        if (actual === expected) return box;
-        lastFailure = { reason: "verification-mismatch", expected, actual };
+        if (actual !== expected) {
+          lastFailure = { reason: "verification-mismatch", expected, actual };
+        } else {
+          // Doubao can swap the composer right after fill and silently drop the text.
+          // Re-read after a short settle so we never click send on an empty box.
+          await page.waitForTimeout(700);
+          const settled = normalizeText(await readEditableValue(box).catch(() => ""));
+          if (settled === expected) return box;
+          lastFailure = { reason: "text-lost-after-fill" };
+        }
       } catch (error) {
         lastFailure = {
           reason: "fill-failed",
@@ -476,12 +500,17 @@ async function fillVerifiedPrompt(page, prompt, attempts = 3) {
 }
 
 async function submitPrompt(page, prompt) {
-  const box = await fillVerifiedPrompt(page, prompt);
+  await fillVerifiedPrompt(page, prompt);
 
   const baselineAnswers = await answerTexts(page);
   const sentByButton = await tryClickSend(page);
   if (!sentByButton) {
-    await box.press("Enter");
+    // Re-resolve the composer first: the node captured by the fill may already be
+    // detached, and pressing Enter on a stale handle just times out.
+    const fresh = await waitForTextbox(page, 10_000);
+    if (fresh) {
+      await fresh.press("Enter", { timeout: 5_000 }).catch(() => undefined);
+    }
   }
 
   if (!(await waitForSubmissionConfirmation(page, prompt, baselineAnswers))) {
@@ -868,6 +897,7 @@ export async function executeDoubaoPrompt(page, prompt, config) {
     citationDiagnostics: citationResult.diagnostics,
     submissionMethod: submission.sentByButton ? "send_button" : "enter_key",
     conversationReset: conversation.clickedNewConversation,
+    conversationResetConfirmed: conversation.resetConfirmed,
     currentUrl: page.url(),
   };
 }
