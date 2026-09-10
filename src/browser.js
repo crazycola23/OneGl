@@ -78,7 +78,16 @@ export async function launchBrowserSession(
 
   if (config.browser === "camoufox") {
     const options = await camoufoxLaunchOptions(config, forceHeadful);
-    browser = await firefox.launch(options);
+    // Camoufox's Python launcher returns snake_case keys, but Playwright's Node API
+    // expects camelCase ones. Passing the raw object makes Playwright ignore the
+    // Camoufox executable path and fail with "Executable doesn't exist".
+    browser = await firefox.launch({
+      executablePath: options.executable_path,
+      args: options.args,
+      env: options.env,
+      firefoxUserPrefs: options.firefox_user_prefs,
+      headless: options.headless ?? headless,
+    });
   } else {
     const launcher = config.browser === "chromium" ? chromium : firefox;
     browser = await launcher.launch({
