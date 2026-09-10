@@ -67,7 +67,9 @@ const PROMPT_POOL_UPSERT = `
     SET updated_at = now(),
         category = COALESCE(EXCLUDED.category, prompts.category),
         pool_version = COALESCE(EXCLUDED.pool_version, prompts.pool_version),
-        source = 'pool'
+        source = 'pool',
+        -- 重新导入池时把之前删除过的关键词恢复，避免「导入后仍然看不到」
+        deleted_at = NULL
   RETURNING id
 `;
 

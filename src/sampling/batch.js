@@ -11,10 +11,12 @@ import { generateSeed } from "./random.js";
  */
 
 export async function loadPool(pool, projectId) {
+  // 抽样只能来自当前项目自己的、已启用且未删除的关键词池。
+  // 这里是项目隔离的唯一入口，任何跨项目抽样都会先在这里失败。
   const { rows } = await pool.query(
     `SELECT id, prompt, category, pool_version
        FROM prompts
-      WHERE project_id = $1 AND enabled = true
+      WHERE project_id = $1 AND enabled = true AND deleted_at IS NULL
       ORDER BY prompt`,
     [projectId],
   );
@@ -91,12 +93,16 @@ export async function createSamplingBatch(
     const batchId = Number(batchResult.rows[0].id);
 
     for (const assignment of assignments) {
+      // 关键词正文同时写入快照：以后关键词被改名、禁用或删除，历史批次显示的
+      // 仍然是当时真正抽中的那句话。
       await client.query(
-        `INSERT INTO sampling_batch_prompts (batch_id, prompt_id, category, selection_index, account_key)
-         VALUES ($1, $2, $3, $4, $5)`,
+        `INSERT INTO sampling_batch_prompts
+           (batch_id, prompt_id, prompt_text, prompt_md5, category, selection_index, account_key)
+         VALUES ($1, $2, $3, md5($3), $4, $5, $6)`,
         [
           batchId,
           assignment.prompt.id,
+          assignment.prompt.text,
           assignment.prompt.category,
           assignment.selectionIndex,
           assignment.accountKey,
@@ -154,10 +160,11 @@ export async function loadBatch(pool, batchId) {
 
 export async function loadBatchAssignments(pool, batchId) {
   const { rows } = await pool.query(
+    // 优先读批次内快照，快照缺失时才回退到关键词池
     `SELECT sbp.selection_index, sbp.category, sbp.account_key,
-            p.id AS prompt_id, p.prompt
+            p.id AS prompt_id, COALESCE(sbp.prompt_text, p.prompt) AS prompt
        FROM sampling_batch_prompts sbp
-       JOIN prompts p ON p.id = sbp.prompt_id
+       LEFT JOIN prompts p ON p.id = sbp.prompt_id
       WHERE sbp.batch_id = $1
       ORDER BY sbp.selection_index`,
     [batchId],

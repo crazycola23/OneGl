@@ -41,8 +41,10 @@ export async function listProjects(pool) {
       SELECT p.id, p.name, p.description, p.target_brand,
              p.brand_aliases, p.brand_product_aliases, p.brand_exclude_patterns,
              p.created_at, p.updated_at,
-             (SELECT count(*) FROM prompts q WHERE q.project_id = p.id)                AS pool_size,
-             (SELECT count(*) FROM prompts q WHERE q.project_id = p.id AND q.enabled)  AS pool_enabled,
+             (SELECT count(*) FROM prompts q
+               WHERE q.project_id = p.id AND q.deleted_at IS NULL)                     AS pool_size,
+             (SELECT count(*) FROM prompts q
+               WHERE q.project_id = p.id AND q.enabled AND q.deleted_at IS NULL)       AS pool_enabled,
              (SELECT count(*) FROM sampling_batches b WHERE b.project_id = p.id)       AS batch_count,
              (SELECT count(*) FROM tracked_articles t WHERE t.project_id = p.id AND t.enabled) AS tracked_count,
              (SELECT count(*)
@@ -76,7 +78,7 @@ export async function poolByCategory(pool, projectId) {
               count(*) FILTER (WHERE enabled)      AS enabled,
               min(pool_version)                    AS pool_version
          FROM prompts
-        WHERE project_id = $1
+        WHERE project_id = $1 AND deleted_at IS NULL
         GROUP BY 1
         ORDER BY prompts DESC, category`,
       [projectId],
@@ -265,6 +267,48 @@ export async function sourceAggregates(pool, { projectId = null, batchId = null,
   ).rows;
 
   return { domains, articles, totals };
+}
+
+/** 新建项目。关键词池留空，由项目经理在关键词池页面人工录入。 */
+export async function createProject(pool, { name, description = null, targetBrand = null }) {
+  const trimmed = String(name ?? "").trim();
+  if (!trimmed) throw new Error("项目名称不能为空");
+
+  const { rows } = await pool.query(
+    `INSERT INTO projects (name, description, target_brand)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (name) DO NOTHING
+     RETURNING id`,
+    [trimmed, description, targetBrand],
+  );
+
+  if (rows[0]) return { id: Number(rows[0].id), created: true };
+
+  const existing = await pool.query("SELECT id FROM projects WHERE name = $1", [trimmed]);
+  if (!existing.rows[0]) throw new Error(`项目「${trimmed}」创建失败`);
+  return { id: Number(existing.rows[0].id), created: false };
+}
+
+export async function setProjectBrand(
+  pool,
+  { projectId, targetBrand, aliases = [], productAliases = [], excludePatterns = [] },
+) {
+  await pool.query(
+    `UPDATE projects
+        SET target_brand = $2,
+            brand_aliases = $3::jsonb,
+            brand_product_aliases = $4::jsonb,
+            brand_exclude_patterns = $5::jsonb,
+            updated_at = now()
+      WHERE id = $1`,
+    [
+      projectId,
+      targetBrand,
+      JSON.stringify(aliases),
+      JSON.stringify(productAliases),
+      JSON.stringify(excludePatterns),
+    ],
+  );
 }
 
 export async function batchDetail(pool, batchId) {
