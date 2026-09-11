@@ -251,7 +251,106 @@ export function batchesPage({ db, batches, projects, projectId }) {
 
 /* ------------------------------------------------------------------ 批次详情 */
 
-export function batchPage({ report, runs, sources }) {
+/**
+ * 后台执行面板：进度、开始/停止按钮与轮询脚本。
+ *
+ * 不引入 WebSocket —— 批次处于执行中时每 4 秒拉一次进度接口，刷新数字后原地更新；
+ * 批次进入终态时整页刷新一次，让报告区块也跟着更新。
+ */
+function executionPanel(batch, progress, queueReady) {
+  const counts = progress?.counts ?? {
+    requested: Number(batch.requested_jobs ?? 0),
+    completed: Number(batch.completed_jobs ?? 0),
+    failed: Number(batch.failed_jobs ?? 0),
+    skipped: Number(batch.skipped_jobs ?? 0),
+    waiting: 0,
+    active: 0,
+    done: Number(batch.completed_jobs ?? 0) + Number(batch.failed_jobs ?? 0) + Number(batch.skipped_jobs ?? 0),
+    percent: 0,
+  };
+  const isActive = ["queued", "running"].includes(batch.status);
+  const terminal = ["completed", "partial", "failed", "aborted"].includes(batch.status);
+
+  const controls = [];
+  if (!queueReady) {
+    controls.push(
+      `<span class="hint">未配置 <code>REDIS_URL</code>，后台队列不可用。可改用命令行：<code>npm run batch:run -- --batch ${batch.id}</code></span>`,
+    );
+  } else if (isActive) {
+    controls.push(`<form class="inline-form" method="post" action="/batches/${batch.id}/stop"
+        onsubmit="return confirm('确认停止监测？已完成的运行会保留，排队中的任务会被取消。');">
+      <button class="ghost danger" type="submit">停止监测</button></form>`);
+  } else {
+    controls.push(`<form class="inline-form" method="post" action="/batches/${batch.id}/start">
+      <button type="submit">${terminal ? "重新开始监测" : "开始监测"}</button></form>`);
+  }
+
+  const rows = [
+    ["总任务数", counts.requested, "p-requested"],
+    ["已完成", counts.done, "p-done"],
+    ["运行中", counts.active, "p-active"],
+    ["排队中", counts.waiting, "p-waiting"],
+    ["成功 / 部分成功", counts.completed, "p-completed"],
+    ["失败", counts.failed, "p-failed"],
+    ["跳过（账号暂停或人工停止）", counts.skipped, "p-skipped"],
+    ["进度", `${counts.percent}%`, "p-percent"],
+  ];
+
+  const table = `<table><tbody>${rows
+    .map(
+      ([label, value, id]) =>
+        `<tr><th style="width:220px">${escapeHtml(label)}</th><td id="${id}">${escapeHtml(String(value))}</td></tr>`,
+    )
+    .join("")}</tbody></table>`;
+
+  const poller = isActive
+    ? `<script>
+(function () {
+  const batchId = ${batch.id};
+  const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+  async function tick() {
+    try {
+      const res = await fetch("/api/batches/" + batchId + "/progress", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        const c = data.counts;
+        set("p-requested", c.requested); set("p-done", c.done); set("p-active", c.active);
+        set("p-waiting", c.waiting); set("p-completed", c.completed); set("p-failed", c.failed);
+        set("p-skipped", c.skipped); set("p-percent", c.percent + "%");
+        const bar = document.getElementById("p-bar");
+        if (bar) bar.style.width = c.percent + "%";
+        const status = document.getElementById("p-status");
+        if (status) status.textContent = data.statusLabel;
+        if (!data.active) { window.location.reload(); return; }
+      }
+    } catch (error) { /* 瞬时失败不打断轮询 */ }
+    setTimeout(tick, 4000);
+  }
+  setTimeout(tick, 3000);
+})();
+</script>`
+    : "";
+
+  return panel("后台执行", {
+    hint: isActive ? "执行中，页面每 4 秒刷新一次进度" : "由 Worker 独立进程执行，不会占用 Web 进程",
+    body: `<div class="panel-body padded">
+      <div class="grid" style="margin-bottom:14px">
+        <div class="metric"><div class="label">当前状态</div>
+          <div class="value" id="p-status" style="font-size:18px">${escapeHtml(statusLabel(batch.status))}</div>
+          <div class="hint">${escapeHtml(batch.queued_at ? `入队于 ${dateTime(batch.queued_at)}` : "尚未入队")}</div>
+        </div>
+        <div class="metric"><div class="label">完成进度</div>
+          <div class="value" id="p-percent">${escapeHtml(`${counts.percent}%`)}</div>
+          <div class="bar" style="margin-top:8px"><span id="p-bar" style="width:${counts.percent}%"></span></div>
+        </div>
+      </div>
+      ${table}
+      <div class="actions" style="margin-top:14px">${controls.join("")}</div>
+    </div>`,
+  }) + poller;
+}
+
+export function batchPage({ report, runs, sources, progress, queueReady }) {
   const { batch, runs: runStats, prompts, citations, tracked } = report;
 
   const header = metricGrid([
@@ -292,6 +391,18 @@ export function batchPage({ report, runs, sources }) {
     }),
   ]);
 
+  // 样本口径必须单列：请求数与有效数不一致时，绝不能让报告读起来像「基于请求数」。
+  const sampleCounts = progress?.counts ?? {
+    requested: runStats.assignmentsRun,
+    completed: runStats.valid,
+    failed: runStats.failed,
+    skipped: 0,
+  };
+  const invalidSamples = Math.max(
+    0,
+    Number(sampleCounts.requested) - Number(sampleCounts.completed),
+  );
+
   const sampling = kvList([
     ["项目", escapeHtml(batch.project_name)],
     ["目标品牌", escapeHtml(batch.target_brand ?? "未配置")],
@@ -309,6 +420,33 @@ export function batchPage({ report, runs, sources }) {
     `<h1>批次 #${batch.id}</h1>`,
     `<p class="lead">${escapeHtml(batch.name)} · 目标品牌 ${escapeHtml(batch.target_brand ?? "未配置")}</p>`,
     header,
+    executionPanel(batch, progress, queueReady),
+    panel("样本口径", {
+      hint: "核心指标的分母只使用有效样本，请求数不等于样本数",
+      body: dataTable({
+        columns: [
+          { label: "口径", render: (row) => escapeHtml(row.label) },
+          { label: "数量", align: "right", render: (row) => num(row.value) },
+          { label: "占比", align: "right", render: (row) => escapeHtml(pct(row.value, sampleCounts.requested)) },
+          { label: "说明", render: (row) => escapeHtml(row.hint) },
+        ],
+        rows: [
+          { label: "Requested Samples 请求样本", value: sampleCounts.requested, hint: "该批次总共安排的分配数" },
+          {
+            label: "Valid Samples 有效样本",
+            value: sampleCounts.completed,
+            hint: "成功/部分成功，且已确认从空会话开始",
+          },
+          {
+            label: "Invalid / Failed 无效样本",
+            value: invalidSamples,
+            hint: "失败、未确认新会话、空回答，以及因账号暂停而跳过的分配",
+          },
+          { label: "其中失败 Run", value: sampleCounts.failed, hint: "真正执行过但失败了" },
+          { label: "其中跳过", value: sampleCounts.skipped, hint: "未执行：账号被暂停，或人工停止批次" },
+        ],
+      }),
+    }),
     panel("抽样参数", {
       hint: "同一种子可完整复现本次抽样",
       body: sampling,
@@ -1160,6 +1298,146 @@ ${panel("被引用最多的文章", {
     rows: sources.articles,
     empty: "该项目还没有引用数据。",
   }),
+})}`,
+  });
+}
+
+/* ------------------------------------------------------------------ 账号状态 */
+
+const ACCOUNT_STATUS_LABELS = {
+  unknown: "未知",
+  healthy: "正常",
+  cooldown: "冷却中",
+  paused: "已暂停",
+  disabled: "已禁用",
+  login_required: "需要登录",
+  session_expired: "登录态失效",
+  verification_required: "需要人工验证",
+  access_restricted: "访问受限",
+  rate_limited: "触发频率限制",
+};
+
+const ACCOUNT_STATUS_TONES = {
+  healthy: "ok",
+  cooldown: "warn",
+  rate_limited: "warn",
+  paused: "warn",
+  disabled: "muted",
+  unknown: "muted",
+  login_required: "bad",
+  session_expired: "bad",
+  verification_required: "bad",
+  access_restricted: "bad",
+};
+
+function accountStatusBadge(status) {
+  return badge(ACCOUNT_STATUS_LABELS[status] ?? status ?? "未知", ACCOUNT_STATUS_TONES[status] ?? "muted");
+}
+
+export function accountsPage({ accounts, notice: noticeMessage }) {
+  const blocked = accounts.filter((account) =>
+    ["login_required", "session_expired", "verification_required", "access_restricted", "cooldown", "paused"].includes(
+      account.status,
+    ),
+  );
+
+  const rows = accounts.map((account) => ({
+    ...account,
+    run_count: Number(account.run_count),
+    run_count_today: Number(account.run_count_today),
+  }));
+
+  return layout({
+    title: "账号状态",
+    active: "accounts",
+    dbState: "数据库已连接",
+    body: `<h1>账号状态</h1>
+<p class="lead">每个账号使用独立的浏览器 Profile。这里只展示派生状态与计数，不显示 Cookie 或完整登录态——
+登录凭据始终只保存在服务器本地的 .onegl/auth/accounts/ 目录里。</p>
+${noticeMessage ? notice(escapeHtml(noticeMessage)) : ""}
+${
+  blocked.length
+    ? notice(
+        `有 ${blocked.length} 个账号需要处理：${blocked
+          .map((account) => `${account.account_key}（${ACCOUNT_STATUS_LABELS[account.status] ?? account.status}）`)
+          .join("、")}。涉及登录或人工验证的账号，自动任务已停止，请人工处理后点「恢复」。`,
+        "warn",
+      )
+    : ""
+}
+${metricGrid([
+  metric({ label: "账号总数", value: num(accounts.length) }),
+  metric({
+    label: "可用账号",
+    value: num(accounts.filter((account) => account.status === "healthy" && account.enabled).length),
+    hint: "状态正常且已启用",
+  }),
+  metric({
+    label: "需要人工处理",
+    value: num(
+      accounts.filter((account) =>
+        ["login_required", "session_expired", "verification_required", "access_restricted"].includes(account.status),
+      ).length,
+    ),
+    tone: accounts.some((account) =>
+      ["login_required", "session_expired", "verification_required", "access_restricted"].includes(account.status),
+    )
+      ? "bad"
+      : "ok",
+  }),
+  metric({
+    label: "今日运行合计",
+    value: num(rows.reduce((sum, row) => sum + row.run_count_today, 0)),
+  }),
+])}
+${panel(`账号（${accounts.length}）`, {
+  hint: "单账号同时只允许一个豆包会话任务",
+  body: dataTable({
+    columns: [
+      { label: "账号", render: (row) => `<code>${escapeHtml(row.account_key)}</code>` },
+      { label: "状态", render: (row) => accountStatusBadge(row.status) },
+      { label: "启用", render: (row) => (row.enabled ? badge("已启用", "ok") : badge("已禁用", "muted")) },
+      { label: "今日运行", align: "right", render: (row) => num(row.run_count_today) },
+      { label: "累计运行", align: "right", render: (row) => num(row.run_count) },
+      { label: "连续失败", align: "right", render: (row) => (row.consecutive_failures ? num(row.consecutive_failures) : "0") },
+      { label: "最近运行", className: "nowrap", render: (row) => dateTime(row.last_run_at) },
+      { label: "冷却至", className: "nowrap", render: (row) => dateTime(row.cooldown_until) },
+      {
+        label: "原因",
+        render: (row) =>
+          row.pause_reason
+            ? escapeHtml(row.pause_reason)
+            : row.last_error_code
+              ? escapeHtml(errorCodeLabel(row.last_error_code))
+              : "—",
+      },
+      {
+        label: "登录态",
+        render: (row) => (row.storage_state_present ? badge("已保存", "ok") : badge("未保存", "warn")),
+      },
+      {
+        label: "操作",
+        render: (row) => `<div class="actions">
+          <form class="inline-form" method="post" action="/accounts/${encodeURIComponent(row.account_key)}/resume">
+            <button class="ghost" type="submit">恢复</button></form>
+          <form class="inline-form" method="post" action="/accounts/${encodeURIComponent(row.account_key)}/toggle">
+            <input type="hidden" name="enabled" value="${row.enabled ? "false" : "true"}" />
+            <button class="ghost" type="submit">${row.enabled ? "禁用" : "启用"}</button></form>
+        </div>`,
+      },
+    ],
+    rows,
+    empty: "还没有账号。执行一次抽样或批量运行会自动登记账号。",
+  }),
+})}
+${panel("需要人工处理时怎么做", {
+  body: `<div class="panel-body padded">
+    <div>遇到下面几种情况，系统会立即停止该账号的自动任务，不会重试，也不会尝试绕过平台校验：</div>
+    <div class="hint">需要登录 / 登录态失效 / 需要人工验证 / 访问受限 —— 状态会标红，请在浏览器里人工处理后点「恢复」。</div>
+    <div class="hint">触发频率限制 —— 会自动进入冷却，冷却结束后可继续使用。</div>
+    ${cmd("npm run auth -- --account account_01", "重新登录某个账号（会打开浏览器窗口，登录态保存在本地）")}
+    ${cmd("npm run worker", "启动后台采集 Worker（独立进程）")}
+  </div>`,
 })}`,
   });
 }

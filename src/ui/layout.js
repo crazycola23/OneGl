@@ -7,6 +7,7 @@ const NAV = [
   ["/runs", "运行记录", "runs"],
   ["/sources", "引用来源", "sources"],
   ["/projects", "项目配置", "projects"],
+  ["/accounts", "账号状态", "accounts"],
 ];
 
 function navLink(href, label, isActive) {

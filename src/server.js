@@ -22,6 +22,9 @@ import {
   trackedArticles,
 } from "./db/dashboard.js";
 import { ensureAccounts } from "./db/persist.js";
+import { resumeAccount, setAccountEnabled } from "./accounts/safety.js";
+import { batchProgress, enqueueBatch, stopBatch } from "./queue/batches.js";
+import { checkRedis, isQueueConfigured } from "./queue/connection.js";
 import {
   addKeywords,
   countActiveKeywords,
@@ -32,6 +35,7 @@ import {
 } from "./project/keywords.js";
 import { createSamplingBatch } from "./sampling/batch.js";
 import {
+  accountsPage,
   batchPage,
   batchesPage,
   errorPage,
@@ -92,6 +96,8 @@ async function readLocalRun(runId) {
     return null;
   }
 }
+
+import { statusLabel } from "./ui/format.js";
 
 /** 本地产物里的引用字段名与数据库列名不同，统一成页面使用的形状。 */
 function normalizeLocalCitations(citations) {
@@ -195,7 +201,35 @@ async function handleBatches(searchParams) {
 
 async function handleBatch(batchId) {
   if (!dbState.ready) throw new Error("未连接数据库，无法读取批次详情");
-  return batchPage(await batchDetail(pool, batchId));
+  const detail = await batchDetail(pool, batchId);
+  const progress = await batchProgress(pool, batchId).catch(() => null);
+  return batchPage({ ...detail, progress, queueReady: isQueueConfigured() });
+}
+
+async function handleAccounts(searchParams) {
+  if (!dbState.ready) {
+    return accountsPage({
+      accounts: [],
+      notice: "未连接数据库，无法读取账号状态。",
+    });
+  }
+  return accountsPage({
+    accounts: await listAccounts(pool),
+    notice: readNotice(searchParams)?.message ?? null,
+  });
+}
+
+async function handleBatchProgress(batchId) {
+  if (!dbState.ready) return null;
+  const progress = await batchProgress(pool, batchId);
+  if (!progress) return null;
+  return {
+    batchId: progress.batch.id,
+    status: progress.batch.status,
+    statusLabel: statusLabel(progress.batch.status),
+    active: progress.active,
+    counts: progress.counts,
+  };
 }
 
 async function handleRuns(searchParams) {
@@ -434,6 +468,57 @@ async function handleCreateBatch(res, projectId, form) {
   );
 }
 
+async function handleStartBatch(res, batchId) {
+  const result = await enqueueBatch(pool, batchId);
+  if (!result.started) {
+    return redirectWithNotice(res, `/batches/${batchId}`, `未启动：${result.reason}`, "warn");
+  }
+  return redirectWithNotice(
+    res,
+    `/batches/${batchId}`,
+    `已入队 ${result.enqueued} 个任务，覆盖账号 ${result.accounts.join("、")}。请确认 Worker 正在运行（npm run worker）。`,
+  );
+}
+
+async function handleStopBatch(res, batchId) {
+  const result = await stopBatch(pool, batchId);
+  return redirectWithNotice(
+    res,
+    `/batches/${batchId}`,
+    result.stopped
+      ? `已停止监测：取消排队任务 ${result.removed} 个。已在执行的浏览器任务会安全结束，已完成的运行全部保留。`
+      : `未停止：${result.reason}`,
+    result.stopped ? "ok" : "warn",
+  );
+}
+
+async function handleAccountAction(res, accountKey, action, form) {
+  const back = "/accounts";
+
+  if (action === "resume") {
+    const ok = await resumeAccount(pool, accountKey);
+    return redirectWithNotice(
+      res,
+      back,
+      ok ? `账号 ${accountKey} 已恢复，可以继续派发任务。` : `未找到账号 ${accountKey}。`,
+      ok ? "ok" : "warn",
+    );
+  }
+
+  if (action === "toggle") {
+    const enabled = form.enabled !== "false";
+    const ok = await setAccountEnabled(pool, accountKey, enabled);
+    return redirectWithNotice(
+      res,
+      back,
+      ok ? `账号 ${accountKey} 已${enabled ? "启用" : "禁用"}。` : `未找到账号 ${accountKey}。`,
+      ok ? "ok" : "warn",
+    );
+  }
+
+  throw new Error(`未知的账号操作：${action}`);
+}
+
 async function handlePost(req, res, pathname) {
   if (!dbState.ready) throw new Error("未连接数据库，无法执行写入操作");
   if (!sameOrigin(req)) {
@@ -444,6 +529,19 @@ async function handlePost(req, res, pathname) {
   const form = await readFormBody(req);
 
   if (pathname === "/projects") return handleCreateProject(res, form);
+
+  const batchAction = pathname.match(/^\/batches\/(\d+)\/(start|stop)$/);
+  if (batchAction) {
+    const batchId = Number(batchAction[1]);
+    return batchAction[2] === "start"
+      ? handleStartBatch(res, batchId)
+      : handleStopBatch(res, batchId);
+  }
+
+  const accountAction = pathname.match(/^\/accounts\/([A-Za-z0-9._-]+)\/(resume|toggle)$/);
+  if (accountAction) {
+    return handleAccountAction(res, accountAction[1], accountAction[2], form);
+  }
 
   const keywordMatch = pathname.match(/^\/projects\/(\d+)\/keywords$/);
   if (keywordMatch) return handleAddKeywords(res, Number(keywordMatch[1]), form);
@@ -497,6 +595,8 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/sources") return send(res, 200, await handleSources(searchParams));
 
+    if (pathname === "/accounts") return send(res, 200, await handleAccounts(searchParams));
+
     if (pathname === "/projects") return send(res, 200, await handleProjects(searchParams));
     const projectTab = pathname.match(/^\/projects\/(\d+)(?:\/(keywords|sampling|runs|sources))?$/);
     if (projectTab) {
@@ -530,6 +630,20 @@ const server = http.createServer(async (req, res) => {
       const batches = dbState.ready ? await listBatches(pool, { limit: 200 }) : [];
       return send(res, 200, JSON.stringify(batches, null, 2), "application/json; charset=utf-8");
     }
+    const apiProgress = pathname.match(/^\/api\/batches\/(\d+)\/progress$/);
+    if (apiProgress) {
+      const progress = await handleBatchProgress(Number(apiProgress[1]));
+      if (!progress) {
+        return send(
+          res,
+          404,
+          JSON.stringify({ error: "批次不存在或数据库未连接" }),
+          "application/json; charset=utf-8",
+        );
+      }
+      return send(res, 200, JSON.stringify(progress), "application/json; charset=utf-8");
+    }
+
     const apiBatch = pathname.match(/^\/api\/batches\/(\d+)$/);
     if (apiBatch) {
       if (!dbState.ready) {

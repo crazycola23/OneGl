@@ -107,8 +107,14 @@ export async function trackedArticles(pool, projectId) {
 export async function listAccounts(pool) {
   return (
     await pool.query(`
-      SELECT a.account_key, a.provider, a.enabled, a.last_health_status, a.last_health_checked_at,
-             (SELECT count(*) FROM runs r WHERE r.account_key = a.account_key) AS run_count
+      SELECT a.account_key, a.provider, a.enabled, a.status, a.last_health_status,
+             a.last_health_checked_at, a.last_run_at, a.runs_today, a.runs_today_date,
+             a.consecutive_failures, a.cooldown_until, a.paused_at, a.pause_reason,
+             a.last_error_code, a.storage_state_present,
+             (SELECT count(*) FROM runs r WHERE r.account_key = a.account_key) AS run_count,
+             (SELECT count(*) FROM runs r
+               WHERE r.account_key = a.account_key
+                 AND r.started_at::date = CURRENT_DATE) AS run_count_today
         FROM accounts a
        ORDER BY a.account_key
     `)
@@ -121,6 +127,8 @@ export async function listBatches(pool, { projectId = null, limit = 50 } = {}) {
       `SELECT b.id, b.name, b.provider, b.status, b.pool_version, b.pool_size, b.sample_size,
               b.sampling_method, b.sampling_seed, b.repeats, b.account_keys,
               b.started_at, b.finished_at, b.created_at,
+              b.queued_at, b.aborted_at, b.requested_jobs, b.completed_jobs, b.failed_jobs,
+              b.skipped_jobs, b.last_heartbeat_at,
               p.name AS project_name, p.target_brand,
               count(r.id)                                                                AS runs_total,
               count(r.id) FILTER (WHERE ${VALID_RUN_SQL})                                AS valid_runs,
