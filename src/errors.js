@@ -7,6 +7,9 @@ export const ErrorCode = Object.freeze({
   SUBMISSION_FAILED: "DOUBAO_SUBMISSION_FAILED",
   ANSWER_NOT_FOUND: "ANSWER_NOT_FOUND",
   CITATION_PARSE_FAILED: "CITATION_PARSE_FAILED",
+  // Raised before submit: the run refused to ask the prompt because a fresh, empty
+  // conversation could not be confirmed. See executeDoubaoPrompt.
+  CONVERSATION_RESET_FAILED: "DOUBAO_CONVERSATION_RESET_FAILED",
   PAGE_CHANGED: "PAGE_CHANGED",
   RATE_LIMITED: "RATE_LIMITED",
   NETWORK_ERROR: "NETWORK_ERROR",

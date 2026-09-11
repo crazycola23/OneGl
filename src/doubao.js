@@ -284,7 +284,8 @@ export async function startCleanConversation(page, config) {
   // only reports that a click happened; the SPA may still be swapping the composer.
   // A run whose answer was shaped by leftover history would silently corrupt the
   // mention-rate statistic, so this has to be verified rather than assumed.
-  const resetConfirmed = await waitForEmptyConversation(page, 15_000);
+  const settleMs = config?.conversationSettleMs ?? 15_000;
+  const resetConfirmed = await waitForEmptyConversation(page, settleMs);
   return { clickedNewConversation: clicked, resetConfirmed };
 }
 
@@ -881,9 +882,31 @@ export async function extractVisibleCitations(page) {
   };
 }
 
+/**
+ * Fail closed on the conversation reset.
+ *
+ * This is an execution-stage gate, not a reporting filter: an answer produced on top of
+ * a previous conversation measures P(mention | prompt + history), which is not the
+ * quantity this tool exists to measure. Excluding such runs later would still mean the
+ * prompt was sent, so the check has to happen before submit.
+ */
+export function assertFreshConversation(conversation, currentUrl = null) {
+  if (conversation?.resetConfirmed === true) return;
+  throw new DoubaoMvpError(
+    ErrorCode.CONVERSATION_RESET_FAILED,
+    "Could not confirm a fresh, empty conversation; the prompt was deliberately not sent.",
+    {
+      clickedNewConversation: conversation?.clickedNewConversation ?? false,
+      resetConfirmed: conversation?.resetConfirmed ?? null,
+      currentUrl,
+    },
+  );
+}
+
 export async function executeDoubaoPrompt(page, prompt, config) {
   await requireHealthySession(page, config);
   const conversation = await startCleanConversation(page, config);
+  assertFreshConversation(conversation, page.url());
   await requireHealthySession(page, config);
   const submission = await submitPrompt(page, prompt);
   const answer = await waitForAnswer(page, submission.baselineAnswers, config);

@@ -68,6 +68,11 @@ export function loadConfig(overrides = {}) {
     loginTimeoutMs:
       overrides.loginTimeoutMs ??
       intEnv("DOUBAO_LOGIN_TIMEOUT_MS", 300_000, 30_000),
+    // How long to wait for the conversation to prove it is empty before refusing to
+    // submit. Overridable so tests can exercise the fail-closed path without waiting.
+    conversationSettleMs:
+      overrides.conversationSettleMs ??
+      intEnv("DOUBAO_CONVERSATION_SETTLE_MS", 15_000, 0),
     port: overrides.port ?? intEnv("ONEGL_PORT", 3_100, 1),
   };
 }
