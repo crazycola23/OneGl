@@ -61,8 +61,12 @@ async function scaffold(args) {
 
   const reviewRuns = [];
   for (const run of runs) {
+    // Artifacts live under attempts/<n>/ once a run has been retried, so the recorded
+    // artifact directory is the source of truth rather than the run root.
+    const artifactBase = run.artifactPath ?? run.debugPath;
+    const artifactDir = run.artifactPath ? path.resolve(run.artifactPath) : store.runDir(run.id);
     const domObservation = await readJsonIfPresent(
-      path.join(store.runDir(run.id), "dom-observation.json"),
+      path.join(artifactDir, "dom-observation.json"),
     );
     const forbiddenLeakTokens = run.validation?.forbiddenLeakTokens || [];
     const leakedTokens = forbiddenLeakTokens.filter((token) =>
@@ -78,11 +82,11 @@ async function scaffold(args) {
       prompt: run.prompt,
       artifacts: {
         run: path.join(run.debugPath, "run.json"),
-        screenshot: path.join(run.debugPath, "screenshot.png"),
-        pageHtml: path.join(run.debugPath, "page.html"),
-        answer: path.join(run.debugPath, "answer.md"),
-        citations: path.join(run.debugPath, "citations.json"),
-        domObservation: path.join(run.debugPath, "dom-observation.json"),
+        screenshot: path.join(artifactBase, "screenshot.png"),
+        pageHtml: path.join(artifactBase, "page.html"),
+        answer: path.join(artifactBase, "answer.md"),
+        citations: path.join(artifactBase, "citations.json"),
+        domObservation: path.join(artifactBase, "dom-observation.json"),
       },
       captured: {
         status: run.status,

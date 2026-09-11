@@ -43,6 +43,19 @@ export class RunStore {
     return path.join(this.runDir(runId), "run.json");
   }
 
+  /** 单次尝试的产物目录：attempts/<n>/，不同 attempt 的现场互不覆盖。 */
+  attemptDir(runId, attempt) {
+    if (!Number.isInteger(attempt) || attempt < 1) {
+      throw new Error(`Invalid attempt: ${JSON.stringify(attempt)}`);
+    }
+    return path.join(this.runDir(runId), "attempts", String(attempt));
+  }
+
+  /** 产物目录的仓库相对路径，用于写进 run.json 与数据库。 */
+  attemptPath(runId, attempt) {
+    return path.relative(process.cwd(), this.attemptDir(runId, attempt));
+  }
+
   async createRun({
     prompt,
     project = "default",
@@ -50,13 +63,27 @@ export class RunStore {
     samplingBatchId = null,
     runToken = null,
     jobId = null,
+    attempt = 1,
     runId: explicitRunId = null,
   }) {
     await this.init();
+    if (!Number.isInteger(attempt) || attempt < 1) {
+      throw new Error(`attempt must be a positive integer, received ${JSON.stringify(attempt)}`);
+    }
+
     // 批次任务使用确定性 id，队列重试时复用同一个目录与同一条记录，
     // 因此不会产生重复 Run。
     const runId = explicitRunId ?? `run_${safeTimestamp()}_${randomUUID().slice(0, 8)}`;
-    await mkdir(this.runDir(runId), { recursive: false }).catch(() => undefined);
+    await mkdir(this.runDir(runId), { recursive: true });
+
+    // 重试会以同一个 runId 重新进入。Run 记录与 run.json 故意复用，但上一次尝试的
+    // 现场必须保留：每次尝试把产物写进 attempts/<n>/，run.json 只记录历史与最终结果，
+    // 不会被下一次尝试覆盖掉失败证据。
+    const previous = await this.readRun(runId).catch(() => null);
+    const attempts = [...new Set([...(previous?.attempts ?? []), attempt])].sort(
+      (a, b) => a - b,
+    );
+
     const run = {
       id: runId,
       project,
@@ -66,9 +93,12 @@ export class RunStore {
       samplingBatchId,
       runToken,
       jobId,
-      attempt: 1,
-      status: "running",
-      startedAt: new Date().toISOString(),
+      // 当前 attempt，以及这个 Run 经历过的全部 attempt
+      attempt,
+      attempts,
+      attemptStartedAt: new Date().toISOString(),
+      // 整个 Run 的首次开始时间，重试时不重置
+      startedAt: previous?.startedAt ?? new Date().toISOString(),
       completedAt: null,
       answer: null,
       citationState: null,
@@ -87,6 +117,8 @@ export class RunStore {
       errorMessage: null,
       errorDetails: null,
       currentUrl: null,
+      // 当前（最新）attempt 的产物目录
+      artifactPath: this.attemptPath(runId, attempt),
       debugPath: path.relative(process.cwd(), this.runDir(runId)),
     };
     await this.writeRun(run);
@@ -107,11 +139,13 @@ export class RunStore {
     return next;
   }
 
-  async writeArtifact(runId, name, data) {
+  async writeAttemptArtifact(runId, attempt, name, data) {
     if (!/^[A-Za-z0-9._-]+$/.test(name)) {
       throw new Error("Invalid artifact name");
     }
-    const target = path.join(this.runDir(runId), name);
+    const dir = this.attemptDir(runId, attempt);
+    await mkdir(dir, { recursive: true });
+    const target = path.join(dir, name);
     await writeFile(target, data);
     return target;
   }

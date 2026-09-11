@@ -12,22 +12,28 @@ import { ErrorCode, normalizeError } from "../errors.js";
  * 品牌检测、PostgreSQL 落库全部复用同一份实现，没有第二套采集逻辑。
  */
 
-export async function captureArtifacts(store, runId, page, prompt = null) {
+export async function captureArtifacts(store, runId, page, prompt = null, attempt = 1) {
   if (!page) return;
   try {
-    await store.writeArtifact(runId, "page.html", await page.content());
+    await store.writeAttemptArtifact(runId, attempt, "page.html", await page.content());
   } catch {
     // Debug capture must never hide the primary run error.
   }
   try {
-    await store.writeArtifact(runId, "screenshot.png", await page.screenshot({ fullPage: true }));
+    await store.writeAttemptArtifact(
+      runId,
+      attempt,
+      "screenshot.png",
+      await page.screenshot({ fullPage: true }),
+    );
   } catch {
     // Same rule as above.
   }
   try {
     const observation = await captureDomObservation(page, { prompt });
-    await store.writeArtifact(
+    await store.writeAttemptArtifact(
       runId,
+      attempt,
       "dom-observation.json",
       `${JSON.stringify(observation, null, 2)}\n`,
     );
@@ -78,6 +84,8 @@ export async function runOnePrompt({
   const samplingBatchId = context.samplingBatchId ?? null;
   const runToken = context.runToken ?? null;
   const jobId = context.jobId ?? null;
+  // 队列重试时传入真实 attempt；命令行单次运行没有这个概念，固定为 1。
+  const attempt = Number.isInteger(context.attempt) && context.attempt > 0 ? context.attempt : 1;
 
   const run = await store.createRun({
     runId,
@@ -87,19 +95,23 @@ export async function runOnePrompt({
     samplingBatchId,
     runToken,
     jobId,
+    attempt,
   });
   if (validation) await store.updateRun(run.id, { validation });
 
+  // 本次尝试的产物目录（相对仓库根），与函数入参 artifactPath（调用方指定）区分开。
+  const attemptArtifactPath = store.attemptPath(run.id, attempt);
   let saved = null;
   let normalized = null;
   let ok = false;
 
   try {
     const result = await executeDoubaoPrompt(page, prompt, config);
-    await captureArtifacts(store, run.id, page, prompt);
-    await store.writeArtifact(run.id, "answer.md", `${result.answer}\n`);
-    await store.writeArtifact(
+    await captureArtifacts(store, run.id, page, prompt, attempt);
+    await store.writeAttemptArtifact(run.id, attempt, "answer.md", `${result.answer}\n`);
+    await store.writeAttemptArtifact(
       run.id,
+      attempt,
       "citations.json",
       `${JSON.stringify(result.citations, null, 2)}\n`,
     );
@@ -118,6 +130,8 @@ export async function runOnePrompt({
       conversationReset: result.conversationReset,
       conversationResetConfirmed: result.conversationResetConfirmed ?? null,
       currentUrl: result.currentUrl,
+      attempt,
+      artifactPath: attemptArtifactPath,
       ...applyBrandDetection(context.brandRules ?? null, result.answer),
       errorCode: partial ? ErrorCode.CITATION_PARSE_FAILED : null,
       errorMessage: partial
@@ -125,13 +139,23 @@ export async function runOnePrompt({
         : null,
     });
   } catch (error) {
-    await captureArtifacts(store, run.id, page, prompt);
+    await captureArtifacts(store, run.id, page, prompt, attempt);
     normalized = normalizeError(error);
     const partialAnswer = normalized.details?.partialAnswer || null;
-    await store.writeArtifact(run.id, "answer.md", partialAnswer ? `${partialAnswer}\n` : "");
-    await store.writeArtifact(run.id, "citations.json", "[]\n");
+    await store.writeAttemptArtifact(
+      run.id,
+      attempt,
+      "answer.md",
+      partialAnswer ? `${partialAnswer}\n` : "",
+    );
+    await store.writeAttemptArtifact(run.id, attempt, "citations.json", "[]\n");
     if (partialAnswer) {
-      await store.writeArtifact(run.id, "partial-answer.md", `${partialAnswer}\n`);
+      await store.writeAttemptArtifact(
+        run.id,
+        attempt,
+        "partial-answer.md",
+        `${partialAnswer}\n`,
+      );
     }
     saved = await store.updateRun(run.id, {
       status: "failed",
@@ -141,7 +165,13 @@ export async function runOnePrompt({
       errorMessage: normalized.message,
       errorDetails: normalized.details,
       currentUrl: page?.url?.() || null,
-      attempt: (run.attempt ?? 1),
+      attempt,
+      artifactPath: attemptArtifactPath,
+      // 这条失败恰恰说明没有独立新会话，明确记 false，而不是留空让统计去猜。
+      conversationResetConfirmed:
+        normalized.code === ErrorCode.CONVERSATION_RESET_FAILED
+          ? false
+          : (run.conversationResetConfirmed ?? null),
     });
   }
 
@@ -155,12 +185,12 @@ export async function runOnePrompt({
         run: saved,
         project,
         prompt: validation ? { externalId: validation.caseId ?? null } : null,
-        artifactPath: artifactPath ?? saved.debugPath ?? null,
+        artifactPath: artifactPath ?? attemptArtifactPath,
         accountKey,
         samplingBatchId,
         runToken,
         jobId,
-        attempt: saved.attempt ?? 1,
+        attempt: saved.attempt ?? attempt,
       });
       saved = await store.updateRun(saved.id, { dbStatus: "success", db: persistSummary });
     } catch (error) {
