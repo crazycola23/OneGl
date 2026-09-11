@@ -1,4 +1,5 @@
 import "dotenv/config";
+import os from "node:os";
 import { DelayedError, UnrecoverableError, Worker } from "bullmq";
 import {
   ACCOUNT_BLOCKING_CODES,
@@ -20,6 +21,11 @@ import { loadBrandRules } from "./project/init.js";
 import { accountQueueName, closeRedis, getRedis, isQueueConfigured } from "./queue/connection.js";
 import { refreshBatchProgress, runIdFor, runTokenFor } from "./queue/batches.js";
 import { planUnavailableJob } from "./queue/job-plan.js";
+import {
+  WORKER_HEARTBEAT_INTERVAL_MS,
+  WORKER_HEARTBEAT_TTL_SECONDS,
+  workerHeartbeatKey,
+} from "./system/status.js";
 import { RunStore } from "./store.js";
 
 /**
@@ -57,6 +63,43 @@ function log(fields) {
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .map(([key, value]) => `${key}=${value}`);
   console.log(`[worker] ${parts.join(" ")}`);
+}
+
+/* ------------------------------------------------------------------ 心跳 */
+
+const workerStartedAt = new Date().toISOString();
+let listeningAccounts = [];
+
+/**
+ * Web 端靠这个键判断 Worker 是否在线 —— Redis 在线不等于 Worker 在线。
+ *
+ * 只写派生状态：进程号、主机名、启动时间、监听的账号列表。
+ * 绝不写入 Cookie、storageState、session token 或任何凭据。
+ *
+ * 键带 TTL：Worker 崩溃后会自动过期，不会留下一个「假装在线」的心跳。
+ */
+async function publishHeartbeat() {
+  if (shuttingDown) return;
+  try {
+    const payload = {
+      at: new Date().toISOString(),
+      pid: process.pid,
+      hostname: os.hostname(),
+      startedAt: workerStartedAt,
+      accounts: listeningAccounts,
+      accountCount: listeningAccounts.length,
+      concurrencyPerAccount: WORKER_CONCURRENCY_PER_ACCOUNT,
+      accountParallelism: safety.accountParallelism,
+    };
+    await getRedis().set(
+      workerHeartbeatKey(),
+      JSON.stringify(payload),
+      "EX",
+      WORKER_HEARTBEAT_TTL_SECONDS,
+    );
+  } catch (error) {
+    // 心跳失败不能影响采集本身，下一轮会重试。
+  }
 }
 
 /** 每个账号一个浏览器会话，复用以免每次任务都重启一次 Camoufox。 */
@@ -372,7 +415,8 @@ async function discoverAccounts() {
   for (const row of rows) {
     await startWorkerFor(row.account_key);
   }
-  return rows.map((row) => row.account_key);
+  listeningAccounts = rows.map((row) => row.account_key);
+  return listeningAccounts;
 }
 
 async function shutdown(signal) {
@@ -384,6 +428,10 @@ async function shutdown(signal) {
   workers.clear();
   await Promise.all([...sessions.keys()].map((accountKey) => closeSession(accountKey)));
   await pool.end().catch(() => undefined);
+  // 主动删掉心跳，界面立刻就能反映「Worker 已停止」，不用等 TTL 过期。
+  await getRedis()
+    .del(workerHeartbeatKey())
+    .catch(() => undefined);
   await closeRedis();
   process.exit(0);
 }
@@ -404,6 +452,13 @@ async function main() {
   console.log(
     `  账号安全      : 每日上限 ${safety.accountDailyLimit} 次，连续失败 ${safety.maxConsecutiveFailures} 次冷却 ${safety.cooldownMinutes} 分钟`,
   );
+  console.log(`  心跳          : ${workerHeartbeatKey()}（每 ${WORKER_HEARTBEAT_INTERVAL_MS / 1000} 秒）`);
+
+  // Web 端靠心跳判断 Worker 是否在线；Redis 在线不代表 Worker 在线。
+  await publishHeartbeat();
+  setInterval(() => {
+    publishHeartbeat().catch(() => undefined);
+  }, WORKER_HEARTBEAT_INTERVAL_MS).unref();
 
   // 新账号在批量入队时才创建，定期扫描以便自动接入
   setInterval(() => {

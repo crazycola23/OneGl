@@ -155,18 +155,42 @@ export async function listBatches(pool, { projectId = null, limit = 50 } = {}) {
   ).rows;
 }
 
+/** 当前处于执行中（排队或运行）的批次，供总览与批次页展示。 */
+export async function listActiveBatches(pool) {
+  return (
+    await pool.query(
+      `SELECT b.id, b.name, b.status, b.project_id,
+              b.requested_jobs, b.completed_jobs, b.failed_jobs, b.skipped_jobs,
+              b.queued_at, b.started_at, b.last_heartbeat_at, b.account_keys,
+              p.name AS project_name, p.target_brand
+         FROM sampling_batches b
+         JOIN projects p ON p.id = b.project_id
+        WHERE b.status IN ('queued', 'running')
+        ORDER BY b.started_at DESC NULLS LAST, b.id DESC`,
+    )
+  ).rows;
+}
+
 export async function listRuns(
   pool,
-  { projectId = null, batchId = null, status = null, limit = 120 } = {},
+  {
+    projectId = null,
+    batchId = null,
+    status = null,
+    accountKey = null,
+    errorCode = null,
+    limit = 120,
+  } = {},
 ) {
   return (
     await pool.query(
       `SELECT r.id, r.local_run_id, r.status, r.account_key, r.sampling_batch_id,
-              r.started_at, r.finished_at, r.brand_mentioned, r.mention_count,
-              r.expected_citation_count, r.captured_citation_count, r.citation_state,
-              r.conversation_reset, r.conversation_reset_confirmed, r.error_code,
-              pr.prompt, pj.name AS project_name, pj.id AS project_id,
-              sb.name AS batch_name, sbp.category
+             r.started_at, r.finished_at, r.brand_mentioned, r.mention_count,
+             r.expected_citation_count, r.captured_citation_count, r.citation_state,
+             r.conversation_reset, r.conversation_reset_confirmed, r.error_code,
+             r.attempt, length(r.answer) AS answer_chars,
+             pr.prompt, pj.name AS project_name, pj.id AS project_id,
+             sb.name AS batch_name, sbp.category
          FROM runs r
          JOIN prompts pr ON pr.id = r.prompt_id
          JOIN projects pj ON pj.id = pr.project_id
@@ -182,11 +206,30 @@ export async function listRuns(
         WHERE ($1::bigint IS NULL OR pj.id = $1)
           AND ($2::bigint IS NULL OR r.sampling_batch_id = $2)
           AND ($3::text IS NULL OR r.status = $3)
+          AND ($4::text IS NULL OR r.account_key = $4)
+          AND ($5::text IS NULL OR r.error_code = $5)
         ORDER BY r.started_at DESC
-        LIMIT $4`,
-      [projectId, batchId, status, limit],
+        LIMIT $6`,
+      [projectId, batchId, status, accountKey, errorCode, limit],
     )
   ).rows;
+}
+
+/** 筛选下拉需要的去重取值，避免让操作者手打错误码。 */
+export async function runFilterOptions(pool) {
+  const [accounts, errors] = await Promise.all([
+    pool.query(
+      `SELECT DISTINCT account_key FROM runs WHERE account_key IS NOT NULL ORDER BY account_key`,
+    ),
+    pool.query(
+      `SELECT error_code, count(*) AS runs FROM runs
+        WHERE error_code IS NOT NULL GROUP BY 1 ORDER BY runs DESC`,
+    ),
+  ]);
+  return {
+    accounts: accounts.rows.map((row) => row.account_key),
+    errorCodes: errors.rows.map((row) => ({ code: row.error_code, runs: Number(row.runs) })),
+  };
 }
 
 export async function getRun(pool, localRunId) {
@@ -207,8 +250,8 @@ export async function getRunCitations(pool, runId) {
   return (
     await pool.query(
       `SELECT c.source_position, c.citation_marker, c.relation_status, c.captured_from,
-              c.visible_to_user, c.answer_text, c.tracked_article_id,
-              a.canonical_url, a.original_url, a.title, a.domain, a.normalized_domain
+             c.visible_to_user, c.source_type, c.answer_text, c.tracked_article_id,
+             a.canonical_url, a.original_url, a.title, a.domain, a.normalized_domain
          FROM citations c
          JOIN articles a ON a.id = c.article_id
         WHERE c.run_id = $1

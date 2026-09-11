@@ -2,6 +2,7 @@ import "dotenv/config";
 import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+
 import { loadConfig } from "./config.js";
 import { RunStore } from "./store.js";
 import { createPool, isDatabaseConfigured } from "./db/pool.js";
@@ -14,17 +15,19 @@ import {
   getRun,
   getRunCitations,
   listAccounts,
+  listActiveBatches,
   listBatches,
   listProjects,
   listRuns,
   poolByCategory,
+  runFilterOptions,
   sourceAggregates,
   trackedArticles,
 } from "./db/dashboard.js";
 import { ensureAccounts } from "./db/persist.js";
 import { resumeAccount, setAccountEnabled } from "./accounts/safety.js";
 import { batchProgress, enqueueBatch, stopBatch } from "./queue/batches.js";
-import { checkRedis, isQueueConfigured } from "./queue/connection.js";
+import { isQueueConfigured } from "./queue/connection.js";
 import {
   addKeywords,
   countActiveKeywords,
@@ -34,6 +37,14 @@ import {
   setKeywordEnabled,
 } from "./project/keywords.js";
 import { createSamplingBatch } from "./sampling/batch.js";
+import {
+  ACCOUNT_STATUS_LABELS,
+  CONNECTION_STATES,
+  WORKER_STATES,
+  buildSystemStatus,
+  cachedSystemStatus,
+  setCachedSystemStatus,
+} from "./system/status.js";
 import {
   accountsPage,
   batchPage,
@@ -50,21 +61,23 @@ import {
   runPage,
   runsPage,
   sourcesPage,
+  systemPage,
 } from "./ui/pages.js";
+import { statusLabel } from "./ui/format.js";
 
 /**
- * 分析界面。
+ * OneGl 操作台。
  *
- * 读取：项目、关键词池、批次、运行、引用来源。
- * 写入：仅限项目创建、关键词池人工录入与启停删除、抽样批次创建。
- * 真正向豆包提问（batch:run）仍在命令行执行，避免长任务挂在 Web 进程里。
+ * 读取：系统就绪状态、项目、关键词池、批次、运行、引用来源、账号。
+ * 写入：项目创建、关键词增删启停、抽样批次创建、批次开始/停止、账号恢复/启停。
  *
- * 监听 127.0.0.1，没有登录鉴权，因此不能暴露到公网。
+ * 网页端可以直接启动批次（BullMQ → Worker）；命令行保留为高级与故障排查方式。
+ * 只监听 127.0.0.1，没有登录鉴权，因此不能暴露到公网。
  */
 const config = loadConfig();
 const store = new RunStore(config);
-
 const pool = isDatabaseConfigured() ? createPool() : null;
+
 let dbState = {
   ready: false,
   message: pool ? "数据库连接中" : "DATABASE_URL 未配置",
@@ -80,6 +93,81 @@ async function refreshDatabaseState() {
     ? { ready: true, message: "" }
     : { ready: false, message: `数据库连接失败：${result.message}` };
 }
+
+/* ------------------------------------------------------------ 系统状态 */
+
+const SYSTEM_CACHE_MS = 2_000;
+
+async function collectSystemStatus() {
+  let accounts = [];
+  let activeBatches = [];
+  if (dbState.ready) {
+    [accounts, activeBatches] = await Promise.all([
+      listAccounts(pool).catch(() => []),
+      listActiveBatches(pool).catch(() => []),
+    ]);
+  }
+  const status = await buildSystemStatus({
+    pool: dbState.ready ? pool : null,
+    accounts,
+    activeBatches,
+  });
+  setCachedSystemStatus(status);
+  return status;
+}
+
+/** 每个请求都保证拿到足够新的系统状态，同时避免高频重复探测。 */
+async function ensureSystemStatus() {
+  const cached = cachedSystemStatus();
+  if (cached && Date.now() - Date.parse(cached.at) < SYSTEM_CACHE_MS) return cached;
+  return collectSystemStatus();
+}
+
+/** 总览页的「待处理」：只放真正需要人介入或需要看一眼的事。 */
+function buildAttention(system, { partialBatches = [], recentFailures = [] } = {}) {
+  const items = [];
+
+  for (const account of system.accounts?.manual_attention ?? []) {
+    items.push({
+      tag: "账号",
+      tone: "bad",
+      label: `${account.account_key} 需要人工处理`,
+      detail: ACCOUNT_STATUS_LABELS[account.status] ?? account.status ?? "",
+      fix: "在浏览器中重新登录或完成人机验证，然后到「账号」页点「恢复」",
+    });
+  }
+
+  for (const batch of partialBatches) {
+    items.push({
+      tag: "批次",
+      tone: "warn",
+      label: `批次 #${batch.id} 结果是「部分成功」`,
+      detail: `${batch.project_name} · 有效 ${batch.valid_runs} / 失败 ${batch.failed_runs}`,
+      fix: "打开批次页查看失败原因与样本口径",
+    });
+  }
+
+  if (recentFailures.length) {
+    items.push({
+      tag: "运行",
+      tone: batchToneForFailures(recentFailures),
+      label: `最近有 ${recentFailures.length} 条运行失败`,
+      detail: recentFailures
+        .slice(0, 3)
+        .map((run) => `${run.local_run_id}（${run.error_code}）`)
+        .join("、"),
+      fix: "在「运行记录」按错误码筛选，或直接打开运行详情看 error_details",
+    });
+  }
+
+  return items;
+}
+
+function batchToneForFailures(failures) {
+  return failures.length >= 3 ? "bad" : "warn";
+}
+
+/* -------------------------------------------------------------- 本地产物 */
 
 async function readLocalRuns() {
   try {
@@ -97,8 +185,6 @@ async function readLocalRun(runId) {
   }
 }
 
-import { statusLabel } from "./ui/format.js";
-
 /** 本地产物里的引用字段名与数据库列名不同，统一成页面使用的形状。 */
 function normalizeLocalCitations(citations) {
   return (citations ?? []).map((citation, index) => ({
@@ -110,16 +196,19 @@ function normalizeLocalCitations(citations) {
     normalized_domain: citation.domain ?? null,
     relation_status: citation.relationStatus ?? "unresolved",
     captured_from: citation.capturedFrom ?? "FALLBACK",
+    source_type: citation.sourceType ?? "visible",
+    visible_to_user: citation.visibleToUser !== false,
     tracked_article_id: null,
   }));
 }
+
+/* ---------------------------------------------------------------- 传输 */
 
 function send(res, status, content, type = "text/html; charset=utf-8") {
   res.writeHead(status, { "content-type": type, "cache-control": "no-store" });
   res.end(content);
 }
 
-/** 写入成功后回到列表页，用查询参数带一条中文提示（POST-Redirect-GET）。 */
 function redirectWithNotice(res, pathname, message, tone = "ok") {
   const target = new URLSearchParams();
   target.set("notice", message);
@@ -136,6 +225,10 @@ function readNotice(searchParams) {
 
 const MAX_BODY_BYTES = 512 * 1024;
 
+/**
+ * 表单解析。重复出现的字段（例如账号复选框）会变成数组，
+ * 其余保持字符串，调用方用 asList() 统一取值。
+ */
 async function readFormBody(req) {
   const chunks = [];
   let size = 0;
@@ -144,8 +237,19 @@ async function readFormBody(req) {
     if (size > MAX_BODY_BYTES) throw new Error("提交内容过大");
     chunks.push(chunk);
   }
-  const raw = Buffer.concat(chunks).toString("utf8");
-  return Object.fromEntries(new URLSearchParams(raw));
+  const params = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+  const fields = {};
+  for (const key of new Set(params.keys())) {
+    const values = params.getAll(key);
+    fields[key] = values.length > 1 ? values : values[0];
+  }
+  return fields;
+}
+
+function asList(value) {
+  if (value == null) return [];
+  const list = Array.isArray(value) ? value : [value];
+  return list.map((entry) => String(entry).trim()).filter(Boolean);
 }
 
 /**
@@ -164,7 +268,33 @@ function sameOrigin(req) {
 
 /* ------------------------------------------------------------------ 读取 */
 
-async function handleHome() {
+/**
+ * 总览页展示执行中批次时需要计数，而 listActiveBatches 返回的是数据库行。
+ * 这里统一成页面使用的形状；active/waiting 需要 Redis 才能精确知道，
+ * 因此不猜，只按「还没有结论的数量」反推剩余。
+ */
+function activeBatchView(row) {
+  const requested = Number(row.requested_jobs ?? 0);
+  const completed = Number(row.completed_jobs ?? 0);
+  const failed = Number(row.failed_jobs ?? 0);
+  const skipped = Number(row.skipped_jobs ?? 0);
+  const done = completed + failed + skipped;
+  return {
+    batch: row,
+    counts: {
+      requested,
+      completed,
+      failed,
+      skipped,
+      active: 0,
+      waiting: Math.max(0, requested - done),
+      done,
+      percent: requested ? Math.round((done / requested) * 100) : 0,
+    },
+  };
+}
+
+async function handleHome(system) {
   const localRuns = await readLocalRuns();
   const overview = dbState.ready
     ? await countOverview(pool)
@@ -177,45 +307,89 @@ async function handleHome() {
         citations: 0,
         accounts: 0,
       };
-  const batches = dbState.ready ? await listBatches(pool, { limit: 8 }) : [];
-  const projects = dbState.ready ? await listProjects(pool) : [];
+
+  let batches = [];
+  const activeBatches = (system.activeBatches ?? []).map(activeBatchView);
+  let recentFailures = [];
+  let partialBatches = [];
+
+  if (dbState.ready) {
+    const [batchRows, failures] = await Promise.all([
+      listBatches(pool, { limit: 8 }),
+      listRuns(pool, { status: "failed", limit: 5 }),
+    ]);
+    batches = batchRows;
+    recentFailures = failures;
+    partialBatches = batchRows.filter((row) => row.status === "partial").slice(0, 3);
+  }
 
   return homePage({
     db: dbState,
+    system,
     overview,
     batches,
-    projects,
+    activeBatches,
+    attention: buildAttention(system, { partialBatches, recentFailures }),
+    recentFailures,
     localRuns: localRuns.slice(0, 20),
     localRunCount: localRuns.length,
   });
 }
 
-async function handleBatches(searchParams) {
+async function handleBatches(searchParams, system) {
   const projectId = searchParams.get("project");
   const batches = dbState.ready
     ? await listBatches(pool, { projectId: projectId ?? null, limit: 100 })
     : [];
   const projects = dbState.ready ? await listProjects(pool) : [];
-  return batchesPage({ db: dbState, batches, projects, projectId });
+  return batchesPage({ db: dbState, batches, projects, projectId, system });
 }
 
-async function handleBatch(batchId) {
+async function handleBatch(batchId, system) {
   if (!dbState.ready) throw new Error("未连接数据库，无法读取批次详情");
   const detail = await batchDetail(pool, batchId);
   const progress = await batchProgress(pool, batchId).catch(() => null);
-  return batchPage({ ...detail, progress, queueReady: isQueueConfigured() });
+  return batchPage({
+    ...detail,
+    progress,
+    queueReady: isQueueConfigured(),
+    system,
+  });
 }
 
-async function handleAccounts(searchParams) {
+async function handleAccounts(searchParams, system) {
   if (!dbState.ready) {
     return accountsPage({
       accounts: [],
       notice: "未连接数据库，无法读取账号状态。",
+      system,
     });
   }
   return accountsPage({
     accounts: await listAccounts(pool),
     notice: readNotice(searchParams)?.message ?? null,
+    system,
+    dailyLimit: Number(process.env.ONEGL_ACCOUNT_DAILY_LIMIT ?? 60),
+  });
+}
+
+async function handleSystem(system) {
+  return systemPage({
+    system,
+    db: dbState,
+    config: {
+      port: config.port,
+      dataDir: config.dataDir,
+      browser: config.browser,
+      doubaoUrl: config.doubaoUrl,
+      accountTimeZone: process.env.ONEGL_ACCOUNT_TIMEZONE ?? "Asia/Shanghai",
+      dailyLimit: Number(process.env.ONEGL_ACCOUNT_DAILY_LIMIT ?? 60),
+      cooldownMinutes: Number(process.env.ONEGL_ACCOUNT_COOLDOWN_MINUTES ?? 30),
+      parallelism: Number(process.env.ONEGL_ACCOUNT_PARALLELISM ?? 1),
+      heartbeatIntervalSeconds: 10,
+      heartbeatOnlineSeconds: 30,
+      heartbeatDegradedSeconds: 90,
+    },
   });
 }
 
@@ -232,38 +406,55 @@ async function handleBatchProgress(batchId) {
   };
 }
 
-async function handleRuns(searchParams) {
-  const status = searchParams.get("status");
-  const projectId = searchParams.get("project");
-  const batchId = searchParams.get("batch");
+async function handleRuns(searchParams, system) {
+  const filters = {
+    status: searchParams.get("status"),
+    projectId: searchParams.get("project"),
+    batchId: searchParams.get("batch"),
+    account: searchParams.get("account"),
+    errorCode: searchParams.get("error"),
+  };
 
   if (!dbState.ready) {
     return runsPage({
       db: dbState,
+      system,
       runs: [],
       projects: [],
       localRuns: await readLocalRuns(),
-      filters: { status, projectId, batchId },
+      filters,
     });
   }
 
-  const runs = await listRuns(pool, {
-    status: status ?? null,
-    projectId: projectId ?? null,
-    batchId: batchId ?? null,
-    limit: 150,
-  });
-  const projects = await listProjects(pool);
+  const [runs, projects, accounts, batches, options] = await Promise.all([
+    listRuns(pool, {
+      status: filters.status ?? null,
+      projectId: filters.projectId ?? null,
+      batchId: filters.batchId ?? null,
+      accountKey: filters.account ?? null,
+      errorCode: filters.errorCode ?? null,
+      limit: 150,
+    }),
+    listProjects(pool),
+    listAccounts(pool),
+    listBatches(pool, { limit: 60 }),
+    runFilterOptions(pool),
+  ]);
+
   return runsPage({
     db: dbState,
+    system,
     runs,
     projects,
+    accounts: options.accounts.length ? options.accounts : accounts.map((row) => row.account_key),
+    batches,
+    errorCodes: options.errorCodes,
+    filters,
     localRuns: [],
-    filters: { status, projectId, batchId },
   });
 }
 
-async function handleRun(runId) {
+async function handleRun(runId, system) {
   const localRun = await readLocalRun(runId);
   let run = null;
   let citations = null;
@@ -274,13 +465,22 @@ async function handleRun(runId) {
   }
   if (!run && localRun) citations = normalizeLocalCitations(localRun.citations);
 
-  return runPage({ db: dbState, run, citations, localRun, runId });
+  // 磁盘上真实存在的 attempt 目录，界面据此给出调试产物链接。
+  // 旧布局（产物直接放在运行根目录）没有 attempts/ 子目录，单独兜一层，
+  // 否则历史 Run 在调试页面上会看不到任何产物。
+  const attempts = await store.listAttemptArtifacts(runId).catch(() => []);
+  const rootArtifacts = attempts.length
+    ? []
+    : await store.listRootArtifacts(runId).catch(() => []);
+
+  return runPage({ db: dbState, system, run, citations, localRun, attempts, rootArtifacts, runId });
 }
 
-async function handleSources(searchParams) {
+async function handleSources(searchParams, system) {
   if (!dbState.ready) {
     return sourcesPage({
       db: dbState,
+      system,
       sources: { domains: [], articles: [], totals: { citations: 0, articles: 0, domains: 0 } },
       projects: [],
       projectId: null,
@@ -288,19 +488,27 @@ async function handleSources(searchParams) {
   }
   const projectId = searchParams.get("project");
   const sources = await sourceAggregates(pool, { projectId: projectId ?? null, limit: 30 });
-  return sourcesPage({ db: dbState, sources, projects: await listProjects(pool), projectId });
+  return sourcesPage({
+    db: dbState,
+    system,
+    sources,
+    projects: await listProjects(pool),
+    projectId,
+  });
 }
 
-async function handleProjects(searchParams) {
+async function handleProjects(searchParams, system) {
   const projects = dbState.ready ? await listProjects(pool) : [];
-  return projectsPage({ db: dbState, projects, notice: readNotice(searchParams) });
+  return projectsPage({ db: dbState, projects, notice: readNotice(searchParams), system });
 }
 
 /** 项目下的标签页。projectId 无效时返回 null，由调用方给出 404。 */
-async function handleProjectTab(projectId, tab, searchParams) {
+async function handleProjectTab(projectId, tab, searchParams, system) {
   if (!dbState.ready) throw new Error("未连接数据库，无法读取项目详情");
   const project = await getProject(pool, projectId);
   if (!project) return null;
+
+  const dailyLimit = Number(process.env.ONEGL_ACCOUNT_DAILY_LIMIT ?? 60);
 
   if (tab === "keywords") {
     const [keywords, stats] = await Promise.all([
@@ -311,6 +519,7 @@ async function handleProjectTab(projectId, tab, searchParams) {
       project,
       keywords,
       stats,
+      system,
       notice: readNotice(searchParams)?.message ?? null,
     });
   }
@@ -326,18 +535,20 @@ async function handleProjectTab(projectId, tab, searchParams) {
       batches,
       accounts,
       stats,
+      system,
+      dailyLimit,
       notice: readNotice(searchParams)?.message ?? null,
     });
   }
 
   if (tab === "runs") {
     const runs = await listRuns(pool, { projectId, limit: 200 });
-    return projectRunsPage({ project, runs });
+    return projectRunsPage({ project, runs, system });
   }
 
   if (tab === "sources") {
     const sources = await sourceAggregates(pool, { projectId, limit: 30 });
-    return projectSourcesPage({ project, sources });
+    return projectSourcesPage({ project, sources, system });
   }
 
   const [pool_, tracked, accounts, batches, keywordStats] = await Promise.all([
@@ -354,6 +565,8 @@ async function handleProjectTab(projectId, tab, searchParams) {
     accounts,
     batches,
     keywordStats,
+    system,
+    dailyLimit,
   });
 }
 
@@ -421,31 +634,43 @@ async function handleKeywordAction(res, projectId, promptId, action, form) {
 }
 
 async function handleCreateBatch(res, projectId, form) {
+  const back = `/projects/${projectId}/sampling`;
   const project = await getProject(pool, projectId);
   if (!project) throw new Error(`未找到项目（id=${projectId}）`);
 
   const stats = await countActiveKeywords(pool, projectId);
   if (!stats.enabled) {
-    return redirectWithNotice(res, `/projects/${projectId}/sampling`, "该项目没有启用中的关键词，无法抽样。", "warn");
+    return redirectWithNotice(res, back, "该项目没有启用中的关键词，无法抽样。", "warn");
   }
 
   const size = Number(form.size ?? 0);
   if (!Number.isInteger(size) || size <= 0) {
-    return redirectWithNotice(res, `/projects/${projectId}/sampling`, "抽样数量必须是正整数。", "warn");
+    return redirectWithNotice(res, back, "抽样数量必须是正整数。", "warn");
   }
 
-  const accounts = String(form.accounts ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-
+  const accounts = asList(form.accounts);
   if (!accounts.length) {
-    return redirectWithNotice(res, `/projects/${projectId}/sampling`, "至少填写一个账号。", "warn");
+    return redirectWithNotice(res, back, "至少选择一个账号。", "warn");
+  }
+
+  // 只允许选用当前真正可用的账号，避免把明显跑不了的账号排进批次。
+  const accountRows = await listAccounts(pool);
+  const usable = new Set(
+    accountRows.filter((row) => row.enabled && isAccountExecutable(row)).map((row) => row.account_key),
+  );
+  const blocked = accounts.filter((key) => !usable.has(key));
+  if (blocked.length) {
+    return redirectWithNotice(
+      res,
+      back,
+      `账号 ${blocked.join("、")} 当前不可执行（冷却中或需要人工处理），请先在「账号」页处理。`,
+      "warn",
+    );
   }
 
   await ensureAccounts(pool, { accountKeys: accounts });
 
-  const repeats = Number(form.repeats ?? 1) || 1;
+  const repeats = Math.max(1, Number(form.repeats ?? 1) || 1);
   const method = form.method === "random" ? "random" : "stratified";
   const seed = form.seed?.trim() || null;
   const effectiveSize = Math.min(size, stats.enabled);
@@ -464,19 +689,39 @@ async function handleCreateBatch(res, projectId, form) {
   return redirectWithNotice(
     res,
     `/batches/${result.batchId}`,
-    `批次 #${result.batchId} 已创建，共 ${result.assignments} 条分配${warning}。执行命令：npm run batch:run -- --batch ${result.batchId}`,
+    `批次 #${result.batchId} 已创建，共 ${result.assignments} 个任务${warning}。到批次页点「开始监测」执行。`,
+  );
+}
+
+function isAccountExecutable(row) {
+  return !["login_required", "session_expired", "verification_required", "access_restricted", "paused", "cooldown", "rate_limited"].includes(
+    row.status,
   );
 }
 
 async function handleStartBatch(res, batchId) {
+  const back = `/batches/${batchId}`;
+  const system = await ensureSystemStatus();
+  if (system.redis?.state !== CONNECTION_STATES.CONNECTED) {
+    return redirectWithNotice(res, back, "Redis 不可用，无法入队。", "warn");
+  }
+  if (system.worker?.state !== WORKER_STATES.ONLINE) {
+    return redirectWithNotice(
+      res,
+      back,
+      "Worker 未在线，任务会被排入队列但不会被执行。请先启动 npm run worker。",
+      "warn",
+    );
+  }
+
   const result = await enqueueBatch(pool, batchId);
   if (!result.started) {
-    return redirectWithNotice(res, `/batches/${batchId}`, `未启动：${result.reason}`, "warn");
+    return redirectWithNotice(res, back, `未启动：${result.reason}`, "warn");
   }
   return redirectWithNotice(
     res,
-    `/batches/${batchId}`,
-    `已入队 ${result.enqueued} 个任务，覆盖账号 ${result.accounts.join("、")}。请确认 Worker 正在运行（npm run worker）。`,
+    back,
+    `已入队 ${result.enqueued} 个任务，覆盖账号 ${result.accounts.join("、")}。Worker 会立即开始执行。`,
   );
 }
 
@@ -566,11 +811,43 @@ async function handlePost(req, res, pathname) {
   return res.end("未知的提交地址。");
 }
 
+/* ---------------------------------------------------------- 本地产物路由 */
+
+/**
+ * 只允许读取 `.onegl/runs/<run_id>/` 之下的文件，支持 attempts/<n>/ 子目录。
+ * 路径校验全部交给 RunStore.resolveArtifact（可离线测试）。
+ */
+async function serveArtifact(res, runId, rawRest) {
+  const segments = String(rawRest)
+    .split("/")
+    .filter((segment) => segment !== "")
+    .map((segment) => decodeURIComponent(segment));
+
+  const target = store.resolveArtifact(runId, segments);
+  if (!target) return send(res, 404, notFoundPage(`/artifacts/${runId}`));
+
+  try {
+    await stat(target);
+  } catch {
+    return send(res, 404, notFoundPage(`/artifacts/${runId}`));
+  }
+
+  const fileName = segments.at(-1);
+  const data = await readFile(target);
+  const type = fileName.endsWith(".png")
+    ? "image/png"
+    : fileName.endsWith(".json")
+      ? "application/json; charset=utf-8"
+      : "text/plain; charset=utf-8";
+  return send(res, 200, data, type);
+}
+
 /* ------------------------------------------------------------------ 服务器 */
 
 const server = http.createServer(async (req, res) => {
   try {
     await refreshDatabaseState();
+    const system = await ensureSystemStatus();
 
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     const pathname = url.pathname;
@@ -583,49 +860,43 @@ const server = http.createServer(async (req, res) => {
       return res.end("只支持 GET 与 POST。");
     }
 
-    if (pathname === "/") return send(res, 200, await handleHome());
+    if (pathname === "/") return send(res, 200, await handleHome(system));
+    if (pathname === "/system") return send(res, 200, await handleSystem(system));
 
-    if (pathname === "/batches") return send(res, 200, await handleBatches(searchParams));
+    if (pathname === "/batches") return send(res, 200, await handleBatches(searchParams, system));
     const batchMatch = pathname.match(/^\/batches\/(\d+)$/);
-    if (batchMatch) return send(res, 200, await handleBatch(Number(batchMatch[1])));
+    if (batchMatch) return send(res, 200, await handleBatch(Number(batchMatch[1]), system));
 
-    if (pathname === "/runs") return send(res, 200, await handleRuns(searchParams));
+    if (pathname === "/runs") return send(res, 200, await handleRuns(searchParams, system));
     const runMatch = pathname.match(/^\/runs\/(run_[A-Za-z0-9_-]+)$/);
-    if (runMatch) return send(res, 200, await handleRun(runMatch[1]));
+    if (runMatch) return send(res, 200, await handleRun(runMatch[1], system));
 
-    if (pathname === "/sources") return send(res, 200, await handleSources(searchParams));
+    if (pathname === "/sources") return send(res, 200, await handleSources(searchParams, system));
 
-    if (pathname === "/accounts") return send(res, 200, await handleAccounts(searchParams));
+    if (pathname === "/accounts") return send(res, 200, await handleAccounts(searchParams, system));
 
-    if (pathname === "/projects") return send(res, 200, await handleProjects(searchParams));
+    if (pathname === "/projects") return send(res, 200, await handleProjects(searchParams, system));
     const projectTab = pathname.match(/^\/projects\/(\d+)(?:\/(keywords|sampling|runs|sources))?$/);
     if (projectTab) {
-      const page = await handleProjectTab(Number(projectTab[1]), projectTab[2] ?? "overview", searchParams);
+      const page = await handleProjectTab(
+        Number(projectTab[1]),
+        projectTab[2] ?? "overview",
+        searchParams,
+        system,
+      );
       if (!page) return send(res, 404, notFoundPage(pathname));
       return send(res, 200, page);
     }
 
-    const artifactMatch = pathname.match(/^\/artifacts\/(run_[A-Za-z0-9_-]+)\/([A-Za-z0-9._-]+)$/);
+    const artifactMatch = pathname.match(/^\/artifacts\/(run_[A-Za-z0-9_-]+)\/(.+)$/);
     if (artifactMatch) {
-      const runId = artifactMatch[1];
-      const fileName = artifactMatch[2];
-      if (!/^[A-Za-z0-9._-]+$/.test(fileName)) return send(res, 404, notFoundPage(pathname));
-      const file = path.join(store.runDir(runId), fileName);
-      try {
-        await stat(file);
-      } catch {
-        return send(res, 404, notFoundPage(pathname));
-      }
-      const data = await readFile(file);
-      const type = fileName.endsWith(".png")
-        ? "image/png"
-        : fileName.endsWith(".json")
-          ? "application/json; charset=utf-8"
-          : "text/plain; charset=utf-8";
-      return send(res, 200, data, type);
+      return serveArtifact(res, artifactMatch[1], artifactMatch[2]);
     }
 
     // 供脚本使用的只读 JSON 接口
+    if (pathname === "/api/system") {
+      return send(res, 200, JSON.stringify(system, null, 2), "application/json; charset=utf-8");
+    }
     if (pathname === "/api/batches") {
       const batches = dbState.ready ? await listBatches(pool, { limit: 200 }) : [];
       return send(res, 200, JSON.stringify(batches, null, 2), "application/json; charset=utf-8");
@@ -677,7 +948,13 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(config.port, "127.0.0.1", async () => {
   await refreshDatabaseState();
-  console.log(`OneGl 分析界面: http://127.0.0.1:${config.port}`);
+  await collectSystemStatus().catch(() => undefined);
+  const status = cachedSystemStatus();
+  console.log(`OneGl 操作台: http://127.0.0.1:${config.port}`);
   console.log(dbState.ready ? "  数据源：PostgreSQL" : `  数据源：本地运行产物（${dbState.message}）`);
+  console.log(
+    `  系统状态：DB=${status?.database?.state ?? "unknown"} Redis=${status?.redis?.state ?? "unknown"} Worker=${status?.worker?.state ?? "unknown"}`,
+  );
+  console.log(`  就绪：${status?.readiness?.ready ? "可以开始" : "未就绪（详见 /system）"}`);
   console.log("  仅监听回环地址，未做登录鉴权，请勿对外暴露。");
 });

@@ -84,6 +84,25 @@ export class RunStore {
       (a, b) => a - b,
     );
 
+    // run.json 只保存「当前尝试」的状态，所以每次重新进入前先把上一次的结论沉淀到
+    // attemptHistory。没有这一步，调试时就无法回答「第几次尝试失败、失败在哪一步」。
+    const settled = previous && previous.status && previous.status !== "running";
+    const previousHistory = settled
+      ? [
+          {
+            attempt: previous.attempt,
+            status: previous.status,
+            errorCode: previous.errorCode ?? null,
+            errorMessage: previous.errorMessage ?? null,
+            finishedAt: previous.completedAt ?? null,
+            artifactPath: previous.artifactPath ?? null,
+          },
+        ]
+      : [];
+    const attemptHistory = [...(previous?.attemptHistory ?? []), ...previousHistory].filter(
+      (entry, index, list) => list.findIndex((item) => item.attempt === entry.attempt) === index,
+    );
+
     const run = {
       id: runId,
       project,
@@ -96,6 +115,8 @@ export class RunStore {
       // 当前 attempt，以及这个 Run 经历过的全部 attempt
       attempt,
       attempts,
+      // 历史尝试的结论（状态 / 错误 / 产物目录），用于界面上的 Attempt 时间线
+      attemptHistory,
       attemptStartedAt: new Date().toISOString(),
       // 整个 Run 的首次开始时间，重试时不重置
       startedAt: previous?.startedAt ?? new Date().toISOString(),
@@ -137,6 +158,89 @@ export class RunStore {
     const next = { ...current, ...patch };
     await this.writeRun(next);
     return next;
+  }
+
+  /**
+   * 列出这个 Run 在磁盘上真实存在的 attempt 目录与文件。
+   * 界面用它给出调试产物链接，而不是靠推测路径。
+   */
+  async listAttemptArtifacts(runId) {
+    const attemptsRoot = path.join(this.runDir(runId), "attempts");
+    let names = [];
+    try {
+      names = await readdir(attemptsRoot);
+    } catch {
+      return [];
+    }
+
+    const result = [];
+    for (const name of names.sort((a, b) => Number(a) - Number(b))) {
+      const attempt = Number(name);
+      if (!Number.isInteger(attempt)) continue;
+      const dir = path.join(attemptsRoot, name);
+      let files = [];
+      try {
+        files = await readdir(dir);
+      } catch {
+        continue;
+      }
+      result.push({
+        attempt,
+        dir: path.relative(process.cwd(), dir),
+        files: files.sort(),
+      });
+    }
+    return result;
+  }
+
+  /**
+   * 把 URL 片段解析成运行目录内的绝对路径。
+   *
+   * 这是 Web 端读取本地产物的唯一安全边界：任何非法片段、目录穿越、层数不符都返回 null，
+   * 因此它必须足够简单、并且可以被离线测试直接覆盖。
+   *
+   * 允许的形状：
+   *   screenshot.png
+   *   attempts/1/screenshot.png
+   */
+  resolveArtifact(runId, segments) {
+    let base;
+    try {
+      base = path.resolve(this.runDir(runId));
+    } catch {
+      return null;
+    }
+
+    if (!Array.isArray(segments) || segments.length === 0 || segments.length > 3) return null;
+    for (const segment of segments) {
+      if (typeof segment !== "string" || !/^[A-Za-z0-9._-]+$/.test(segment)) return null;
+    }
+
+    if (segments[0] === "attempts") {
+      if (segments.length !== 3 || !/^\d+$/.test(segments[1])) return null;
+    } else if (segments.length !== 1) {
+      return null;
+    }
+
+    const target = path.resolve(base, ...segments);
+    if (target !== base && !target.startsWith(`${base}${path.sep}`)) return null;
+    return target;
+  }
+
+  /**
+   * 列出运行根目录下的产物文件。
+   * 用于兼容 attempts/<n>/ 之前的旧布局，让历史 Run 也能在界面上拿到调试产物。
+   */
+  async listRootArtifacts(runId) {
+    let names = [];
+    try {
+      names = await readdir(this.runDir(runId));
+    } catch {
+      return [];
+    }
+    return names
+      .filter((name) => name !== "attempts" && /^[A-Za-z0-9._-]+$/.test(name))
+      .sort();
   }
 
   async writeAttemptArtifact(runId, attempt, name, data) {
