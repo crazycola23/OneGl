@@ -48,10 +48,15 @@ export class RunStore {
     project = "default",
     accountKey = null,
     samplingBatchId = null,
+    runToken = null,
+    jobId = null,
+    runId: explicitRunId = null,
   }) {
     await this.init();
-    const runId = `run_${safeTimestamp()}_${randomUUID().slice(0, 8)}`;
-    await mkdir(this.runDir(runId), { recursive: false });
+    // 批次任务使用确定性 id，队列重试时复用同一个目录与同一条记录，
+    // 因此不会产生重复 Run。
+    const runId = explicitRunId ?? `run_${safeTimestamp()}_${randomUUID().slice(0, 8)}`;
+    await mkdir(this.runDir(runId), { recursive: false }).catch(() => undefined);
     const run = {
       id: runId,
       project,
@@ -59,6 +64,9 @@ export class RunStore {
       prompt,
       accountKey,
       samplingBatchId,
+      runToken,
+      jobId,
+      attempt: 1,
       status: "running",
       startedAt: new Date().toISOString(),
       completedAt: null,

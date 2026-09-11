@@ -25,12 +25,19 @@
     "pool:list": "node src/cli.js pool-list",
     "sample": "node src/cli.js sample",
     "batch:run": "node src/cli.js batch-run",
+    "batch:start": "node src/cli.js batch-start",
+    "batch:stop": "node src/cli.js batch-stop",
+    "worker": "node src/worker.js",
     "report": "node src/cli.js report",
+    "report:export": "node tools/export-batch.js",
+    "report:html": "node tools/build-report-html.js",
     "fixtures:sanitize": "node tools/sanitize-fixtures.mjs",
     "test": "node --test"
   },
   "dependencies": {
+    "bullmq": "^6.3.4",
     "dotenv": "^17.2.3",
+    "ioredis": "^6.0.0",
     "pg": "^8.13.0",
     "playwright-core": "^1.51.1"
   }

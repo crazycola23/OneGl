@@ -14,19 +14,19 @@ import {
   SESSION_BLOCKING_CODES,
 } from "./errors.js";
 import { RunStore } from "./store.js";
-import { captureDomObservation } from "./dom-observer.js";
+import { captureArtifacts, runOnePrompt } from "./collect/runner.js";
 import { createPool, isDatabaseConfigured } from "./db/pool.js";
-import { ensureAccounts, persistRun } from "./db/persist.js";
+import { ensureAccounts } from "./db/persist.js";
 import { printBatchReport, buildBatchReport } from "./db/report.js";
-import { BRAND_DETECTION_VERSION, compileBrandRules, detectBrandMention } from "./brand/detect.js";
+import { compileBrandRules } from "./brand/detect.js";
 import { applyProjectConfig, loadBrandRules, loadProjectConfig } from "./project/init.js";
 import {
   createSamplingBatch,
   loadBatch,
   loadBatchAssignments,
-  markBatchStatus,
-  persistAssignmentRun,
 } from "./sampling/batch.js";
+import { enqueueBatch, refreshBatchProgress, runIdFor, runTokenFor, stopBatch } from "./queue/batches.js";
+import { closeRedis } from "./queue/connection.js";
 import { parseAccountKeys, normalizeAccountKey } from "./accounts/registry.js";
 
 // ---------------------------------------------------------------------------
@@ -68,38 +68,6 @@ async function closePool() {
   sharedPool = null;
 }
 
-async function persistToDatabase(store, saved, { project, promptMeta }) {
-  const pool = getPool();
-  if (!pool) return;
-
-  try {
-    const summary = await persistRun({
-      pool,
-      run: saved,
-      project,
-      prompt: promptMeta,
-      artifactPath: saved.debugPath ?? null,
-    });
-    await store.updateRun(saved.id, { dbStatus: "success", db: summary });
-    console.log(
-      `${saved.id}: 已写入数据库 | 数据库ID=${summary.runId} ` +
-        `文章=${summary.articlesReferenced}（新增 ${summary.articlesCreated}） ` +
-        `引用=${summary.citationsWritten}` +
-        (summary.trackedCitations ? ` 命中监控文章=${summary.trackedCitations}` : ""),
-    );
-  } catch (error) {
-    databaseFailures += 1;
-    await store
-      .updateRun(saved.id, {
-        dbStatus: "failed",
-        dbError: { name: error.name, message: error.message },
-      })
-      .catch(() => undefined);
-    // Local debug artifacts are deliberately kept so the run stays auditable.
-    console.error(`${saved.id}: 数据库写入失败 | ${error.message}`);
-  }
-}
-
 /**
  * Brand rules live on the Project row. A project that was never configured for brand
  * monitoring simply has none, and the run records no verdict rather than a false one.
@@ -114,26 +82,6 @@ async function brandRulesFor(projectName) {
   } catch {
     return null;
   }
-}
-
-function applyBrandDetection(rules, answer) {
-  if (!rules) {
-    return {
-      brandMentioned: null,
-      mentionCount: null,
-      firstMentionPosition: null,
-      matchedTerms: [],
-      brandDetectionVersion: null,
-    };
-  }
-  const result = detectBrandMention(answer, rules);
-  return {
-    brandMentioned: result.mentioned,
-    mentionCount: result.mentionCount,
-    firstMentionPosition: result.firstMentionPosition,
-    matchedTerms: result.matchedTerms,
-    brandDetectionVersion: result.version,
-  };
 }
 
 function parseArgs(tokens) {
@@ -177,45 +125,33 @@ function printHelp() {
                           --accounts account_01 [--seed 20260910-ab12] [--repeats 1]
       从池中抽样并分配账号；记录 seed 与池版本，可完整复现
   npm run batch:run    -- --batch 1 [--delay-ms 6000] [--limit 10]
-      执行批次：逐条新建对话、真实提问、识别品牌提及、写入数据库
+      在前台执行批次（不依赖 Redis，适合本地调试）
   npm run report       -- --batch 1 [--json]
       输出批次报告：RUN 级与 PROMPT 级提及率、引用率、域名分布、分类与账号拆分
 
-三、数据库
+三、后台队列（需要 REDIS_URL，推荐方式）
+  npm run worker
+      启动后台采集 Worker（独立进程，与 Web 进程分开）
+  npm run batch:start  -- --batch 1
+      把批次入队；网页上的「开始监测」按钮等价于此
+  npm run batch:stop   -- --batch 1
+      停止批次：不再领取新任务，已在执行的会安全结束
+
+  网页流程：项目 → 创建抽样批次 → 点击「开始监测」→ 进度页实时刷新 → 自动出报告
+
+四、数据库
   npm run db:migrate / db:status / db:tunnel / db:query
 
 数据库只监听服务器回环地址，本机需先执行 npm run db:tunnel 建立隧道。
 账号凭据只保存在 .onegl/auth/accounts/ 下的文件里，不会写入数据库或仓库。`);
 }
 
-async function captureArtifacts(store, runId, page, prompt = null) {
-  if (!page) return;
-  try {
-    await store.writeArtifact(runId, "page.html", await page.content());
-  } catch {
-    // Debug capture must never hide the primary run error.
-  }
-  try {
-    await store.writeArtifact(
-      runId,
-      "screenshot.png",
-      await page.screenshot({ fullPage: true }),
-    );
-  } catch {
-    // Same rule as above.
-  }
-  try {
-    const observation = await captureDomObservation(page, { prompt });
-    await store.writeArtifact(
-      runId,
-      "dom-observation.json",
-      `${JSON.stringify(observation, null, 2)}\n`,
-    );
-  } catch {
-    // Structured DOM evidence is diagnostic only; never mask the primary result.
-  }
-}
-
+/**
+ * 命令行侧的适配层。
+ *
+ * 采集本身完全交给 src/collect/runner.js —— 与后台 Worker 用的是同一份内核，
+ * 这里只负责把结果打印到终端，并在失败时抛异常，好让批量流程能中止或跳过该账号。
+ */
 async function executeOne({
   page,
   store,
@@ -224,83 +160,50 @@ async function executeOne({
   project,
   validation = null,
   context = {},
+  runId = null,
+  artifactPath = null,
 }) {
-  const run = await store.createRun({
+  const outcome = await runOnePrompt({
+    page,
+    store,
+    config,
     prompt,
     project,
-    accountKey: context.accountKey ?? null,
-    samplingBatchId: context.samplingBatchId ?? null,
+    validation,
+    context,
+    runId,
+    artifactPath,
+    pool: getPool(),
   });
-  if (validation) await store.updateRun(run.id, { validation });
-  try {
-    const result = await executeDoubaoPrompt(page, prompt, config);
-    await captureArtifacts(store, run.id, page, prompt);
-    await store.writeArtifact(run.id, "answer.md", `${result.answer}\n`);
-    await store.writeArtifact(
-      run.id,
-      "citations.json",
-      `${JSON.stringify(result.citations, null, 2)}\n`,
+
+  const { saved } = outcome;
+
+  if (outcome.persistError) {
+    databaseFailures += 1;
+    console.error(`${saved.id}: 数据库写入失败 | ${outcome.persistError.message}`);
+  } else if (outcome.persistSummary) {
+    const summary = outcome.persistSummary;
+    console.log(
+      `${saved.id}: 已写入数据库 | 数据库ID=${summary.runId} ` +
+        `文章=${summary.articlesReferenced}（新增 ${summary.articlesCreated}） ` +
+        `引用=${summary.citationsWritten}` +
+        (summary.trackedCitations ? ` 命中监控文章=${summary.trackedCitations}` : ""),
     );
+  }
 
-    const partial = result.citationState === "parse_failed";
-    const saved = await store.updateRun(run.id, {
-      status: partial ? "partial" : "success",
-      completedAt: new Date().toISOString(),
-      answer: result.answer,
-      citations: result.citations,
-      citationState: result.citationState,
-      expectedCitationCount: result.expectedCitationCount,
-      citationDiagnostics: result.citationDiagnostics,
-      submissionMethod: result.submissionMethod,
-      conversationReset: result.conversationReset,
-      conversationResetConfirmed: result.conversationResetConfirmed ?? null,
-      currentUrl: result.currentUrl,
-      ...applyBrandDetection(context.brandRules ?? null, result.answer),
-      errorCode: partial ? ErrorCode.CITATION_PARSE_FAILED : null,
-      errorMessage: partial
-        ? "The answer was captured, but visible citation extraction did not match the UI evidence."
-        : null,
-    });
-
+  if (outcome.ok) {
     console.log(
       `${saved.id}: ${statusText(saved.status)} | ${brandText(saved.brandMentioned)} | 引用=${saved.citations.length}` +
-        (saved.expectedCitationCount == null
-          ? ""
-          : `/${saved.expectedCitationCount}`),
+        (saved.expectedCitationCount == null ? "" : `/${saved.expectedCitationCount}`),
     );
-    await persistToDatabase(store, saved, {
-      project,
-      promptMeta: validation ? { externalId: validation.caseId ?? null } : null,
-    });
     return saved;
-  } catch (error) {
-    await captureArtifacts(store, run.id, page, prompt);
-    const normalized = normalizeError(error);
-    const partialAnswer = normalized.details?.partialAnswer || null;
-    await store.writeArtifact(run.id, "answer.md", partialAnswer ? `${partialAnswer}\n` : "");
-    await store.writeArtifact(run.id, "citations.json", "[]\n");
-    if (partialAnswer) {
-      await store.writeArtifact(run.id, "partial-answer.md", `${partialAnswer}\n`);
-    }
-    const saved = await store.updateRun(run.id, {
-      status: "failed",
-      completedAt: new Date().toISOString(),
-      answer: partialAnswer,
-      errorCode: normalized.code,
-      errorMessage: normalized.message,
-      errorDetails: normalized.details,
-      currentUrl: page?.url?.() || null,
-    });
-    console.error(`${saved.id}: 失败 | ${saved.errorCode}: ${saved.errorMessage}`);
-    await persistToDatabase(store, saved, {
-      project,
-      promptMeta: validation ? { externalId: validation.caseId ?? null } : null,
-    });
-    throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
-      runId: saved.id,
-      normalized,
-    });
   }
+
+  console.error(`${saved.id}: 失败 | ${saved.errorCode}: ${saved.errorMessage}`);
+  throw Object.assign(new Error(outcome.normalized?.message ?? "运行失败"), {
+    runId: saved.id,
+    normalized: outcome.normalized,
+  });
 }
 
 async function waitForSettledSession(page, config) {
@@ -620,7 +523,13 @@ async function batchRunCommand(args) {
 
   // Artifacts are project scoped, not account scoped, so the store keeps using the default config.
   const store = new RunStore(loadConfig());
-  await markBatchStatus(pool, batchId, "running", { touchStart: true });
+  // 与后台 Worker 使用同一套确定性 runId / run_token，两条执行路径不会产生重复 Run
+  await pool.query(
+    `UPDATE sampling_batches
+        SET status = 'running', started_at = COALESCE(started_at, now())
+      WHERE id = $1 AND status <> 'aborted'`,
+    [batchId],
+  );
 
   const byAccount = new Map();
   for (const assignment of assignments) {
@@ -642,15 +551,17 @@ async function batchRunCommand(args) {
         await openDoubao(session.page, config);
         for (const assignment of accountAssignments) {
           try {
+            const runToken = runTokenFor(batchId, assignment.selectionIndex);
             const saved = await executeOne({
               page: session.page,
               store,
               config,
               prompt: assignment.prompt,
               project: batch.project_name,
-              context: { accountKey, samplingBatchId: batchId, brandRules },
+              runId: runIdFor(batchId, assignment.selectionIndex),
+              context: { accountKey, samplingBatchId: batchId, brandRules, runToken, jobId: runToken },
               validation: {
-                caseId: `batch_${batchId}_${assignment.selectionIndex}`,
+                caseId: runToken,
                 targetScenario: assignment.category,
                 tags: [assignment.category].filter(Boolean),
               },
@@ -674,11 +585,9 @@ async function batchRunCommand(args) {
       }
     }
 
-    await markBatchStatus(pool, batchId, success > 0 ? "completed" : "failed", {
-      touchEnd: true,
-    });
+    await refreshBatchProgress(pool, batchId);
   } catch (error) {
-    await markBatchStatus(pool, batchId, "failed", { touchEnd: true }).catch(() => undefined);
+    await refreshBatchProgress(pool, batchId).catch(() => undefined);
     throw error;
   }
 
@@ -699,6 +608,31 @@ async function reportCommand(args) {
   if (args.json) console.log(JSON.stringify(report, null, 2));
 }
 
+async function batchStartCommand(args) {
+  const pool = getPool();
+  if (!pool) throw new Error("DATABASE_URL is not set.");
+  const batchId = Number(args.batch ?? 0);
+  if (!Number.isInteger(batchId) || batchId <= 0) throw new Error("--batch <id> is required");
+
+  const result = await enqueueBatch(pool, batchId);
+  if (!result.started) {
+    console.log(`未启动：${result.reason}`);
+    return;
+  }
+  console.log(`批次 ${batchId} 已入队 ${result.enqueued} 个任务。`);
+  console.log("请确认 Worker 正在运行：npm run worker");
+}
+
+async function batchStopCommand(args) {
+  const pool = getPool();
+  if (!pool) throw new Error("DATABASE_URL is not set.");
+  const batchId = Number(args.batch ?? 0);
+  if (!Number.isInteger(batchId) || batchId <= 0) throw new Error("--batch <id> is required");
+
+  const result = await stopBatch(pool, batchId);
+  console.log(result.stopped ? `批次 ${batchId} 已停止。` : `未停止：${result.reason}`);
+}
+
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
   const args = parseArgs(rest);
@@ -716,12 +650,15 @@ async function main() {
     else if (command === "pool-list") await poolListCommand(args);
     else if (command === "sample") await sampleCommand(args);
     else if (command === "batch-run") await batchRunCommand(args);
+    else if (command === "batch-start") await batchStartCommand(args);
+    else if (command === "batch-stop") await batchStopCommand(args);
     else if (command === "report") await reportCommand(args);
     else throw new Error(`Unknown command: ${command}`);
   } finally {
     // A database failure must be visible to whatever invoked the collector, while the
     // Run itself and its debug artifacts survive.
     await closePool();
+    await closeRedis().catch(() => undefined);
     if (databaseFailures > 0) {
       console.error(
         `有 ${databaseFailures} 条运行写入数据库失败，本地调试产物已保留。`,

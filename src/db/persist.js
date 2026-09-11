@@ -42,11 +42,13 @@ const RUN_UPSERT = `
     submission_method, conversation_reset, current_url, error_code, error_message, error_details,
     local_run_id, artifact_path,
     sampling_batch_id, account_key, conversation_reset_confirmed,
-    brand_mentioned, mention_count, first_mention_position, matched_terms, brand_detection_version
+    brand_mentioned, mention_count, first_mention_position, matched_terms, brand_detection_version,
+    run_token, job_id, attempt
   )
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
           $11, $12, $13, $14, $15, $16::jsonb, $17, $18,
-          $19, $20, $21, $22, $23, $24, $25::jsonb, $26)
+          $19, $20, $21, $22, $23, $24, $25::jsonb, $26,
+          $27, $28, $29)
   ON CONFLICT (local_run_id) DO UPDATE
     SET prompt_id = EXCLUDED.prompt_id,
         provider = EXCLUDED.provider,
@@ -72,7 +74,10 @@ const RUN_UPSERT = `
         mention_count = EXCLUDED.mention_count,
         first_mention_position = EXCLUDED.first_mention_position,
         matched_terms = EXCLUDED.matched_terms,
-        brand_detection_version = EXCLUDED.brand_detection_version
+        brand_detection_version = EXCLUDED.brand_detection_version,
+        run_token = COALESCE(EXCLUDED.run_token, runs.run_token),
+        job_id = COALESCE(EXCLUDED.job_id, runs.job_id),
+        attempt = EXCLUDED.attempt
   RETURNING id
 `;
 
@@ -203,6 +208,9 @@ export async function persistRun({
   artifactPath = null,
   accountKey = null,
   samplingBatchId = null,
+  runToken = null,
+  jobId = null,
+  attempt = null,
 }) {
   if (!pool) throw new DatabasePersistError("persistRun requires a connection pool");
 
@@ -263,6 +271,9 @@ export async function persistRun({
       run?.firstMentionPosition ?? null,
       JSON.stringify(Array.isArray(run?.matchedTerms) ? run.matchedTerms : []),
       run?.brandDetectionVersion ?? null,
+      runToken ?? run?.runToken ?? null,
+      jobId ?? run?.jobId ?? null,
+      attempt ?? run?.attempt ?? 1,
     ]);
     const runId = runResult.rows[0].id;
 
@@ -315,6 +326,7 @@ export async function persistRun({
       trackedCitations,
       accountKey: effectiveAccountKey,
       samplingBatchId: effectiveBatchId,
+      runToken: runToken ?? run?.runToken ?? null,
     };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
