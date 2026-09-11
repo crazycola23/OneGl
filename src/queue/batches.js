@@ -2,6 +2,7 @@ import { Queue } from "bullmq";
 import { safetyConfig } from "../accounts/safety.js";
 import { accountQueueName, getRedis, isQueueConfigured } from "./connection.js";
 import { loadBatch, loadBatchAssignments } from "../sampling/batch.js";
+import { resolveBatchOutcome } from "./batch-status.js";
 
 /**
  * 批次任务入队、停止与进度刷新。
@@ -185,18 +186,22 @@ export async function refreshBatchProgress(pool, batchId) {
   const completed = Number(row.completed);
   const failed = Number(row.failed);
   const requested = Number(row.requested_jobs);
-  const skipped = Number(row.skipped_jobs);
+
+  const outcome = resolveBatchOutcome({
+    requested,
+    completed,
+    failed,
+    skipped: Number(row.skipped_jobs),
+  });
+  const skipped = outcome.skipped;
 
   let status = row.status;
   let finished = false;
 
+  // 人工中止的批次保持 aborted，不被终态判定覆盖。
   if (status !== "aborted") {
-    if (requested > 0 && completed + failed + skipped >= requested) {
-      status = completed === 0 && failed > 0 ? "failed" : failed > 0 ? "partial" : "completed";
-      finished = true;
-    } else {
-      status = "running";
-    }
+    finished = outcome.settled;
+    status = outcome.settled ? outcome.status : "running";
   }
 
   await pool.query(
@@ -232,7 +237,13 @@ export async function batchProgress(pool, batchId) {
   const requested = Number(batch.requested_jobs);
   const completed = Number(batch.completed_jobs);
   const failed = Number(batch.failed_jobs);
-  const skipped = Number(batch.skipped_jobs);
+  // 与终态判定用同一套口径，避免进度页显示的 skipped 与最终状态对不上。
+  const { skipped } = resolveBatchOutcome({
+    requested,
+    completed,
+    failed,
+    skipped: Number(batch.skipped_jobs),
+  });
   const done = completed + failed + skipped;
 
   // 队列计数必须按 batchId 过滤：同一账号队列里可能有多个批次的任务。
