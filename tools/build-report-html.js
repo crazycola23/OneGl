@@ -3,20 +3,47 @@ import { readFile, writeFile } from "node:fs/promises";
 /**
  * 把 tools/export-batch.js 导出的批次快照渲染成一份自包含的 HTML 报告。
  *
+ * 这里是**通用**渲染器：只依赖快照数据与一个可选的 profile。
+ * 客户专属的东西（品牌叙述、行业措辞、要监控的自有域名、要强调的词、
+ * 行业结论）一律不放这里，而是通过 --profile 传入外部文件，并把该文件
+ * 放进 .gitignore，避免客户信息进入公开仓库。
+ *
+ * 用法：
+ *   node tools/build-report-html.js <快照.json> <输出.html> [--profile <profile.json>]
+ *
  * 输出不依赖任何 CDN 与外部字体：客户直接双击打开就能看，也可以离线存档。
- * 用法：node tools/build-report-html.js <快照.json> <输出.html>
  */
-const [, , inputFile, outputFile] = process.argv;
+const [, , inputFile, outputFile, ...rest] = process.argv;
 if (!inputFile || !outputFile) {
-  console.error("用法：node tools/build-report-html.js <快照.json> <输出.html>");
+  console.error(
+    "用法：node tools/build-report-html.js <快照.json> <输出.html> [--profile <profile.json>]",
+  );
   process.exit(1);
 }
+
+const profileFlagIndex = rest.findIndex((token) => token === "--profile");
+const profileFile = profileFlagIndex >= 0 ? rest[profileFlagIndex + 1] : null;
 
 const snapshot = JSON.parse(await readFile(inputFile, "utf8"));
 const { report, runs, citations, domains } = snapshot;
 
+/** 客户/项目专属的呈现选项。全部可省略，省略时报告依然完整可读。 */
+const profile = {
+  title: null,
+  subtitle: null,
+  // 哪个分类代表「问题里直接点名品牌」。没配置就不做直问/拓词的对照。
+  directCategory: null,
+  // 需要单独标注的自有域名（数据驱动，不在代码里写死任何域名）。
+  ownDomains: [],
+  // 需要高亮的关键词（通用渲染器不预设任何行业词）。
+  highlightTerms: [],
+  // 额外的结论条目，属于客户语境，由 profile 提供。
+  notes: [],
+  ...(profileFile ? JSON.parse(await readFile(profileFile, "utf8")) : {}),
+};
+
 // The snapshot is embedded into a <script> block, so any literal "</script>" (or "<!--")
-// inside a captured answer would terminate the block early. Escaping "<" as \\u003c is
+// inside a captured answer would terminate the block early. Escaping "<" as \u003c is
 // still valid JSON and keeps the payload from breaking out of the tag.
 const embeddedData = JSON.stringify(snapshot).replace(/</g, "\\u003c");
 
@@ -28,7 +55,7 @@ const html = `<!doctype html>
 <title>${report.batch.project_name} · 豆包可见度监测报告</title>
 <style>
   :root {
-    /* 暖色调：赭石 / 陶土 / 琥珀金 + 米白底，贴合中医馆的调性 */
+    /* 暖色调：赭石 / 陶土 / 琥珀金 + 米白底 */
     --bg:            #FBF6F0;
     --surface:       #FFFFFF;
     --surface-alt:   #F7EEE4;
@@ -59,7 +86,6 @@ const html = `<!doctype html>
   }
 
   * { box-sizing: border-box; }
-
   html { -webkit-text-size-adjust: 100%; }
 
   body {
@@ -95,7 +121,7 @@ const html = `<!doctype html>
     opacity: .88; margin: 0 0 12px;
   }
   .masthead h1 { margin: 0; font-size: 33px; line-height: 1.25; font-weight: 700; letter-spacing: .01em; }
-  .masthead .subtitle { margin: 12px 0 0; font-size: 15px; opacity: .93; max-width: 60ch; }
+  .masthead .subtitle { margin: 12px 0 0; font-size: 15px; opacity: .93; max-width: 62ch; }
   .meta-grid {
     margin-top: 26px; display: grid; gap: 10px 30px;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -167,7 +193,7 @@ const html = `<!doctype html>
   }
   .bar-row .val { text-align: right; font-size: 13.5px; font-weight: 700; color: var(--ink); }
 
-  /* 两栏对照（直问 vs 拓词） */
+  /* 两栏对照 */
   .compare { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; margin-top: 4px; }
   @media (max-width: 620px) { .compare { grid-template-columns: 1fr; } }
   .compare .side { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px 17px; background: var(--surface-alt); }
@@ -212,7 +238,6 @@ const html = `<!doctype html>
   mark {
     background: #F6E0A8; color: #6B4A05; padding: 0 3px; border-radius: 3px; font-weight: 600;
   }
-  mark.neg { background: #F3D3CC; color: #8C2A20; }
 
   .callout {
     margin-top: 18px; padding: 16px 18px; border-radius: var(--radius-sm);
@@ -249,26 +274,28 @@ const html = `<!doctype html>
   </header>
 
   <h2 class="section">核心结论</h2>
-  <p class="section-note">以下结论全部来自本轮真实提问与豆包可见引用，未做任何推断性补全。</p>
+  <p class="section-note">以下结论全部来自本轮真实提问与豆包可见引用，未做推断性补全。</p>
   <div class="verdict" id="verdict"></div>
 
   <h2 class="section">关键指标</h2>
   <p class="section-note">RUN 级与 PROMPT 级提及率分开计算：前者统计回答次数，后者统计不同问题，避免某一问题被重复提问后拉偏整体结果。</p>
   <div class="kpi-row" id="kpiRow"></div>
 
-  <h2 class="section">提及率的结构性落差</h2>
-  <p class="section-note">同一品牌，被“点名问”与被“场景问”的结果完全不同——这是本轮最重要的发现。</p>
-  <div class="card">
-    <h3>品牌直问 vs 侧面拓词</h3>
-    <p class="hint">品牌直问＝问题里直接出现店名；侧面拓词＝用户按需求提问（如“绍兴正骨哪家好”），品牌是否被主动推荐。</p>
-    <div class="compare" id="compareBox"></div>
-    <div id="compareDetail" style="margin-top:20px"></div>
+  <div id="compareSection">
+    <h2 class="section" id="compareTitle">提及率的结构性落差</h2>
+    <p class="section-note" id="compareNote"></p>
+    <div class="card">
+      <h3 id="compareHead"></h3>
+      <p class="hint" id="compareHint"></p>
+      <div class="compare" id="compareBox"></div>
+      <div id="compareFallback"></div>
+    </div>
   </div>
 
   <div class="chart-grid">
     <div class="card">
       <h3>各问题类型的提及率</h3>
-      <p class="hint">按问题池分类拆分，右侧数字为“提到品牌的有效回答 / 该分类有效回答”。</p>
+      <p class="hint">按问题池分类拆分，右侧数字为「提到品牌的有效回答 / 该分类有效回答」。</p>
       <div id="categoryChart"></div>
     </div>
     <div class="card">
@@ -279,7 +306,7 @@ const html = `<!doctype html>
   </div>
 
   <h2 class="section">引用抓取完整度</h2>
-  <p class="section-note">豆包界面标注的来源条数（expected）与实际抓到的条数（captured）。差额来自引用被折叠或未展开，属于采集口径问题，不影响“是否提及品牌”的判定。</p>
+  <p class="section-note">豆包界面标注的来源条数（expected）与实际成功解析的条数（captured）。差额原因见下方口径说明。</p>
   <div class="card"><div id="captureChart"></div></div>
 
   <h2 class="section">逐题明细</h2>
@@ -291,9 +318,11 @@ const html = `<!doctype html>
     </tr></thead><tbody id="runsBody"></tbody></table>
   </div>
 
-  <h2 class="section">品牌直问：豆包原话摘录</h2>
-  <p class="section-note">这是客户最需要看清的部分——豆包“认识”这个品牌，但它的叙述方向未必是正向的。</p>
-  <div id="quotes"></div>
+  <div id="quotesSection">
+    <h2 class="section">点名提问的回答摘录</h2>
+    <p class="section-note">问题里直接出现品牌名时，豆包给出的原始表述。这里只做忠实摘录，便于人工核对表述方向。</p>
+    <div id="quotes"></div>
+  </div>
 
   <h2 class="section">方法与口径</h2>
   <div class="card">
@@ -308,6 +337,8 @@ const html = `<!doctype html>
 
 <script>
 const DATA = ${embeddedData};
+/* 客户/项目专属的呈现选项；通用渲染器只在有配置时才启用对应区块。 */
+const PROFILE = ${JSON.stringify(profile).replace(/</g, "\\u003c")};
 
 /* ------------------------------------------------------------------ 常量 */
 const PALETTE = ["#A8471F", "#C0653A", "#C2892E", "#D9A85C", "#8C7A5B",
@@ -325,30 +356,31 @@ const fmtTime = (iso) => iso ? new Date(iso).toLocaleString("zh-CN", { hour12: f
 /* --------------------------------------------------------------- 数据派生 */
 const VALID = new Set(["success", "partial"]);
 const validRuns = runs.filter((r) => VALID.has(r.status) && r.conversation_reset_confirmed === true);
-const direct = validRuns.filter((r) => r.category === "品牌直问");
-const indirect = validRuns.filter((r) => r.category !== "品牌直问");
+const directCategory = PROFILE.directCategory || null;
+const direct = directCategory ? validRuns.filter((r) => r.category === directCategory) : [];
+const indirect = directCategory ? validRuns.filter((r) => r.category !== directCategory) : [];
 const mentionedIn = (list) => list.filter((r) => r.brand_mentioned === true).length;
 
-const ownDomain = (() => {
-  const hit = DATA.domains.find((d) => /fuzhengtang|qidaifuzhengtang/i.test(d.domain));
-  return hit ?? null;
-})();
-const ownCitations = ownDomain
-  ? DATA.citations.filter((c) => c.domain === ownDomain.domain)
+const ownDomains = (PROFILE.ownDomains || []).map((d) => String(d).toLowerCase());
+const ownDomainRows = DATA.domains.filter((d) => ownDomains.includes(String(d.domain).toLowerCase()));
+const ownCitations = (PROFILE.ownDomains || []).length
+  ? DATA.citations.filter((c) => ownDomains.includes(String(c.domain).toLowerCase()))
   : [];
 const ownRuns = new Set(ownCitations.map((c) => c.run_id)).size;
 
-const completeRuns = validRuns.filter(
-  (r) => r.expected_citation_count != null && r.captured_citation_count >= r.expected_citation_count);
-const gapTotal = validRuns.reduce((sum, r) => sum +
-  Math.max(0, (r.expected_citation_count ?? 0) - r.captured_citation_count), 0);
+const withExpectation = validRuns.filter((r) => r.expected_citation_count != null);
+const completeRuns = withExpectation.filter(
+  (r) => r.captured_citation_count >= r.expected_citation_count);
+const gapTotal = withExpectation.reduce((sum, r) =>
+  Math.max(0, r.expected_citation_count - r.captured_citation_count), 0);
 
 /* ------------------------------------------------------------------ 封面 */
 document.getElementById("coverTitle").textContent =
-  report.batch.project_name + " · 豆包可见度监测报告";
+  PROFILE.title || (report.batch.project_name + " · 豆包可见度监测报告");
 document.getElementById("coverSubtitle").textContent =
-  "通过关键词池随机抽样，用真实账号在独立新会话中向豆包提问，统计目标品牌在 AI 回答中的提及率，"
-  + "以及品牌相关内容进入豆包可见引用来源的情况。";
+  PROFILE.subtitle ||
+  "通过关键词池随机抽样，在独立新会话中向豆包提问，统计目标品牌在 AI 回答中的提及率，"
+  + "以及相关内容进入豆包可见引用来源的情况。";
 document.getElementById("coverMeta").innerHTML = [
   ["监测品牌", report.batch.target_brand ?? report.batch.project_name],
   ["观测平台", "豆包 Web（" + report.batch.provider + "）"],
@@ -359,26 +391,55 @@ document.getElementById("coverMeta").innerHTML = [
 ].map(([k, v]) => \`<div class="meta-item"><div class="k">\${esc(k)}</div><div class="v">\${esc(v)}</div></div>\`).join("");
 
 /* ------------------------------------------------------------------ 结论 */
-const dRate = direct.length ? mentionedIn(direct) / direct.length : 0;
-const iRate = indirect.length ? mentionedIn(indirect) / indirect.length : 0;
-document.getElementById("verdict").innerHTML = \`
-  <h3>一句话总结</h3>
-  <ol>
-    <li>被直接点名时，豆包 <span class="hl-good">\${mentionedIn(direct)}/\${direct.length} 次都能答出这个品牌</span>（提及率 \${pct(mentionedIn(direct), direct.length)}），说明品牌在公开信息里“存在且可被检索到”。</li>
-    <li>但在用户真实的场景化提问下，豆包 <span class="hl-bad">\${mentionedIn(indirect)}/\${indirect.length} 次主动推荐该品牌</span>（提及率 \${pct(mentionedIn(indirect), indirect.length)}）——品牌没有进入 AI 的推荐候选池。</li>
-    <li>更需要注意的是回答的“定性”：直问时豆包给出的描述集中在<span class="hl-bad">养生保健门店、非医疗机构、口碑分化、夸大宣传投诉、门店注销</span>等方向，而非正向口碑。</li>
-  </ol>
-\`;
+(function renderVerdict() {
+  const items = [];
+
+  if (directCategory && direct.length) {
+    items.push(
+      \`被点名问到时，豆包 <span class="hl-good">\${mentionedIn(direct)}/\${direct.length} 次给出了这个品牌</span>\` +
+      \`（提及率 \${pct(mentionedIn(direct), direct.length)}）。\`
+    );
+    items.push(
+      \`在场景化提问下，豆包 <span class="hl-bad">\${mentionedIn(indirect)}/\${indirect.length} 次主动提到该品牌</span>\` +
+      \`（提及率 \${pct(mentionedIn(indirect), indirect.length)}）。两者相差 \` +
+      \`<strong>\${(pct(mentionedIn(direct), direct.length) === "—" ? "—" : (mentionedIn(direct) / direct.length * 100 - (indirect.length ? mentionedIn(indirect) / indirect.length * 100 : 0)).toFixed(1) + " 个百分点")}</strong>。\`
+    );
+  } else {
+    items.push(
+      \`本轮有效回答 \${validRuns.length} 条，其中 <strong>\${report.runs.mentioned} 条</strong>提到目标品牌\` +
+      \`（RUN 级提及率 \${pct(report.runs.mentioned, report.runs.valid)}，PROMPT 级 \${pct(report.prompts.mentioned, report.prompts.total)}）。\`
+    );
+    items.push(
+      "本报告的 profile 未定义「点名提问」分类，因此没有做点名与场景提问的对照拆分。"
+    );
+  }
+
+  if (withExpectation.length) {
+    items.push(
+      \`引用抓取：\${withExpectation.length} 条带引用标注的回答中 \${completeRuns.length} 条完全抓齐\` +
+      \`（合计差额 \${gapTotal} 条）。引用来源统计因此按保守口径呈现，详见「方法与口径」。\`
+    );
+  }
+
+  (PROFILE.notes || []).forEach((note) => items.push(note));
+
+  document.getElementById("verdict").innerHTML =
+    \`<h3>一句话总结</h3><ol>\${items.map((i) => \`<li>\${i}</li>\`).join("")}</ol>\`;
+})();
 
 /* ------------------------------------------------------------------- KPI */
 const kpis = [
   { label: "有效回答数", value: validRuns.length, unit: "/ " + report.batch.sample_size, foot: "已确认独立新会话", cls: "" },
   { label: "RUN 级提及率", value: pct(report.runs.mentioned, report.runs.valid), unit: "", foot: report.runs.mentioned + " / " + report.runs.valid + " 次回答提及", cls: "is-accent" },
-  { label: "品牌直问提及率", value: pct(mentionedIn(direct), direct.length), unit: "", foot: mentionedIn(direct) + " / " + direct.length + " 条", cls: "is-good" },
-  { label: "场景提问提及率", value: pct(mentionedIn(indirect), indirect.length), unit: "", foot: mentionedIn(indirect) + " / " + indirect.length + " 条", cls: "is-bad" },
+  { label: "PROMPT 级覆盖", value: pct(report.prompts.mentioned, report.prompts.total), unit: "", foot: report.prompts.mentioned + " / " + report.prompts.total + " 个去重问题", cls: "" },
   { label: "可见引用总数", value: report.citations.total, unit: "条", foot: "来自 " + report.citations.domains + " 个域名", cls: "" },
   { label: "唯一被引文章", value: report.citations.articles, unit: "篇", foot: "去重后", cls: "" },
 ];
+if (directCategory && direct.length) {
+  kpis.splice(2, 0,
+    { label: "点名提问提及率", value: pct(mentionedIn(direct), direct.length), unit: "", foot: mentionedIn(direct) + " / " + direct.length + " 条", cls: "is-good" },
+    { label: "场景提问提及率", value: pct(mentionedIn(indirect), indirect.length), unit: "", foot: mentionedIn(indirect) + " / " + indirect.length + " 条", cls: "is-bad" });
+}
 document.getElementById("kpiRow").innerHTML = kpis.map((k) => \`
   <div class="kpi \${k.cls}">
     <div class="label">\${esc(k.label)}</div>
@@ -386,18 +447,41 @@ document.getElementById("kpiRow").innerHTML = kpis.map((k) => \`
     <div class="foot">\${esc(k.foot)}</div>
   </div>\`).join("");
 
-/* -------------------------------------------------------- 直问 vs 拓词 */
-document.getElementById("compareBox").innerHTML = \`
-  <div class="side good">
-    <div class="cap">品牌直问（问题里含店名）</div>
-    <div class="big">\${pct(mentionedIn(direct), direct.length)}</div>
-    <div class="sub">\${mentionedIn(direct)} / \${direct.length} 条回答提及品牌</div>
-  </div>
-  <div class="side bad">
-    <div class="cap">侧面拓词（按需求提问）</div>
-    <div class="big">\${pct(mentionedIn(indirect), indirect.length)}</div>
-    <div class="sub">\${mentionedIn(indirect)} / \${indirect.length} 条回答提及品牌</div>
-  </div>\`;
+/* -------------------------------------------------------- 点名 vs 场景 */
+(function renderCompare() {
+  if (!directCategory || !direct.length) {
+    document.getElementById("compareTitle").textContent = "点名提问与场景提问的对照";
+    document.getElementById("compareNote").textContent =
+      "该对照需要 profile 指定「点名提问」对应的分类后才能计算。";
+    document.getElementById("compareHead").textContent = "未配置对照分类";
+    document.getElementById("compareHint").textContent = "";
+    document.getElementById("compareBox").innerHTML = "";
+    document.getElementById("compareFallback").innerHTML =
+      \`<div class="callout"><div class="t">如何启用</div>
+        在报告 profile 里设置 <code>directCategory</code> 为问题池中代表「问题里直接出现品牌名」的分类名称。
+        通用渲染器不预设任何分类名。</div>\`;
+    return;
+  }
+
+  document.getElementById("compareNote").textContent =
+    \`点名提问＝问题里直接出现品牌名（分类「\${directCategory}」）；场景提问＝其余用户按需求提问的情况，衡量品牌是否被主动推荐。\`;
+  document.getElementById("compareHead").textContent =
+    \`\${directCategory} vs 场景提问\`;
+  document.getElementById("compareHint").textContent =
+    "两侧都是已确认独立新会话的有效回答。";
+
+  document.getElementById("compareBox").innerHTML = \`
+    <div class="side good">
+      <div class="cap">点名提问（\${esc(directCategory)}）</div>
+      <div class="big">\${pct(mentionedIn(direct), direct.length)}</div>
+      <div class="sub">\${mentionedIn(direct)} / \${direct.length} 条回答提及品牌</div>
+    </div>
+    <div class="side bad">
+      <div class="cap">场景提问（其余分类）</div>
+      <div class="big">\${pct(mentionedIn(indirect), indirect.length)}</div>
+      <div class="sub">\${mentionedIn(indirect)} / \${indirect.length} 条回答提及品牌</div>
+    </div>\`;
+})();
 
 /* ----------------------------------------------------- 分类提及率柱状图 */
 (function renderCategory() {
@@ -428,12 +512,13 @@ document.getElementById("compareBox").innerHTML = \`
 
 /* ----------------------------------------------------------- 抓取完整度 */
 (function renderCapture() {
-  const rows = validRuns.filter((r) => r.expected_citation_count != null)
+  const rows = withExpectation
+    .slice()
     .sort((a, b) => a.selection_index - b.selection_index);
   const max = Math.max(...rows.map((r) => r.expected_citation_count), 1);
   const head = \`<div style="display:flex;gap:20px;font-size:12.5px;color:var(--ink-mute);margin-bottom:14px">
-      <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:\${COLORS.primarySoft};margin-right:6px"></i>实际抓到</span>
-      <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:\${COLORS.track};margin-right:6px"></i>界面标注（未抓到部分）</span>
+      <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:\${COLORS.primarySoft};margin-right:6px"></i>成功解析</span>
+      <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:\${COLORS.track};margin-right:6px"></i>界面标注（差额部分）</span>
     </div>\`;
   const bars = rows.map((r) => {
     const exp = r.expected_citation_count, cap = r.captured_citation_count;
@@ -452,13 +537,15 @@ document.getElementById("compareBox").innerHTML = \`
       <div class="val">\${cap} / \${exp}</div>
     </div>\`;
   }).join("");
-  document.getElementById("captureChart").innerHTML =
-    head + bars +
+
+  document.getElementById("captureChart").innerHTML = head + bars +
     \`<div class="callout">
-      <div class="t">口径提示</div>
-      本批次 \${rows.length} 条有引用标注的回答中，\${completeRuns.length} 条完全抓齐，合计少抓 \${gapTotal} 条引用。
-      差额来自豆包把引用折叠（如「+N」）或未在当前视图展开，属于采集口径差异，
-      <strong>不影响“是否提及品牌”的判定</strong>，但会让引用来源的统计偏保守（实际来源会比本报告更多）。
+      <div class="t">口径说明（差额原因未确认）</div>
+      本批次 \${withExpectation.length} 条有引用标注的回答中，\${completeRuns.length} 条与界面标注数量一致，
+      合计差额 \${gapTotal} 条。页面标注的引用数量高于成功解析数量，
+      <strong>可能来自折叠展示、DOM 结构变化或解析未覆盖</strong>；
+      本轮未对差额成因做验证，因此引用来源统计按保守口径展示——
+      实际可见来源可能多于本报告，本报告不据此推断任何来源未被引用。
     </div>\`;
 })();
 
@@ -470,7 +557,7 @@ document.getElementById("runsBody").innerHTML = runs.map((r) => {
     : r.brand_mentioned === false ? '<span class="tag no">未提及</span>'
     : '<span class="tag no">未判定</span>';
   const status = !valid
-    ? \`<span class="tag bad">\${r.error_code ?? "失败"}</span>\`
+    ? \`<span class="tag bad">\${esc(r.error_code ?? "失败")}</span>\`
     : r.status === "partial" ? '<span class="tag warm">部分成功</span>'
     : '<span class="tag yes">成功</span>';
   return \`<tr>
@@ -485,16 +572,18 @@ document.getElementById("runsBody").innerHTML = runs.map((r) => {
 }).join("");
 
 /* ----------------------------------------------------------- 原话摘录 */
-const KEY_PHRASES = [
-  "非医疗机构", "养生保健", "不能治病", "口碑分化", "口碑两极",
-  "夸大宣传", "经营异常", "注销", "营销套路", "退费纠纷", "加盟",
-];
 (function renderQuotes() {
-  const directRuns = runs.filter((r) => r.category === "品牌直问" && r.answer_excerpt);
-  document.getElementById("quotes").innerHTML = directRuns.map((r) => {
+  if (!directCategory) {
+    document.getElementById("quotesSection").style.display = "none";
+    return;
+  }
+  const terms = PROFILE.highlightTerms || [];
+  const quoteRuns = runs.filter((r) => r.category === directCategory && r.answer_excerpt);
+  document.getElementById("quotes").innerHTML = quoteRuns.map((r) => {
     let text = esc(r.answer_excerpt);
-    for (const phrase of KEY_PHRASES) {
-      text = text.replaceAll(phrase, \`<mark class="neg">\${phrase}</mark>\`);
+    for (const term of terms) {
+      if (!term) continue;
+      text = text.replaceAll(esc(term), \`<mark>\${esc(term)}</mark>\`);
     }
     return \`<div class="quote">
       <div class="q-head">
@@ -507,17 +596,24 @@ const KEY_PHRASES = [
 })();
 
 /* --------------------------------------------------------------- 方法 */
-document.getElementById("methodList").innerHTML = [
-  \`<strong>数据来源</strong>：通过 Camoufox 驱动的真实浏览器访问豆包 Web，使用已登录账号，\${validRuns.length} 条提问均在<strong>独立新建会话</strong>中完成（会话重置已逐条确认），不使用历史上下文，保证测的是 P(提及品牌 | 该问题) 而非 P(提及品牌 | 问题＋历史对话)。\`,
-  \`<strong>抽样可复现</strong>：问题池 \${report.batch.pool_size} 条，分层随机抽取 \${report.batch.sample_size} 条，随机种子 <code>\${esc(report.batch.sampling_seed)}</code>，池版本 \${esc(report.batch.pool_version)}。任何人用同一命令可复现同一批问题。\`,
-  \`<strong>提及判定</strong>：规则匹配（品牌全称与别名），保留原始回答供人工复核；重叠匹配保留最长项，避免“绍兴七代扶正堂”被拆成两次计数。规则版本 rules-v1。\`,
-  \`<strong>两类提及率</strong>：RUN 级＝提及的回答数 ÷ 有效回答数；PROMPT 级＝提到品牌的去重问题数 ÷ 总问题数。两者不合并成单一分数。\`,
-  \`<strong>引用口径</strong>：统计的是“豆包最终回答里对用户可见的引用来源”，即 AI Citation Inclusion，不等同于搜索引擎收录或训练数据收录。\`,
-  \`<strong>有效样本</strong>：\${report.runs.failed} 条因页面异常未完成（\${(report.failures || []).map((f) => f.error_code).join("、") || "—"}），不计入统计；\${report.runs.partial} 条“部分成功”指回答完整但引用数未抓齐，仍计入提及率。\`,
-  ownDomain
-    ? \`<strong>品牌自有站点</strong>：\${esc(ownDomain.domain)} 在本轮被引用 \${ownDomain.citations} 次（涉及 \${ownRuns} 条回答），仅出现在品牌直问中。\`
-    : "",
-].filter(Boolean).map((item) => \`<li>\${item}</li>\`).join("");
+(function renderMethod() {
+  const ownDomainText = ownDomainRows.length
+    ? \`<strong>指定自有域名</strong>：\${ownDomainRows.map((d) => esc(d.domain) + "（被引用 " + d.citations + " 次，涉及 " +
+        DATA.citations.filter((c) => c.domain === d.domain).length + " 条引用）").join("、")}。\`
+    : "";
+
+  const items = [
+    \`<strong>数据来源</strong>：通过 Camoufox 驱动的真实浏览器访问豆包 Web，使用已登录账号，\${validRuns.length} 条提问均在<strong>独立新建会话</strong>中完成（会话重置已逐条确认），不使用历史上下文，保证测的是 P(提及品牌 | 该问题) 而非 P(提及品牌 | 问题＋历史对话)。无法确认新会话时该条提问不会被执行，直接记为失败。\`,
+    \`<strong>抽样可复现</strong>：问题池 \${report.batch.pool_size} 条，分层随机抽取 \${report.batch.sample_size} 条，随机种子 <code>\${esc(report.batch.sampling_seed)}</code>，池版本 \${esc(report.batch.pool_version)}。同一命令可复现同一批问题。\`,
+    \`<strong>提及判定</strong>：规则匹配（品牌全称与别名），保留原始回答供人工复核；重叠匹配保留最长项。规则版本 rules-v1。\`,
+    \`<strong>两类提及率</strong>：RUN 级＝提及的回答数 ÷ 有效回答数；PROMPT 级＝提到品牌的去重问题数 ÷ 总问题数。两者不合并成单一分数。\`,
+    \`<strong>引用口径</strong>：统计的是「豆包最终回答里对用户可见的引用来源」，即 AI Citation Inclusion，不等同于搜索引擎收录或训练数据收录。\`,
+    \`<strong>有效样本</strong>：\${report.runs.failed} 条未完成（\${(report.failures || []).map((f) => f.error_code).join("、") || "—"}），不计入统计；\${report.runs.partial} 条「部分成功」指回答完整但引用数未能与界面标注对齐，其回答仍然完整有效，因此计入提及率。\`,
+    ownDomainText,
+  ].filter(Boolean);
+
+  document.getElementById("methodList").innerHTML = items.map((item) => \`<li>\${item}</li>\`).join("");
+})();
 
 document.getElementById("generatedAt").textContent =
   new Date().toLocaleString("zh-CN", { hour12: false });

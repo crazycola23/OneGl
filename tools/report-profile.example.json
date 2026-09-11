@@ -1,0 +1,16 @@
+{
+  "_comment": "报告 profile 示例。通用渲染器 tools/build-report-html.js 只依赖批次快照；本文件用于注入某个客户/项目专属的呈现内容。真实客户 profile 请放到 local/ 目录（已 gitignore），不要提交。用法：node tools/build-report-html.js <快照.json> <输出.html> --profile <profile.json>",
+
+  "title": "示例品牌 · 豆包可见度监测报告",
+  "subtitle": "说明这段报告的业务背景、观测周期与用途，可由 profile 覆盖默认文案。",
+
+  "directCategory": "品牌直问",
+
+  "ownDomains": ["example.com"],
+
+  "highlightTerms": ["投诉", "夸大宣传"],
+
+  "notes": [
+    "这里可以补充属于该客户语境的结论。通用渲染器不会预设任何行业措辞。"
+  ]
+}
