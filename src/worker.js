@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { UnrecoverableError, Worker } from "bullmq";
+import { DelayedError, UnrecoverableError, Worker } from "bullmq";
 import {
   ACCOUNT_BLOCKING_CODES,
   RETRYABLE_CODES,
@@ -19,6 +19,7 @@ import { openDoubao } from "./doubao.js";
 import { loadBrandRules } from "./project/init.js";
 import { accountQueueName, closeRedis, getRedis, isQueueConfigured } from "./queue/connection.js";
 import { refreshBatchProgress, runIdFor, runTokenFor } from "./queue/batches.js";
+import { planUnavailableJob } from "./queue/job-plan.js";
 import { RunStore } from "./store.js";
 
 /**
@@ -42,6 +43,9 @@ const pool = createPool();
 const safety = safetyConfig();
 const prefix = process.env.ONEGL_QUEUE_PREFIX ?? "onegl";
 const WORKER_CONCURRENCY_PER_ACCOUNT = 1;
+// 一个临时冷却的任务最多被推迟几次。冷却本身不消耗重试次数，所以需要一个上限，
+// 否则账号长期不可用（例如连续失败一直续冷却）时任务会无限期地挂着。
+const MAX_COOLDOWN_WAITS = 3;
 
 const sessions = new Map();
 const brandRulesCache = new Map();
@@ -128,11 +132,13 @@ async function markSkipped(batchId, reason) {
   log({ event: "job-skipped", batch_id: batchId, reason });
 }
 
-async function handleJob(job) {
+async function handleJob(job, token) {
   const { batchId, selectionIndex, accountKey, projectName } = job.data;
   const runToken = runTokenFor(batchId, selectionIndex);
   const runId = runIdFor(batchId, selectionIndex);
   const startedAt = Date.now();
+  // BullMQ 的 attemptsMade 是「已经失败过的次数」，所以当前这次是 +1。
+  const attempt = job.attemptsMade + 1;
 
   log({
     event: "job-start",
@@ -140,7 +146,7 @@ async function handleJob(job) {
     run_id: runId,
     prompt_id: selectionIndex,
     account_key: accountKey,
-    attempt: job.attemptsMade + 1,
+    attempt,
   });
 
   const { rows: batchRows } = await pool.query(
@@ -168,9 +174,42 @@ async function handleJob(job) {
 
   const availability = await accountAvailability(pool, accountKey, safety);
   if (!availability.available) {
-    await markSkipped(batchId, availability.reason);
+    const plan = planUnavailableJob({
+      availability,
+      cooldownWaits: Number(job.data.cooldownWaits ?? 0),
+      maxCooldownWaits: MAX_COOLDOWN_WAITS,
+    });
+
+    // 临时状态（冷却 / 频率限制 / 当日额度用完）不能把采样任务永久丢掉：
+    // 推迟到恢复时刻再执行，且不消耗重试次数。
+    if (plan.action === "delay") {
+      await job.updateData({ ...job.data, cooldownWaits: plan.cooldownWaits });
+      await job.moveToDelayed(plan.retryAt, token);
+      log({
+        event: "job-delayed",
+        batch_id: batchId,
+        run_id: runId,
+        account_key: accountKey,
+        reason: plan.reason,
+        retry_at: new Date(plan.retryAt).toISOString(),
+        waits: plan.cooldownWaits,
+      });
+      // DelayedError 告诉 BullMQ「这不是失败，只是稍后再跑」。
+      throw new DelayedError();
+    }
+
+    // 永久/人工阻塞（禁用、登录失效、验证码、访问受限、人工暂停），
+    // 或等待次数已用完：跳过并停止继续撞击该账号，等人工处理。
+    log({
+      event: plan.exhausted ? "job-delay-exhausted" : "job-skipped-permanent",
+      batch_id: batchId,
+      run_id: runId,
+      account_key: accountKey,
+      reason: plan.reason,
+    });
+    await markSkipped(batchId, plan.reason);
     await refreshBatchProgress(pool, batchId);
-    return { skipped: true, reason: availability.reason };
+    return { skipped: true, reason: plan.reason };
   }
 
   await gate.acquire();
@@ -212,6 +251,8 @@ async function handleJob(job) {
         brandRules,
         runToken,
         jobId: job.id,
+        // 真实重试次数，最终写进 runs.attempt，诊断时才知道这条记录是第几次尝试的结果。
+        attempt,
       },
     });
 
@@ -292,7 +333,8 @@ async function startWorkerFor(accountKey) {
   if (workers.has(accountKey) || shuttingDown) return;
 
   const name = accountQueueName(accountKey);
-  const worker = new Worker(name, handleJob, {
+  // token 必须透传给处理器：moveToDelayed 需要它来把任务挪到冷却结束时刻。
+  const worker = new Worker(name, (job, token) => handleJob(job, token), {
     connection: getRedis(),
     // 单账号串行：同一账号任何时刻只允许一个豆包会话任务
     concurrency: WORKER_CONCURRENCY_PER_ACCOUNT,

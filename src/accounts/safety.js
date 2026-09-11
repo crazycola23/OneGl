@@ -74,6 +74,8 @@ export const RETRYABLE_CODES = new Set([
   "NETWORK_ERROR",
   // Playwright 自身的瞬时超时（元素被重渲染等）也走这里，重试上限同样是 2 次
   "UNKNOWN_ERROR",
+  // 会话没能确认是干净的新会话：属于页面状态问题，重试可能就好，但绝不带着旧上下文提问。
+  "DOUBAO_CONVERSATION_RESET_FAILED",
 ]);
 
 export function isRetryable(code) {
@@ -82,6 +84,146 @@ export function isRetryable(code) {
 
 export function isBlocking(code) {
   return Object.prototype.hasOwnProperty.call(ACCOUNT_BLOCKING_CODES, code);
+}
+
+// ---------------------------------------------------------------------------
+// 自然日与时区
+//
+// 「每日提问上限」必须按账号所在的自然日算。OneGl 当前只面向中国豆包账号，
+// 用 UTC 自然日会让北京时间 08:00 之前的提问算到前一天，限额实际是错位的。
+// 因此这里显式使用账号时区，不依赖服务器本地时区。
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_ACCOUNT_TIME_ZONE = "Asia/Shanghai";
+
+export function accountTimeZone() {
+  const raw = process.env.ONEGL_ACCOUNT_TIMEZONE;
+  const value = raw == null || String(raw).trim() === "" ? DEFAULT_ACCOUNT_TIME_ZONE : String(raw).trim();
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone: value });
+  } catch {
+    throw new Error(
+      `ONEGL_ACCOUNT_TIMEZONE ${JSON.stringify(value)} 不是有效的 IANA 时区，例如 Asia/Shanghai`,
+    );
+  }
+  return value;
+}
+
+/** 某个瞬间在账号时区里属于哪一天，返回 YYYY-MM-DD。 */
+export function accountDayKey(now = new Date(), timeZone = accountTimeZone()) {
+  // en-CA 的短日期格式就是 YYYY-MM-DD
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+/** 该瞬间与账号时区之间的偏移（毫秒）。 */
+function timeZoneOffsetMs(date, timeZone) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    })
+      .formatToParts(date)
+      .map((part) => [part.type, part.value]),
+  );
+  const asUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour) % 24,
+    Number(parts.minute),
+    Number(parts.second),
+  );
+  return asUtc - Math.floor(date.getTime() / 1000) * 1000;
+}
+
+/** 账号时区里的下一个零点（每日限额的重置时刻）。 */
+export function nextAccountDayStart(now = new Date(), timeZone = accountTimeZone()) {
+  const offset = timeZoneOffsetMs(now, timeZone);
+  const shifted = new Date(now.getTime() + offset);
+  const nextMidnight = Date.UTC(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth(),
+    shifted.getUTCDate() + 1,
+    0,
+    0,
+    0,
+  );
+  return new Date(nextMidnight - offset);
+}
+
+/** 把 pg 返回的 date 列（可能是 Date，也可能是字符串）归一成 YYYY-MM-DD。 */
+export function dateKeyOf(value) {
+  if (value == null) return null;
+  if (value instanceof Date) {
+    // node-postgres 把 date 解析成本地零点的 Date，因此读本地分量。
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+  const matched = /^(\d{4}-\d{2}-\d{2})/.exec(String(value));
+  return matched ? matched[1] : null;
+}
+
+// ---------------------------------------------------------------------------
+// 账号可用性判定（纯逻辑，便于离线测试）
+// ---------------------------------------------------------------------------
+
+export const AVAILABILITY = Object.freeze({
+  AVAILABLE: "available",
+  // 临时：冷却、频率限制、当日额度用完。任务应当延迟到 retryAt 再跑，不能丢掉。
+  TEMPORARY: "temporary",
+  // 永久/人工：禁用、登录失效、需要验证码、被限制访问、人工暂停。
+  // 这类要停止继续撞账号，等人工处理。
+  PERMANENT: "permanent",
+});
+
+export function classifyAccountState(state, { config = safetyConfig(), now = new Date() } = {}) {
+  if (!state) return { kind: AVAILABILITY.AVAILABLE, reason: null, retryAt: null };
+
+  if (!state.enabled) {
+    return { kind: AVAILABILITY.PERMANENT, reason: "账号已被禁用", retryAt: null };
+  }
+  if (state.paused_at && !state.cooldown_until) {
+    return {
+      kind: AVAILABILITY.PERMANENT,
+      reason: state.pause_reason ?? "账号已暂停",
+      retryAt: null,
+    };
+  }
+
+  const cooldownUntil = state.cooldown_until ? new Date(state.cooldown_until) : null;
+  if (cooldownUntil && cooldownUntil > now) {
+    return {
+      kind: AVAILABILITY.TEMPORARY,
+      reason: `冷却中，至 ${cooldownUntil.toLocaleString("zh-CN")}`,
+      retryAt: cooldownUntil,
+    };
+  }
+
+  const today = accountDayKey(now);
+  const runsToday =
+    dateKeyOf(state.runs_today_date) === today ? Number(state.runs_today) || 0 : 0;
+  if (runsToday >= config.accountDailyLimit) {
+    return {
+      kind: AVAILABILITY.TEMPORARY,
+      reason: `已达每日上限 ${config.accountDailyLimit} 次`,
+      retryAt: nextAccountDayStart(now),
+    };
+  }
+
+  return { kind: AVAILABILITY.AVAILABLE, reason: null, retryAt: null };
 }
 
 const ENSURE_ACCOUNT = `
@@ -106,40 +248,29 @@ export async function getAccountState(pool, accountKey, provider = "doubao") {
   return rows[0] ?? null;
 }
 
-/** 是否可以继续给这个账号派活。 */
+/**
+ * 是否可以继续给这个账号派活。
+ *
+ * kind 决定调用方的动作：
+ *   available -> 正常执行
+ *   temporary -> 延迟到 retryAt 再跑，不能把任务丢掉
+ *   permanent -> 跳过并停止继续撞击该账号，等人工处理
+ */
 export async function accountAvailability(pool, accountKey, config = safetyConfig()) {
   const state = await getAccountState(pool, accountKey);
-  if (!state) return { available: true, reason: null, state: null };
-
-  if (!state.enabled) {
-    return { available: false, reason: "账号已被禁用", state };
-  }
-  if (state.paused_at && !state.cooldown_until) {
-    return { available: false, reason: state.pause_reason ?? "账号已暂停", state };
-  }
-  if (state.cooldown_until && new Date(state.cooldown_until) > new Date()) {
-    return {
-      available: false,
-      reason: `冷却中，至 ${new Date(state.cooldown_until).toLocaleString("zh-CN")}`,
-      state,
-    };
-  }
-
-  const today = new Date().toISOString().slice(0, 10);
-  const runsToday =
-    state.runs_today_date && String(state.runs_today_date).slice(0, 10) === today
-      ? Number(state.runs_today)
-      : 0;
-  if (runsToday >= config.accountDailyLimit) {
-    return { available: false, reason: `已达每日上限 ${config.accountDailyLimit} 次`, state };
-  }
-
-  return { available: true, reason: null, state };
+  const verdict = classifyAccountState(state, { config });
+  return {
+    available: verdict.kind === AVAILABILITY.AVAILABLE,
+    kind: verdict.kind,
+    reason: verdict.reason,
+    retryAt: verdict.retryAt,
+    state,
+  };
 }
 
-/** 记录一次即将开始的提问，并按自然日重置计数。 */
+/** 记录一次即将开始的提问，并按账号时区的自然日重置计数。 */
 export async function beginAccountRun(pool, accountKey, provider = "doubao") {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = accountDayKey();
   await pool.query(
     `UPDATE accounts
         SET runs_today = CASE
