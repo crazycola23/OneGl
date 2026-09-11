@@ -2,6 +2,11 @@ node_modules/
 .env
 .onegl/
 .venv/
+# 客户交付报告：含具体品牌的监测结论与豆包回答原文，不进公开仓库
+reports/
+# 真实客户的项目配置与关键词池：含客户名称与投放关键词策略，只保留在本地
+examples/project.qidaifuzhengtang.json
+examples/keyword-pool.qidaifuzhengtang.json
 .DS_Store
 npm-debug.log*
 pnpm-debug.log*
