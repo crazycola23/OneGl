@@ -97,9 +97,9 @@ const ARTICLE_UPSERT = `
 const CITATION_UPSERT = `
   INSERT INTO citations (
     run_id, article_id, source_position, citation_marker, answer_text,
-    relation_status, captured_from, visible_to_user, tracked_article_id
+    relation_status, captured_from, visible_to_user, tracked_article_id, source_type
   )
-  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
   ON CONFLICT (run_id, source_position) DO UPDATE
     SET article_id = EXCLUDED.article_id,
         citation_marker = EXCLUDED.citation_marker,
@@ -107,10 +107,15 @@ const CITATION_UPSERT = `
         relation_status = EXCLUDED.relation_status,
         captured_from = EXCLUDED.captured_from,
         visible_to_user = EXCLUDED.visible_to_user,
-        tracked_article_id = EXCLUDED.tracked_article_id
+        tracked_article_id = EXCLUDED.tracked_article_id,
+        source_type = EXCLUDED.source_type
 `;
 
 const ALLOWED_RELATION_STATUS = new Set(["matched", "unresolved"]);
+
+// 'retrieved' 只能由确实拿到、但无法确认 UI 可见的来源显式标注。
+// 默认永远是 'visible'——绝不把 retrieved 自动升级成可见引用。
+const ALLOWED_SOURCE_TYPES = new Set(["visible", "retrieved"]);
 
 function prepareCitations(citations) {
   const unsupported = [
@@ -124,6 +129,20 @@ function prepareCitations(citations) {
     throw new DatabasePersistError(
       `Unsupported relationStatus value(s): ${unsupported.join(", ")}. ` +
         "The schema only accepts 'matched' or 'unresolved'.",
+    );
+  }
+
+  const unsupportedSources = [
+    ...new Set(
+      citations
+        .map((citation) => citation?.sourceType)
+        .filter((value) => value != null && !ALLOWED_SOURCE_TYPES.has(value)),
+    ),
+  ];
+  if (unsupportedSources.length) {
+    throw new DatabasePersistError(
+      `Unsupported sourceType value(s): ${unsupportedSources.join(", ")}. ` +
+        "The schema only accepts 'visible' or 'retrieved'.",
     );
   }
 
@@ -154,6 +173,8 @@ function prepareCitations(citations) {
       relationStatus: citation.relationStatus === "matched" ? "matched" : "unresolved",
       capturedFrom: citation.capturedFrom ?? "DOM",
       visibleToUser: citation.visibleToUser !== false,
+      // 未标注的一律按可见引用处理，因为当前所有抓取路径都是 DOM 可见引用。
+      sourceType: ALLOWED_SOURCE_TYPES.has(citation.sourceType) ? citation.sourceType : "visible",
     });
   });
 
@@ -309,6 +330,7 @@ export async function persistRun({
         row.capturedFrom,
         row.visibleToUser,
         trackedArticleId,
+        row.sourceType,
       ]);
     }
 
