@@ -84,16 +84,35 @@ test("总体风险取配置与账号实时风险的最高值", () => {
 });
 
 test("首页风险面板包含活跃批次停止控制，但不出现验证码绕过逻辑", () => {
-  const previous = {
-    browser: process.env.ONEGL_BROWSER,
-    headless: process.env.ONEGL_HEADLESS,
-    hourly: process.env.ONEGL_ACCOUNT_HOURLY_LIMIT,
-    daily: process.env.ONEGL_ACCOUNT_DAILY_LIMIT,
-  };
-  process.env.ONEGL_BROWSER = "chromium";
-  process.env.ONEGL_HEADLESS = "false";
-  process.env.ONEGL_ACCOUNT_HOURLY_LIMIT = "20";
-  process.env.ONEGL_ACCOUNT_DAILY_LIMIT = "60";
+  const names = [
+    "ONEGL_BROWSER",
+    "ONEGL_HEADLESS",
+    "ONEGL_NETWORK_EVIDENCE",
+    "ONEGL_MIN_DELAY_MS",
+    "ONEGL_MAX_DELAY_MS",
+    "ONEGL_MIN_INTER_RUN_SECONDS",
+    "ONEGL_ACCOUNT_HOURLY_LIMIT",
+    "ONEGL_ACCOUNT_DAILY_LIMIT",
+    "ONEGL_MAX_CONSECUTIVE_FAILURES",
+    "ONEGL_ACCOUNT_COOLDOWN_MINUTES",
+    "ONEGL_RATE_LIMIT_COOLDOWN_MINUTES",
+    "ONEGL_ACCOUNT_PARALLELISM",
+  ];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  Object.assign(process.env, {
+    ONEGL_BROWSER: "chromium",
+    ONEGL_HEADLESS: "false",
+    ONEGL_NETWORK_EVIDENCE: "false",
+    ONEGL_MIN_DELAY_MS: "15000",
+    ONEGL_MAX_DELAY_MS: "30000",
+    ONEGL_MIN_INTER_RUN_SECONDS: "15",
+    ONEGL_ACCOUNT_HOURLY_LIMIT: "20",
+    ONEGL_ACCOUNT_DAILY_LIMIT: "60",
+    ONEGL_MAX_CONSECUTIVE_FAILURES: "3",
+    ONEGL_ACCOUNT_COOLDOWN_MINUTES: "60",
+    ONEGL_RATE_LIMIT_COOLDOWN_MINUTES: "120",
+    ONEGL_ACCOUNT_PARALLELISM: "1",
+  });
   try {
     const system = {
       accounts: {
@@ -117,18 +136,15 @@ test("首页风险面板包含活跃批次停止控制，但不出现验证码�
     };
     const html = riskDashboardPanel(system, { active: "home" });
     assert.match(html, /一键暂停当前全部采集/);
-    assert.match(html, /\/batches\/.*\/stop/);
+    assert.match(html, /'\/batches\/'/);
+    assert.match(html, /'\/stop'/);
     assert.match(html, /account_01/);
     assert.doesNotMatch(html, /captcha.*solve|验证码识别|绕过验证/i);
     assert.equal(sidebarRisk(system).level, "low");
   } finally {
-    if (previous.browser == null) delete process.env.ONEGL_BROWSER;
-    else process.env.ONEGL_BROWSER = previous.browser;
-    if (previous.headless == null) delete process.env.ONEGL_HEADLESS;
-    else process.env.ONEGL_HEADLESS = previous.headless;
-    if (previous.hourly == null) delete process.env.ONEGL_ACCOUNT_HOURLY_LIMIT;
-    else process.env.ONEGL_ACCOUNT_HOURLY_LIMIT = previous.hourly;
-    if (previous.daily == null) delete process.env.ONEGL_ACCOUNT_DAILY_LIMIT;
-    else process.env.ONEGL_ACCOUNT_DAILY_LIMIT = previous.daily;
+    for (const name of names) {
+      if (previous[name] == null) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
   }
 });
