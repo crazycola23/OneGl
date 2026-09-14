@@ -9,10 +9,12 @@ by asking a reproducible sample of questions in independent fresh conversations:
 Keyword pool -> seeded sample -> per-account queue -> fresh conversation
   -> Doubao Web -> Answer -> brand detection -> visible citations
   -> article dedup -> PostgreSQL -> batch report
+                    \\-> optional Network/SSE provenance -> local evidence
 ```
 
-The browser UI is the source of truth for `visible_to_user`. We deliberately do not claim access
-to model training data, hidden model reads, or sources merely because a network request happened.
+The browser UI is the source of truth for `visible_to_user`. Experimental network evidence can
+show search queries and retrieved candidates, but a network-observed source is not automatically
+a citation and does not prove that the final answer used it.
 
 The governing rule is **数据可信度 > 功能数量**: when a run cannot be trusted it is recorded as a
 failure, and when a number cannot be confirmed it is reported as unconfirmed.
@@ -62,7 +64,7 @@ stop-generation button is not rendered on current Doubao builds.
 
 ## Citation truth model
 
-Only DOM-confirmed visible sources are stored as citations:
+Only DOM-confirmed visible sources are stored as citation truth:
 
 - `source_type = visible` (persisted, check-constrained to `visible` | `retrieved`)
 - `captured_from = DOM`
@@ -80,14 +82,52 @@ collapsed UI, a DOM change, or a gap in parsing. Reports must therefore present 
 statistics as a conservative floor, not as an exact figure, and must not attribute the gap to a
 specific cause.
 
-`source_type = retrieved` is reserved for future non-DOM capture. A retrieved source must never be
-auto-promoted into a visible citation. Whether an answer-to-citation link was actually confirmed
-is expressed separately by `relation_status` (`matched` | `unresolved`); the tool never invents
-that relation to make the data look complete.
+A retrieved source must never be auto-promoted into a visible citation. Whether an
+answer-to-citation link was actually confirmed is expressed separately by `relation_status`
+(`matched` | `unresolved`); the tool never invents that relation to make the data look complete.
+
+## Experimental Network / SSE provenance
+
+`src/network-evidence.js` is an opt-in passive observer enabled with
+`ONEGL_NETWORK_EVIDENCE=true`. It listens to Playwright response events during a run and examines
+only internal Doubao/ByteDance response traffic with search-result-shaped content.
+
+It can parse JSON, SSE `data:` chunks, and nested/stringified JSON. Search evidence is recognized
+through structures such as `block_type:10025`, `search_query_result`, and related search-result
+keys. When present, the collector extracts:
+
+- generated search queries;
+- external retrieved source URL;
+- title / source-site / summary when exposed;
+- source position or rank when exposed;
+- sanitized response endpoint metadata.
+
+Every network candidate is marked conservatively:
+
+```json
+{
+  "sourceType": "retrieved",
+  "capturedFrom": "NETWORK",
+  "visibleToUser": false,
+  "relationStatus": "unresolved"
+}
+```
+
+The collector parses response bodies in memory, but raw response bodies are not written to disk.
+Saved endpoint identity strips query strings, and the evidence object does not copy browser
+cookies or authorization headers. Body size and body-read time are capped so a long event stream
+cannot block a run indefinitely.
+
+This evidence currently stays in `network-evidence.json` plus the local `run.json`. It is not
+inserted into citation analytics or batch reports yet, because doing so would mix two different
+measurements: "retrieved candidate" and "visible citation". The intended future comparison is
+candidate-to-visible conversion, not an implicit source upgrade.
+
+See [NETWORK_EVIDENCE.md](NETWORK_EVIDENCE.md) for the validation checklist and evidence semantics.
 
 ## Storage: dual track
 
-Structured business data goes to PostgreSQL; per-run debug artifacts stay on disk.
+Structured business data goes to PostgreSQL; per-run debug/provenance artifacts stay on disk.
 
 ```text
 .onegl/runs/<run_id>/
@@ -99,6 +139,7 @@ Structured business data goes to PostgreSQL; per-run debug artifacts stay on dis
       answer.md
       citations.json
       dom-observation.json
+      network-evidence.json # only when experimental network capture is enabled
     2/                      # attempt 2 evidence, attempt 1 untouched
       ...
 ```
@@ -151,10 +192,17 @@ single self-contained HTML file (no CDN, no webfont, works offline). The rendere
 depends only on the snapshot plus an optional profile. Client-specific wording, highlight terms,
 own-domain monitoring and conclusions live in a profile under `local/`, which is gitignored.
 
+Experimental retrieved-source evidence is intentionally excluded from these citation reports for
+now. Headline citation metrics continue to mean DOM-visible citations only.
+
 ## Next integration step
 
-Remaining work is validation, not new surface area. The immediate step is an authorised
-real-account run of the fixed prompt suite to re-verify the items listed as
-`NEEDS_REAL_ACCOUNT_VALIDATION` in [MVP_STATUS.md](MVP_STATUS.md). A Doubao SSE/network collector
-can only be added later as provenance-aware `retrieved` evidence — never as an automatic
-replacement for DOM-visible citations, and never as a second provider abstraction.
+Remaining work is validation rather than expanding provider surface area. The immediate step is an
+authorised real-account run of the fixed prompt suite plus a small network-evidence subset to
+re-verify the items listed as `NEEDS_REAL_ACCOUNT_VALIDATION` in [MVP_STATUS.md](MVP_STATUS.md).
+
+For the network layer specifically, validation must confirm that current Doubao responses expose
+the expected search-query / retrieved-source structures, that no auth/session material is saved,
+and that enabling the passive observer does not alter answer completion or visible citation
+results. Only after that should retrieved candidates be normalized into a separate persistent
+research model for candidate-to-citation conversion analysis.

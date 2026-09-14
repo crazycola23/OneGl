@@ -8,7 +8,8 @@
 | **Phase 1** — Persistent collection | PostgreSQL schema, SQL migrations, single-transaction run persistence, article dedup | Implemented |
 | **Phase 2** — Batch / queue / operator workflow | Keyword pools, seeded sampling, per-account profiles, BullMQ worker, account safety, dashboard | Implemented |
 | **Phase 3** — Analytics / client reporting | Batch mention-rate reports, domain aggregation, self-contained HTML report | Implemented |
-| Beyond | Network/SSE capture, other providers, scoring models | Not started, deliberately |
+| **Experimental** — Network/SSE provenance | Opt-in search-query + retrieved-source evidence; local artifacts only | Implemented; needs real-account validation |
+| Beyond | Other providers, retrieved->cited inference, scoring models | Not started, deliberately |
 
 "Implemented" means the code exists and its testable logic is covered by the offline suite. It
 does not mean every browser-facing behaviour has been re-verified against the live Doubao UI.
@@ -33,7 +34,29 @@ Those are listed under [Awaiting real-account validation](#awaiting-real-account
 - Conservative URL canonicalization that removes tracking parameters but preserves generic
   `source`/`ref` parameters.
 - Per-attempt evidence: `screenshot.png`, `page.html`, `answer.md`, `citations.json`,
-  `dom-observation.json`, plus `run.json`.
+  `dom-observation.json`, plus `run.json`. When experimental network evidence is enabled, the
+  attempt also gets `network-evidence.json`.
+
+## Experimental — Network / SSE provenance
+
+- Opt-in via `ONEGL_NETWORK_EVIDENCE=true`; disabled by default until a live authorised account
+  confirms the current Doubao response shape.
+- Passively observes Playwright response events; it does not alter requests or bypass login,
+  verification, rate limits, or access controls.
+- Parses JSON/SSE search-result-shaped payloads, including nested/stringified blocks such as
+  `block_type:10025` / `search_query_result`.
+- Extracts generated search queries and external retrieved source candidates when the payload
+  exposes them.
+- Raw response bodies are parsed in memory but not persisted. Saved endpoint metadata has query
+  strings removed.
+- Network sources are explicitly marked `sourceType=retrieved`, `capturedFrom=NETWORK`,
+  `visibleToUser=false`, `relationStatus=unresolved`.
+- Network evidence never changes `citationState`, `expectedCitationCount`, visible citation
+  totals, or success/partial semantics.
+- Evidence is currently stored in per-attempt artifacts and `run.json`; it is deliberately not
+  written into citation analytics/database reports yet.
+
+See [NETWORK_EVIDENCE.md](NETWORK_EVIDENCE.md) for the trust model and validation checklist.
 
 ## Phase 1 — Persistent collection
 
@@ -46,7 +69,9 @@ Those are listed under [Awaiting real-account validation](#awaiting-real-account
 - `expected_citation_count` and `captured_citation_count` are both persisted, so the
   UI-declared vs captured signal survives in the database.
 - `citations.source_type` (`visible` | `retrieved`, default `visible`), enforced by a check
-  constraint. Current DOM capture always writes `visible`.
+  constraint. Current database persistence still writes DOM-visible citation rows only; the
+  experimental network collector keeps retrieved evidence outside citation analytics until its
+  semantics are validated.
 - `DATABASE_URL` is optional: without it the collector still runs artifact-only.
 
 ## Phase 2 — Batch / queue / operator workflow
@@ -93,12 +118,13 @@ Those are listed under [Awaiting real-account validation](#awaiting-real-account
 | Artifact evidence | `attempts/<n>/` per attempt; retries cannot overwrite an earlier failure's evidence |
 | Cooldown | Temporary states delay the job until recovery (bounded number of waits); permanent states skip and stop |
 | Citation source type | `source_type` column with `visible` / `retrieved`, default `visible` |
+| Network provenance | Opt-in passive parser; retrieved evidence stays separate from visible citation metrics |
 | Account daily limit | Account-timezone day key; also fixed `runs_today_date` comparison against pg's `date` type |
 | Report | De-client-ified; expected/captured gap described as unconfirmed rather than attributed to a specific cause |
 
 ## Deliberately not implemented
 
-- Network/SSE source capture as a production data source.
+- Network/SSE retrieved evidence as a production database/report data source.
 - Retrieved Source / Cited Source inference beyond UI evidence, and any automatic promotion of
   `retrieved` to a visible citation.
 - Multi-provider support (Kimi, DeepSeek, Yuanbao, Qwen) and any provider-abstraction refactor.
@@ -108,8 +134,9 @@ Those are listed under [Awaiting real-account validation](#awaiting-real-account
 
 ## Awaiting real-account validation
 
-The following were changed by the stabilization pass and are covered by offline tests only. They
-must be re-verified with an authorised live account before being treated as proven:
+The following were changed by the stabilization pass or experimental provenance work and are
+covered by offline tests only. They must be re-verified with an authorised live account before
+being treated as proven:
 
 - `NEEDS_REAL_ACCOUNT_VALIDATION` — conversation-reset detection against the live Doubao UI, and
   that a genuine fresh conversation still passes the new fail-closed gate.
@@ -123,6 +150,11 @@ must be re-verified with an authorised live account before being treated as prov
   session expiry, and therefore the cooldown delay policy's usefulness in practice.
 - `NEEDS_REAL_ACCOUNT_VALIDATION` — queue retry behaviour end to end (attempt 2 writing into
   `attempts/2/` while `attempts/1/` survives).
+- `NEEDS_REAL_ACCOUNT_VALIDATION` — actual Doubao Network/SSE response endpoint and payload shape,
+  including whether search queries and retrieved source URLs map to the expected `block_type:10025`
+  structures on current Web builds.
+- `NEEDS_REAL_ACCOUNT_VALIDATION` — network capture has no measurable effect on answer completion,
+  citation extraction, account safety state, or visible citation counts.
 
 ## Known risks
 
@@ -130,6 +162,8 @@ must be re-verified with an authorised live account before being treated as prov
   gate reduces (but cannot fully prove) that risk.
 - Citation-source statistics are a conservative floor whenever the UI declares more sources than
   were parsed.
+- Network evidence field names are reverse-observed implementation details and may change without
+  notice; the parser must fail to `none/partial` rather than infer unsupported meanings.
 - The 30-case Phase 0 suite has not been re-run as a whole against the current code.
 
 ## Validation gate before further feature work
@@ -142,6 +176,9 @@ Re-run the fixed prompt suite against an authorised account and confirm, per run
 4. new-conversation isolation between consecutive prompts (and that no run was silently allowed
    through without a confirmed reset);
 5. session-expiry and verification behaviour, including that a real cooldown delays rather than
-   drops the task.
+   drops the task;
+6. with network evidence enabled for a small subset, `network-evidence.json` contains only
+   provenance-shaped data, does not leak session/auth material, and does not alter visible
+   citation results.
 
 Feature work should not resume until these hold.

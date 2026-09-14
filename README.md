@@ -7,6 +7,7 @@ cite:
 
 ```text
 Prompt -> Doubao Web UI -> Answer -> Visible Citation -> Article
+                     \-> optional Network/SSE search provenance (experimental)
 ```
 
 The guiding principle is **数据可信度 > 功能数量**: a run that cannot be trusted is recorded as a
@@ -20,7 +21,8 @@ failure rather than silently counted as data.
 | **Phase 1** — Persistent collection | PostgreSQL schema, SQL migrations, single-transaction run persistence, article dedup on canonical URL | Implemented |
 | **Phase 2** — Batch / queue / operator workflow | Keyword pools, seeded stratified sampling, per-account browser profiles, BullMQ worker, account safety state, dashboard | Implemented |
 | **Phase 3** — Analytics / client reporting | Batch mention-rate reports, domain aggregation, self-contained HTML client report | Implemented |
-| Beyond | Network/SSE source capture, additional providers, scoring models | Not started, deliberately |
+| **Experimental** — Network/SSE provenance | Search queries + retrieved candidate sources, kept separate from visible citations | Implemented; opt-in, needs real-account validation |
+| Beyond | Additional providers, retrieved→cited inference, scoring models | Not started, deliberately |
 
 "Implemented" means the code exists and is covered by the offline test suite where the logic is
 testable without a live account. It does **not** mean every browser-facing behaviour has been
@@ -39,16 +41,19 @@ re-verified online; see [Validation status](#validation-status).
 - extracts **DOM-visible citations** and their title/URL/domain/order;
 - parses Doubao's visible `搜索 N 个关键词，参考 M 篇资料` signal and fails closed when the
   captured count does not match `M`;
-- persists everything into PostgreSQL in one transaction per run, deduplicating articles on
-  canonical URL (100 citations of one article stay 1 article + 100 citations);
+- optionally captures **Network/SSE search provenance** (generated search queries and retrieved
+  candidate sources) without changing visible-citation truth semantics;
+- persists visible citation data into PostgreSQL in one transaction per run, deduplicating
+  articles on canonical URL (100 citations of one article stay 1 article + 100 citations);
 - samples from a keyword pool with a recorded seed and pool version, so a batch is reproducible;
 - runs batches through a BullMQ worker with one queue per account (concurrency 1 per account) and
   an account safety layer that delays on temporary cooldown instead of dropping tasks;
 - produces a self-contained HTML report per batch.
 
-It does **not** claim model training data or hidden sources. Network search results are not
-silently promoted to citations: `source_type = retrieved` exists in the schema for future
-non-DOM capture, and must never be auto-promoted into a visible citation.
+It does **not** claim model training data or hidden model reads. Network search results are never
+silently promoted to citations: experimental network evidence is marked `sourceType = retrieved`,
+`capturedFrom = NETWORK`, `visibleToUser = false`, and remains separate from visible citation
+analytics until its semantics are validated against an authorised real account.
 
 ## Requirements
 
@@ -103,6 +108,16 @@ Possible statuses:
 A run that cannot confirm a fresh conversation is recorded as `failed` with
 `DOUBAO_CONVERSATION_RESET_FAILED` **before** the prompt is submitted. Its artifacts
 (`screenshot.png`, `page.html`, `dom-observation.json`, `currentUrl`) are still written.
+
+To experimentally capture the search-query / retrieved-candidate layer for an authorised account:
+
+```bash
+ONEGL_NETWORK_EVIDENCE=true npm run run -- --project "新能源汽车监控" --prompt "20万新能源SUV推荐"
+```
+
+When enabled, the attempt also writes `network-evidence.json`. Raw response bodies are parsed in
+memory but are not persisted, and saved response endpoints have their query strings removed. See
+[docs/NETWORK_EVIDENCE.md](docs/NETWORK_EVIDENCE.md) before using this mode for a batch.
 
 ## 3. Batch prompts
 
@@ -185,8 +200,20 @@ A source is stored as visible only when it is confirmed in the rendered UI:
 ```
 
 `source_type` is enforced by the database (`visible` | `retrieved`, default `visible`). Current
-DOM capture always writes `visible`. `retrieved` is reserved for future non-DOM capture and is
-never promoted into a visible citation automatically.
+DOM citation persistence writes `visible`. The experimental network collector emits retrieved
+candidate evidence as:
+
+```json
+{
+  "sourceType": "retrieved",
+  "capturedFrom": "NETWORK",
+  "visibleToUser": false,
+  "relationStatus": "unresolved"
+}
+```
+
+Retrieved evidence is currently kept in `network-evidence.json` and `run.json`; it is **not**
+automatically written into citation analytics and is never promoted into a visible citation.
 
 `relation_status` (`matched` | `unresolved`) separately records whether an answer-to-citation
 link was actually confirmed; the tool never fabricates that relation to make a database look
@@ -198,20 +225,20 @@ UI-declared count is higher than the parsed count the cause is **not** confirmed
 collapsed UI, a DOM change, or a gap in parsing — so citation-source statistics are reported as a
 conservative floor rather than an exact figure.
 
-See [docs/PHASE0_VALIDATION.md](docs/PHASE0_VALIDATION.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [docs/MVP_STATUS.md](docs/MVP_STATUS.md).
+See [docs/PHASE0_VALIDATION.md](docs/PHASE0_VALIDATION.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/MVP_STATUS.md](docs/MVP_STATUS.md), and [docs/NETWORK_EVIDENCE.md](docs/NETWORK_EVIDENCE.md).
 
 ## Validation status
 
 What the repository can prove on its own, with no account and no network:
 
 ```bash
-npm test        # offline logic tests + citation extractor replayed on real captured DOM
+npm test        # offline logic tests + citation/network evidence parser tests
 ```
 
 The suite covers the batch terminal-status rules, account availability classification, the
 cooldown delay policy, account timezone day keys, the conversation-reset fail-closed gate
-(driven by a mock page), retry attempt persistence, and the citation extractor replayed against
-sanitized real DOM fixtures.
+(driven by a mock page), retry attempt persistence, the citation extractor replayed against
+sanitized real DOM fixtures, and Network/SSE search-evidence parsing against synthetic fixtures.
 
 What requires an authorised real-account validation run (see
 [docs/PHASE0_VALIDATION.md](docs/PHASE0_VALIDATION.md) for the protocol):
@@ -220,7 +247,9 @@ What requires an authorised real-account validation run (see
 - prompt submission behaviour and answer-completion detection;
 - citation expander behaviour and the true cause of expected/captured gaps;
 - real platform behaviour for rate limits, verification, and session expiry;
-- the fail-closed conversation-reset path end to end.
+- the fail-closed conversation-reset path end to end;
+- the current Doubao Network/SSE response shape and whether extracted search queries / retrieved
+  URLs really correspond to the current product's search-retrieval layer.
 
 Those items are **not** claimed as verified. Items changed by the stabilization pass and still
 awaiting a live run are marked `NEEDS_REAL_ACCOUNT_VALIDATION` in
@@ -228,10 +257,10 @@ awaiting a live run are marked `NEEDS_REAL_ACCOUNT_VALIDATION` in
 
 Audit artifacts: every run keeps `run.json` plus per-attempt evidence under
 `attempts/<n>/` (`screenshot.png`, `page.html`, `answer.md`, `citations.json`,
-`dom-observation.json`). Retrying a run never overwrites an earlier attempt's evidence, and a
-retry reuses the same Run record rather than creating a duplicate.
-Citation-count mismatches remain failures; the validation tooling never changes the UI-declared
-expected count to make a run pass.
+`dom-observation.json`; plus `network-evidence.json` when experimental network capture is enabled).
+Retrying a run never overwrites an earlier attempt's evidence, and a retry reuses the same Run
+record rather than creating a duplicate. Citation-count mismatches remain failures; the validation
+tooling never changes the UI-declared expected count to make a run pass.
 
 The earlier Phase 0 protocol, metric definitions, failure taxonomy, session-expiry drill, and
 merge-back gate are in [docs/PHASE0_VALIDATION.md](docs/PHASE0_VALIDATION.md).
