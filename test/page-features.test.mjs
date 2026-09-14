@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertPublicHttpUrl, extractPageFeatures } from "../src/analysis/page-features.js";
+import {
+  assertPublicHttpUrl,
+  decodeHtmlBytes,
+  detectHtmlCharset,
+  extractPageFeatures,
+} from "../src/analysis/page-features.js";
 
 const HTML = `<!doctype html>
 <html><head>
 <title>2026 新能源 SUV 选购报告</title>
 <meta name="description" content="对比价格、续航和配置">
-<meta name="author" content="研穵组">
+<meta name="author" content="研究组">
 <meta property="article:published_time" content="2026-08-01T08:00:00+08:00">
 <meta property="article:modified_time" content="2026-09-10T12:00:00+08:00">
 <meta name="robots" content="index,follow">
@@ -42,6 +47,19 @@ test("extractPageFeatures returns conservative observable HTML features", () => 
   assert.ok(f.numericTokenCount >= 4);
   assert.ok(f.numericTokensPer1000Chars > 0);
   assert.match(f.contentHash, /^[a-f0-9]{64}$/);
+});
+
+test("candidate page charset normalizes Chinese legacy declarations and prefers HTTP header", () => {
+  const metaBytes = new TextEncoder().encode('<html><head><meta charset="gbk"></head></html>');
+  assert.equal(detectHtmlCharset(metaBytes, "text/html"), "gb18030");
+  assert.equal(detectHtmlCharset(metaBytes, "text/html; charset=GB2312"), "gb18030");
+  assert.equal(detectHtmlCharset(metaBytes, "text/html; charset=UTF-8"), "utf-8");
+
+  const utf8 = new TextEncoder().encode('<meta charset="utf-8"><title>中文标题</title>');
+  const decoded = decodeHtmlBytes(utf8, "text/html; charset=utf-8");
+  assert.equal(decoded.charset, "utf-8");
+  assert.match(decoded.text, /中文标题/);
+  assert.equal(decoded.fallback, false);
 });
 
 test("invalid JSON-LD is reported, not treated as a fatal extraction error", () => {
