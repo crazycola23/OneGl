@@ -3,6 +3,7 @@ import { persistRun } from "../db/persist.js";
 import { captureDomObservation } from "../dom-observer.js";
 import { executeDoubaoPrompt } from "../doubao.js";
 import { ErrorCode, normalizeError } from "../errors.js";
+import { createNetworkEvidenceCollector } from "../network-evidence.js";
 
 /**
  * 采集内核的单次执行。
@@ -62,6 +63,55 @@ export function applyBrandDetection(rules, answer) {
   };
 }
 
+function emptyNetworkEvidence(message) {
+  return {
+    version: 1,
+    state: "partial",
+    queries: [],
+    retrievedSources: [],
+    responses: [],
+    diagnostics: [message],
+  };
+}
+
+async function finalizeNetworkEvidence(collector) {
+  try {
+    return await collector.stop();
+  } catch (error) {
+    return emptyNetworkEvidence(
+      `collector-stop-failed:${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function writeNetworkEvidenceArtifact(store, runId, attempt, evidence) {
+  if (!evidence || evidence.state === "disabled") return;
+  try {
+    await store.writeAttemptArtifact(
+      runId,
+      attempt,
+      "network-evidence.json",
+      `${JSON.stringify(evidence, null, 2)}\n`,
+    );
+  } catch {
+    // Network provenance is supplemental evidence; artifact failure must not hide the run result.
+  }
+}
+
+function networkEvidencePatch(evidence) {
+  if (!evidence) return {};
+  return {
+    networkEvidenceState: evidence.state,
+    searchQueries: Array.isArray(evidence.queries) ? evidence.queries : [],
+    retrievedSources: Array.isArray(evidence.retrievedSources)
+      ? evidence.retrievedSources
+      : [],
+    networkEvidenceDiagnostics: Array.isArray(evidence.diagnostics)
+      ? evidence.diagnostics
+      : [],
+  };
+}
+
 /**
  * 执行一次提问并落库。
  *
@@ -101,12 +151,20 @@ export async function runOnePrompt({
 
   // 本次尝试的产物目录（相对仓库根），与函数入参 artifactPath（调用方指定）区分开。
   const attemptArtifactPath = store.attemptPath(run.id, attempt);
+  const networkCollector = createNetworkEvidenceCollector(page, {
+    enabled: config.networkEvidenceEnabled,
+    maxBodyBytes: config.networkEvidenceMaxBodyBytes,
+    bodyTimeoutMs: config.networkEvidenceBodyTimeoutMs,
+  });
+  let networkEvidence = null;
   let saved = null;
   let normalized = null;
   let ok = false;
 
   try {
     const result = await executeDoubaoPrompt(page, prompt, config);
+    networkEvidence = await finalizeNetworkEvidence(networkCollector);
+    await writeNetworkEvidenceArtifact(store, run.id, attempt, networkEvidence);
     await captureArtifacts(store, run.id, page, prompt, attempt);
     await store.writeAttemptArtifact(run.id, attempt, "answer.md", `${result.answer}\n`);
     await store.writeAttemptArtifact(
@@ -132,6 +190,7 @@ export async function runOnePrompt({
       currentUrl: result.currentUrl,
       attempt,
       artifactPath: attemptArtifactPath,
+      ...networkEvidencePatch(networkEvidence),
       ...applyBrandDetection(context.brandRules ?? null, result.answer),
       errorCode: partial ? ErrorCode.CITATION_PARSE_FAILED : null,
       errorMessage: partial
@@ -139,6 +198,8 @@ export async function runOnePrompt({
         : null,
     });
   } catch (error) {
+    networkEvidence = await finalizeNetworkEvidence(networkCollector);
+    await writeNetworkEvidenceArtifact(store, run.id, attempt, networkEvidence);
     await captureArtifacts(store, run.id, page, prompt, attempt);
     normalized = normalizeError(error);
     const partialAnswer = normalized.details?.partialAnswer || null;
@@ -167,6 +228,7 @@ export async function runOnePrompt({
       currentUrl: page?.url?.() || null,
       attempt,
       artifactPath: attemptArtifactPath,
+      ...networkEvidencePatch(networkEvidence),
       // 这条失败恰恰说明没有独立新会话，明确记 false，而不是留空让统计去猜。
       conversationResetConfirmed:
         normalized.code === ErrorCode.CONVERSATION_RESET_FAILED
