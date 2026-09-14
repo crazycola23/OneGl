@@ -29,6 +29,7 @@
     "batch:stop": "node src/cli.js batch-stop",
     "worker": "node src/worker.js",
     "report": "node src/cli.js report",
+    "report:retrieval": "node tools/retrieval-report.js",
     "report:export": "node tools/export-batch.js",
     "report:html": "node tools/build-report-html.js",
     "fixtures:sanitize": "node tools/sanitize-fixtures.mjs",
