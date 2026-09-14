@@ -21,21 +21,33 @@ This prevents a network candidate from silently changing the existing visible-ci
 
 ## Candidate -> citation matching
 
-OneGl currently records a candidate as finally cited only when all of these are true:
+A candidate is only ever matched against a DOM-confirmed citation **in the same run**, and every
+match records which rule produced it in `retrieved_sources.match_method`.
 
-- candidate and visible citation belong to the same run;
-- both URLs canonicalize to exactly the same `canonical_url`;
-- the visible source is a DOM-confirmed citation.
+Matches are evaluated in strict confidence order, and the first hit wins:
 
-The stored method is:
+| Order | `match_method` | Meaning |
+|---|---|---|
+| 1 | `canonical_url_exact` | Both URLs normalise to the same string. Authoritative. |
+| 2 | `canonical_url_redirect` | The candidate's redirect target matches. |
+| 3 | `canonical_url_html` | The page's own `<link rel="canonical">` matches. |
+| 4 | `site_rule_alias` | Same URL after folding presentation hosts (`www.` / `m.` / `amp.` / trailing slash). |
+| 5 | `content_hash_alias` | Identical body hash. |
 
-```text
-canonical_url_exact
-```
+No title similarity, domain-only match or embedding/LLM judgement is used, and the alias tiers
+never overwrite the exact tier. What they fix is a *systematic undercount*: the same article is
+routinely observed as one URL shape in the network evidence and another in the rendered citation
+list, and treating those as "not cited" biases the conversion rate downward.
 
-No title similarity, domain-only match, redirect guess, fuzzy URL match, embedding similarity or
-LLM judgement is used. Those methods may be useful later, but they must be reported separately
-from exact evidence.
+What is deliberately **not** expanded: the exact metric itself. `exactCitationMatches` and
+`exactCitationConversionRate` still mean exactly what they always meant. The wider figure is
+reported alongside it as `aliasCitationMatches` / `matchedCitationConversionRate`, so a report can
+show both "exact overlap" and "overlap allowing labelled aliases" without either number being
+silently redefined.
+
+Query-parameter handling is also strict by construction: only known tracking parameters are
+removed, unknown ones are preserved, and remaining parameters are sorted so `?a=1&b=2` and
+`?b=2&a=1` compare equal. A parameter that might select a different document is never dropped.
 
 ## Metrics
 
@@ -76,6 +88,21 @@ The report prints:
 - per-domain candidate count, citation count and conversion rate;
 - per-run query/candidate/match counts.
 
+## URL normalisation and the alias tiers
+
+`canonicalizeUrl()` only removes things that can never select a different resource: the fragment,
+known tracking parameters (`utm_*`, `gclid`, `fbclid`, `spm`, `share_*`, `from_source`, …) and query
+ordering. Everything else — including unrecognised query parameters — is preserved.
+
+`siteRuleAlias()` is a separate, looser key used only by tier 4. It folds `www.` / `m.` / `mobile.` /
+`amp.` / `touch.` / `so.` / `mip.` sub-domains and an empty trailing slash. It is intentionally not
+part of `canonicalizeUrl()`, because two URLs that differ only by `www.` are not *proven* to be the
+same article; a match made that way is labelled `site_rule_alias` instead of `canonical_url_exact`.
+
+Internal-host detection (which decides whether a link is an external source at all) is matched on
+DNS label boundaries, so `notdoubao.com` is no longer mistaken for a Doubao host and `byteimg.com`
+sub-domains are still excluded.
+
 ## What is deliberately not calculated yet
 
 ### Query -> source attribution
@@ -90,11 +117,16 @@ No score is labelled as Doubao's internal rank/relevance/citation probability un
 is directly observed and its semantics are validated. A model trained later from OneGl data must
 be labelled as an **estimated citation probability**, not an internal Doubao score.
 
-### Fuzzy citation matching
+### Tiers not yet populated
 
-If a retrieved URL redirects to a different visible citation URL, exact matching may undercount
-true overlap. That is preferable to silently overcounting. Redirect-aware or content-hash matching
-can be added later as a separate match method with its own validation.
+`canonical_url_redirect` and `canonical_url_html` are defined, constrained in the schema and
+accepted by the matcher, but nothing writes them yet: the redirect target and the parsed
+`<link rel="canonical">` live in `article_page_observations` (page evidence), which is captured
+separately from a run. Wiring those observations into the per-run match is the next step, and it
+must land as its own migration so the exact metric keeps its current meaning for existing data.
+
+`content_hash_alias` is likewise reserved: it requires content hashes on both sides of the match,
+which only page evidence can supply today.
 
 ## Recommended research workflow
 

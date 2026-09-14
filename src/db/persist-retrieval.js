@@ -1,4 +1,5 @@
-import { exactCitationMatch, prepareRetrievedSources, prepareSearchQueries } from "./retrieval.js";
+import { MATCH_METHODS, exactCitationMatch, prepareRetrievedSources, prepareSearchQueries } from "./retrieval.js";
+import { siteRuleAlias } from "../url.js";
 
 const ARTICLE_UPSERT = `
   INSERT INTO articles (canonical_url, original_url, title, domain, normalized_domain)
@@ -50,8 +51,20 @@ export async function persistRetrievalEvidence({ client, runId, run }) {
     visibleRows.map((row) => [row.canonical_url, { id: row.id }]),
   );
 
+  // Secondary index only. A match through it is stored with its own match_method so
+  // the exact metric keeps its original meaning and the alias gain stays auditable.
+  const siteRuleCitations = new Map();
+  for (const row of visibleRows) {
+    const alias = siteRuleAlias(row.canonical_url);
+    if (alias && !siteRuleCitations.has(alias)) {
+      siteRuleCitations.set(alias, { id: row.id, canonicalUrl: alias });
+    }
+  }
+
   let articlesCreated = 0;
   let exactMatches = 0;
+  let aliasMatches = 0;
+  const matchedCitationIds = new Set();
   for (const row of sourceRows) {
     const articleResult = await client.query(ARTICLE_UPSERT, [
       row.canonicalUrl,
@@ -63,8 +76,14 @@ export async function persistRetrievalEvidence({ client, runId, run }) {
     const articleId = articleResult.rows[0].id;
     if (articleResult.rows[0].inserted) articlesCreated += 1;
 
-    const match = exactCitationMatch(row.canonicalUrl, visibleByCanonicalUrl);
-    if (match.visibleCitationId) exactMatches += 1;
+    const match = exactCitationMatch(row.canonicalUrl, visibleByCanonicalUrl, {
+      siteRule: siteRuleCitations,
+    });
+    if (match.visibleCitationId) {
+      matchedCitationIds.add(match.visibleCitationId);
+      if (match.matchMethod === MATCH_METHODS.EXACT) exactMatches += 1;
+      else aliasMatches += 1;
+    }
     await client.query(RETRIEVED_INSERT, [
       runId,
       articleId,
@@ -100,6 +119,9 @@ export async function persistRetrievalEvidence({ client, runId, run }) {
     retrievedSourcesSkipped: skipped.length,
     retrievedArticlesCreated: articlesCreated,
     exactCitationMatches: exactMatches,
+    aliasCitationMatches: aliasMatches,
+    matchedCitationCount: matchedCitationIds.size,
     exactCitationConversionRate: sourceRows.length ? exactMatches / sourceRows.length : null,
+    matchedCitationConversionRate: sourceRows.length ? matchedCitationIds.size / sourceRows.length : null,
   };
 }

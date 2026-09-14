@@ -14,6 +14,15 @@ The main risk factors in the earlier implementation were:
    window.
 3. **Rate-limit backoff was too short.** Explicit rate-limit signals used the same 30-minute
    cooldown as ordinary repeated failures.
+4. **Retries were not idempotent.** `DOUBAO_TIMEOUT`, `NETWORK_ERROR` and `UNKNOWN_ERROR` were all
+   treated as safe to retry. Any of them can happen *after* the prompt reached the platform, so a
+   retry could send the same prompt twice: a duplicated sample and exactly the pattern that looks
+   like abuse.
+5. **Browser identity drifted between cold starts.** Every launch created a fresh context with no
+   locale, timezone or viewport, so a Worker restart presented a different device fingerprint than
+   the session it was resuming.
+6. **A crashed browser was indistinguishable from platform friction.** A dead session produced a
+   stream of timeouts that looked like the platform refusing the account.
 4. **Front-end fallback could change modes.** If `新对话` was unavailable, the collector also tried
    `新工作任务`, which can change the product interaction mode instead of simply starting a clean
    chat.
@@ -45,13 +54,17 @@ or automatically resubmit an uncertain prompt.
 
 OneGl now defaults to:
 
-- 15–30 seconds random delay between queued jobs;
-- at least 15 seconds between run starts;
-- at most 20 runs in a rolling hour per account;
-- 60 runs per account per account-local day;
+- 30–90 seconds random delay between queued jobs;
+- at least 45 seconds between run starts;
+- at most 10 runs in a rolling hour per account;
+- 40 runs per account per account-local day;
 - 60-minute cooldown after repeated ordinary failures;
-- 120-minute cooldown after an explicit rate-limit signal;
+- 180-minute cooldown after an explicit rate-limit signal;
 - global account parallelism of 1.
+
+Volume is not the variable that should be raised to collect more data. If a batch needs more
+samples than these ceilings allow, spread it across more accounts or more days, and sample the same
+keyword at different times of day rather than back-to-back.
 
 These are **OneGl safety defaults**, not official Doubao limits and not a claim about unpublished
 platform detection thresholds. Users remain responsible for applicable terms, permissions and any
@@ -79,6 +92,47 @@ queued/running batch. Waiting jobs are cancelled; a browser task that is already
 allowed to finish safely. The control does not clear or overwrite account states such as
 `rate_limited`, `verification_required`, or `access_restricted`, and it does not solve or bypass
 platform controls.
+
+### Idempotent retries
+
+`executeDoubaoPrompt` now tags every failure with where the pipeline stopped:
+
+- `stage: "pre-submit"` and `promptSubmitted: false` — the prompt was never sent, so a retry cannot
+  duplicate anything;
+- `stage: "submit"` and `promptSubmitted: true` — the platform may already have the prompt.
+
+`canRetryOutcome()` only allows a retry for `DOUBAO_TIMEOUT` / `NETWORK_ERROR` when
+`promptSubmitted === false` is present. A missing flag is read as "may have been submitted", so the
+job stops instead of re-sending. `UNKNOWN_ERROR` is no longer retryable at all: an unidentified
+failure could be a duplicate send, and losing one sample is cheaper than corrupting the batch.
+
+### Stable browser identity
+
+Each account's browser context is created with an explicit `locale`, `timezone` and `viewport`
+(`ONEGL_BROWSER_LOCALE`, `ONEGL_BROWSER_TIMEZONE`, `ONEGL_BROWSER_VIEWPORT_WIDTH/HEIGHT`). This is
+deliberately *not* fingerprint spoofing: the values should be the operator's real locale and
+timezone. The point is that the same account looks like the same returning user across Worker
+restarts instead of a new device on every launch.
+
+### Session health
+
+A per-account browser session is health-checked before reuse (`browser.isConnected()`, open pages,
+`page.isClosed()`). A dead session is closed and rebuilt instead of being reused for every
+subsequent job. Rebuilding is cheap; a stream of failures against a dead browser is not, because it
+is easily mistaken for platform rejection.
+
+### Front-end preflight
+
+Before each prompt the guard now:
+
+- requires the session state to be positively `healthy` — an `unknown` state fails closed rather
+  than submitting into a page whose state cannot be described;
+- requires several consecutive idle readings (`ONEGL_FRONTEND_STABLE_IDLE_POLLS`, default 3) instead
+  of a single one, because the progress row can blink between stream chunks;
+- waits up to `ONEGL_FRONTEND_IDLE_WAIT_MS` (default 60s) for that stable idle state;
+- does **not** fall back to `新工作任务`. That control switches the product into a different
+  interaction mode, so the fallback was removed from `startCleanConversation()` itself rather than
+  only being intercepted by the guard.
 
 ### Verification / restriction handling
 

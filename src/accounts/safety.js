@@ -21,20 +21,20 @@ export function safetyConfig() {
   // Conservative defaults: the collector is account-bound browser automation, so prefer
   // a slower, bounded cadence over maximum throughput. These are OneGl defaults, not
   // claims about any unpublished platform threshold.
-  const minDelayMs = intEnv("ONEGL_MIN_DELAY_MS", 15_000, 0);
-  const maxDelayMs = intEnv("ONEGL_MAX_DELAY_MS", 30_000, 0);
+  const minDelayMs = intEnv("ONEGL_MIN_DELAY_MS", 30_000, 0);
+  const maxDelayMs = intEnv("ONEGL_MAX_DELAY_MS", 90_000, 0);
   if (maxDelayMs < minDelayMs) {
     throw new Error("ONEGL_MAX_DELAY_MS 不能小于 ONEGL_MIN_DELAY_MS");
   }
   return {
     minDelayMs,
     maxDelayMs,
-    minInterRunMs: intEnv("ONEGL_MIN_INTER_RUN_SECONDS", 15, 0) * 1_000,
-    accountHourlyLimit: intEnv("ONEGL_ACCOUNT_HOURLY_LIMIT", 20, 1),
-    accountDailyLimit: intEnv("ONEGL_ACCOUNT_DAILY_LIMIT", 60),
+    minInterRunMs: intEnv("ONEGL_MIN_INTER_RUN_SECONDS", 45, 0) * 1_000,
+    accountHourlyLimit: intEnv("ONEGL_ACCOUNT_HOURLY_LIMIT", 10, 1),
+    accountDailyLimit: intEnv("ONEGL_ACCOUNT_DAILY_LIMIT", 40),
     maxConsecutiveFailures: intEnv("ONEGL_MAX_CONSECUTIVE_FAILURES", 3),
     cooldownMinutes: intEnv("ONEGL_ACCOUNT_COOLDOWN_MINUTES", 60, 1),
-    rateLimitCooldownMinutes: intEnv("ONEGL_RATE_LIMIT_COOLDOWN_MINUTES", 120, 1),
+    rateLimitCooldownMinutes: intEnv("ONEGL_RATE_LIMIT_COOLDOWN_MINUTES", 180, 1),
     accountParallelism: intEnv("ONEGL_ACCOUNT_PARALLELISM", 1),
   };
 }
@@ -74,17 +74,45 @@ export const ACCOUNT_BLOCKING_CODES = {
   },
 };
 
-/** 明确属于临时性错误，允许有限重试。其余一律不重试。 */
+/**
+ * 明确属于临时性错误，允许有限重试。其余一律不重试。
+ *
+ * UNKNOWN_ERROR 不在这里：未知异常可能是页面改版、浏览器崩溃，也可能是「提交结果
+ * 未知」。把它当可重试等于让队列在不确定状态下重复提问，代价比丢掉一个样本高。
+ */
 export const RETRYABLE_CODES = new Set([
   "DOUBAO_TIMEOUT",
   "NETWORK_ERROR",
-  "UNKNOWN_ERROR",
   // 会话没能确认是干净的新会话：属于页面状态问题，重试可能就好，但绝不带着旧上下文提问。
   "DOUBAO_CONVERSATION_RESET_FAILED",
 ]);
 
+/**
+ * 重试前必须确认「上一次提问确实没有送到平台」的集合。
+ *
+ * 这些错误本身是临时性的，但重试意味着可能再向同一个会话发一次相同的提问。
+ * DOUBAO_TIMEOUT 和 NETWORK_ERROR 都可能发生在请求已经到达平台之后，只有
+ * executeDoubaoPrompt 明确标记了 promptSubmitted === false 才允许重试。
+ */
+export const RESUBMIT_UNSAFE_CODES = new Set([
+  "DOUBAO_TIMEOUT",
+  "NETWORK_ERROR",
+]);
+
 export function isRetryable(code) {
   return RETRYABLE_CODES.has(code);
+}
+
+/**
+ * 是否可以把这次失败交给队列重试。
+ *
+ * `promptSubmitted === false` 是 executeDoubaoPrompt 在提交阶段之前失败时写下的
+ * 明确证据。缺省一律按「可能已经提交」处理——宁可少一个样本，也不制造重复提问。
+ */
+export function canRetryOutcome(code, details = null) {
+  if (!RETRYABLE_CODES.has(code)) return false;
+  if (!RESUBMIT_UNSAFE_CODES.has(code)) return true;
+  return details?.promptSubmitted === false;
 }
 
 export function isBlocking(code) {

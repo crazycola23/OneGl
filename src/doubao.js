@@ -242,11 +242,13 @@ async function clickFirstVisible(locator) {
 }
 
 export async function startCleanConversation(page, config) {
+  // Deliberately no "新工作任务" fallback: that control switches the product into a
+  // different interaction mode, which changes what is being measured and is not the
+  // chat behaviour this collector is authorised to exercise. If "新对话" is missing we
+  // return to /chat/ and, failing that, refuse to submit.
   const candidates = [
     page.getByRole("button", { name: "新对话", exact: true }),
     page.getByText("新对话", { exact: true }),
-    page.getByRole("button", { name: "新工作任务", exact: true }),
-    page.getByText("新工作任务", { exact: true }),
   ];
 
   let clicked = false;
@@ -598,11 +600,13 @@ async function sourceSnapshot(page, clickIfNeeded = false) {
         const style = getComputedStyle(element);
         return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
       };
-      const external = (href) => {
+      // Only the protocol is checked here: which hosts count as "external" is decided
+      // once in src/url.js on the Node side, so the DOM extractor and the persistence
+      // layer can never disagree about it.
+      const httpLink = (href) => {
         try {
           const url = new URL(href, location.href);
-          if (!/^https?:$/.test(url.protocol)) return false;
-          return !/doubao\.com|bytedance|zijieapi|byteimg|feiliao/i.test(url.hostname);
+          return /^https?:$/.test(url.protocol);
         } catch {
           return false;
         }
@@ -615,7 +619,7 @@ async function sourceSnapshot(page, clickIfNeeded = false) {
             url: anchor.href,
             marker: norm(anchor.innerText || ""),
           }))
-          .filter((row) => external(row.url));
+          .filter((row) => httpLink(row.url));
 
       // Same rule as answerCandidates: the user's own bubble shares `.md-box-root`,
       // so it must not be mistaken for the answer root.
@@ -639,7 +643,7 @@ async function sourceSnapshot(page, clickIfNeeded = false) {
 
       const relationRows = [...answer.querySelectorAll("a[href]")]
         .filter(visible)
-        .filter((anchor) => external(anchor.href))
+        .filter((anchor) => httpLink(anchor.href))
         .map((anchor) => ({
           url: anchor.href,
           marker: norm(anchor.innerText || anchor.getAttribute("aria-label") || ""),
@@ -732,13 +736,11 @@ async function overlayLinks(page) {
       const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
     };
-    const external = (href) => {
+    // Same rule as sourceSnapshot: protocol filter only; host classification happens
+    // on the Node side through isExternalSourceUrl().
+    const httpLink = (href) => {
       try {
-        const url = new URL(href, location.href);
-        return (
-          /^https?:$/.test(url.protocol) &&
-          !/doubao\.com|bytedance|zijieapi|byteimg|feiliao/i.test(url.hostname)
-        );
+        return /^https?:$/.test(new URL(href, location.href).protocol);
       } catch {
         return false;
       }
@@ -759,7 +761,7 @@ async function overlayLinks(page) {
             url: anchor.href,
             marker: norm(anchor.innerText || ""),
           }))
-          .filter((row) => external(row.url)),
+          .filter((row) => httpLink(row.url)),
       }))
       .filter((item) => item.links.length > 0);
 
@@ -776,10 +778,25 @@ function normalizeCitationRows(rows, relations) {
 
   const seen = new Set();
   const citations = [];
+  let rawLinkCount = 0;
+  const discarded = { internalHost: 0, unparseable: 0, duplicate: 0 };
   for (const row of rows || []) {
-    if (!isExternalSourceUrl(row.url)) continue;
+    rawLinkCount += 1;
+    // Host classification happens here, on the Node side, so the DOM pass stays a
+    // pure collector and both layers cannot drift apart.
+    if (!isExternalSourceUrl(row.url)) {
+      discarded.internalHost += 1;
+      continue;
+    }
     const canonicalUrl = canonicalizeUrl(row.url);
-    if (!canonicalUrl || seen.has(canonicalUrl)) continue;
+    if (!canonicalUrl) {
+      discarded.unparseable += 1;
+      continue;
+    }
+    if (seen.has(canonicalUrl)) {
+      discarded.duplicate += 1;
+      continue;
+    }
     seen.add(canonicalUrl);
     const relation = relationMap.get(canonicalUrl) || null;
     citations.push({
@@ -796,9 +813,49 @@ function normalizeCitationRows(rows, relations) {
       relationStatus: relation ? "matched" : "unresolved",
     });
   }
-  return citations;
+  return {
+    citations,
+    rawLinkCount,
+    uniqueUrlCount: citations.length,
+    discardReasons: discarded,
+  };
 }
 
+function emptyCounts() {
+  return {
+    expected: null,
+    domLinks: 0,
+    rawLinks: 0,
+    captured: 0,
+    discarded: { internalHost: 0, unparseable: 0, duplicate: 0 },
+    diagnostic: "reference-count-mismatch:0/unknown",
+  };
+}
+
+/**
+ * One place that turns the raw DOM counts into the numbers an operator (and the
+ * partial-vs-failed decision) reads. The diagnostic string keeps the historical
+ * `reference-count-mismatch:<captured>/<expected>` prefix so existing logs and
+ * dashboards stay readable, and appends the discard breakdown for diagnosis.
+ */
+function buildCounts(meta, { expected, domLinks }) {
+  const counts = {
+    expected: Number.isInteger(expected) ? expected : null,
+    domLinks: Number(domLinks) || 0,
+    rawLinks: meta.rawLinkCount,
+    captured: meta.uniqueUrlCount,
+    discarded: meta.discardReasons,
+  };
+  const breakdown = [];
+  if (counts.discarded.internalHost) breakdown.push(`internal:${counts.discarded.internalHost}`);
+  if (counts.discarded.duplicate) breakdown.push(`duplicate:${counts.discarded.duplicate}`);
+  if (counts.discarded.unparseable) breakdown.push(`unparseable:${counts.discarded.unparseable}`);
+  const expectedLabel = counts.expected ?? "unknown";
+  counts.diagnostic =
+    `reference-count-mismatch:${counts.captured}/${expectedLabel}` +
+    (breakdown.length ? ` (raw:${counts.rawLinks} ${breakdown.join(" ")})` : ` (raw:${counts.rawLinks})`);
+  return counts;
+}
 export async function extractVisibleCitations(page) {
   let snapshot = await sourceSnapshot(page, false);
   if (!snapshot.answerFound) {
@@ -807,16 +864,30 @@ export async function extractVisibleCitations(page) {
       expectedCount: null,
       citations: [],
       diagnostics: ["answer-root-not-found"],
+      counts: emptyCounts(),
+      selectorUsed: null,
+      sourceBlockFound: false,
+      answerRootFound: false,
     };
   }
 
   if (!snapshot.sourceFound) {
-    const inline = normalizeCitationRows(snapshot.links, snapshot.relations);
+    const meta = normalizeCitationRows(snapshot.links, snapshot.relations);
+    const citations = meta.citations;
     return {
-      state: inline.length ? "found" : "none_visible",
-      expectedCount: inline.length ? inline.length : 0,
-      citations: inline,
-      diagnostics: inline.length ? ["inline-link-fallback"] : [],
+      state: citations.length ? "found" : "none_visible",
+      expectedCount: citations.length ? citations.length : 0,
+      citations,
+      diagnostics: citations.length ? ["inline-link-fallback"] : [],
+      // The UI signal is absent in this path, so the honest expectation is what the DOM
+      // actually offered: an inline-link fallback with zero links is a real zero.
+      counts: buildCounts(meta, {
+        expected: citations.length,
+        domLinks: snapshot.links.length,
+      }),
+      selectorUsed: "inline-links",
+      sourceBlockFound: false,
+      answerRootFound: true,
     };
   }
 
@@ -840,29 +911,49 @@ export async function extractVisibleCitations(page) {
     else if (overlays.length > 1) overlayAmbiguous = true;
   }
 
-  const citations = normalizeCitationRows(rows, snapshot.relations);
+  const meta = normalizeCitationRows(rows, snapshot.relations);
+  const citations = meta.citations;
+  const counts = buildCounts(meta, {
+    expected: Number.isInteger(snapshot.expectedCount) ? snapshot.expectedCount : null,
+    domLinks: snapshot.links.length,
+  });
+
   const diagnostics = [];
   if (overlayAmbiguous) diagnostics.push("reference-overlay-ambiguous");
   if (!Number.isInteger(snapshot.expectedCount)) diagnostics.push("reference-count-signal-missing");
 
-  if (Number.isInteger(snapshot.expectedCount)) {
-    if (snapshot.expectedCount === 0) {
-      return {
-        state: "none_visible",
-        expectedCount: 0,
-        citations: [],
-        diagnostics,
-      };
-    }
-    if (citations.length !== snapshot.expectedCount) {
-      diagnostics.push(`reference-count-mismatch:${citations.length}/${snapshot.expectedCount}`);
-      return {
-        state: "parse_failed",
-        expectedCount: snapshot.expectedCount,
-        citations,
-        diagnostics,
-      };
-    }
+  // A declared-vs-captured gap is reported with its full breakdown instead of only a
+  // ratio: the operator needs to see whether the gap is duplicates, internal-Doubao
+  // links or genuinely missing cards, because only the last one is a parser problem.
+  if (counts.expected !== null && counts.expected > 0 && counts.captured !== counts.expected) {
+    diagnostics.push(counts.diagnostic);
+    if (!Number.isInteger(snapshot.expectedCount)) diagnostics.push("reference-count-unknown");
+  }
+
+  if (Number.isInteger(snapshot.expectedCount) && snapshot.expectedCount === 0) {
+    return {
+      state: "none_visible",
+      expectedCount: 0,
+      citations: [],
+      diagnostics,
+      counts,
+      selectorUsed: SOURCE_BLOCK_SELECTOR,
+      sourceBlockFound: true,
+      answerRootFound: true,
+    };
+  }
+
+  if (Number.isInteger(snapshot.expectedCount) && citations.length !== snapshot.expectedCount) {
+    return {
+      state: "parse_failed",
+      expectedCount: snapshot.expectedCount,
+      citations,
+      diagnostics,
+      counts,
+      selectorUsed: SOURCE_BLOCK_SELECTOR,
+      sourceBlockFound: true,
+      answerRootFound: true,
+    };
   }
 
   if (!citations.length) {
@@ -871,6 +962,10 @@ export async function extractVisibleCitations(page) {
       expectedCount: snapshot.expectedCount ?? null,
       citations: [],
       diagnostics: [...diagnostics, "reference-block-has-no-source-links"],
+      counts,
+      selectorUsed: SOURCE_BLOCK_SELECTOR,
+      sourceBlockFound: true,
+      answerRootFound: true,
     };
   }
 
@@ -879,6 +974,10 @@ export async function extractVisibleCitations(page) {
     expectedCount: snapshot.expectedCount ?? citations.length,
     citations,
     diagnostics,
+    counts,
+    selectorUsed: SOURCE_BLOCK_SELECTOR,
+    sourceBlockFound: true,
+    answerRootFound: true,
   };
 }
 
@@ -899,28 +998,74 @@ export function assertFreshConversation(conversation, currentUrl = null) {
       clickedNewConversation: conversation?.clickedNewConversation ?? false,
       resetConfirmed: conversation?.resetConfirmed ?? null,
       currentUrl,
+      // Nothing was typed into the conversation and nothing was submitted, so this
+      // failure is safe to retry without producing a duplicate prompt.
+      promptSubmitted: false,
+      stage: "pre-submit",
     },
   );
 }
 
-export async function executeDoubaoPrompt(page, prompt, config) {
-  await requireHealthySession(page, config);
-  const conversation = await startCleanConversation(page, config);
-  assertFreshConversation(conversation, page.url());
-  await requireHealthySession(page, config);
-  const submission = await submitPrompt(page, prompt);
-  const answer = await waitForAnswer(page, submission.baselineAnswers, config);
-  const citationResult = await extractVisibleCitations(page);
+/**
+ * Stage markers for the retry classifier.
+ *
+ * `stage` records where the pipeline stopped; `promptSubmitted` records whether the
+ * platform has already received this prompt. The distinction is what makes retries
+ * idempotent: a failure after submit can almost always be confirmed from the page,
+ * but re-sending the same prompt is a duplicate turn - and a duplicate turn is both
+ * a data-quality problem and exactly the pattern that looks like abuse.
+ */
+function withExecutionStage(error, { stage, promptSubmitted }) {
+  const details =
+    error?.details && typeof error.details === "object" && !Array.isArray(error.details)
+      ? { ...error.details }
+      : {};
+  if (details.stage === undefined) details.stage = stage;
+  if (details.promptSubmitted === undefined) details.promptSubmitted = promptSubmitted;
+  if (error instanceof DoubaoMvpError) {
+    error.details = details;
+    return error;
+  }
+  return new DoubaoMvpError(
+    ErrorCode.UNKNOWN_ERROR,
+    error instanceof Error ? error.message : String(error),
+    details,
+    error instanceof Error ? { cause: error } : undefined,
+  );
+}
 
-  return {
-    answer,
-    citations: citationResult.citations,
-    citationState: citationResult.state,
-    expectedCitationCount: citationResult.expectedCount,
-    citationDiagnostics: citationResult.diagnostics,
-    submissionMethod: submission.sentByButton ? "send_button" : "enter_key",
-    conversationReset: conversation.clickedNewConversation,
-    conversationResetConfirmed: conversation.resetConfirmed,
-    currentUrl: page.url(),
-  };
+export async function executeDoubaoPrompt(page, prompt, config) {
+  let submitting = false;
+  try {
+    await requireHealthySession(page, config);
+    const conversation = await startCleanConversation(page, config);
+    assertFreshConversation(conversation, page.url());
+    await requireHealthySession(page, config);
+
+    submitting = true;
+    const submission = await submitPrompt(page, prompt);
+    const answer = await waitForAnswer(page, submission.baselineAnswers, config);
+    const citationResult = await extractVisibleCitations(page);
+
+    return {
+      answer,
+      citations: citationResult.citations,
+      citationState: citationResult.state,
+      expectedCitationCount: citationResult.expectedCount,
+      citationDiagnostics: citationResult.diagnostics,
+      citationCounts: citationResult.counts ?? null,
+      citationSelectorUsed: citationResult.selectorUsed ?? null,
+      submissionMethod: submission.sentByButton ? "send_button" : "enter_key",
+      conversationReset: conversation.clickedNewConversation,
+      conversationResetConfirmed: conversation.resetConfirmed,
+      currentUrl: page.url(),
+    };
+  } catch (error) {
+    throw withExecutionStage(error, {
+      stage: submitting ? "submit" : "pre-submit",
+      // Any non-pre-submit failure is treated as "may have been submitted". Assuming
+      // the safer interpretation keeps an unconfirmed send from being repeated.
+      promptSubmitted: submitting,
+    });
+  }
 }

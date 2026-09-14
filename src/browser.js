@@ -101,6 +101,11 @@ export async function launchBrowserSession(
   const hasStoredAuth = !ignoreStoredAuth && (await exists(config.authStatePath));
   const context = await browser.newContext({
     storageState: hasStoredAuth ? config.authStatePath : undefined,
+    // Identical on every cold start, per account. Without this a restarted Worker
+    // presents a different locale/timezone/window than the session it is resuming.
+    locale: config.locale,
+    timezoneId: config.timezoneId,
+    viewport: { width: config.viewportWidth, height: config.viewportHeight },
   });
   const page = await context.newPage();
   page.setDefaultTimeout(15_000);
@@ -111,6 +116,23 @@ export async function launchBrowserSession(
     context,
     page,
     hasStoredAuth,
+    /**
+     * A crashed/disconnected session is indistinguishable from a risk signal when the
+     * only symptom is a timeout: every subsequent job then fails against a dead
+     * browser and the operator sees a stream of odd errors. Rebuilding the browser is
+     * cheap; reusing a corpse is not.
+     */
+    isHealthy() {
+      try {
+        return (
+          browser.isConnected() &&
+          context.pages().length > 0 &&
+          !page.isClosed()
+        );
+      } catch {
+        return false;
+      }
+    },
     async saveAuth() {
       await mkdir(dirname(config.authStatePath), { recursive: true });
       await context.storageState({ path: config.authStatePath });

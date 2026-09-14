@@ -13,8 +13,12 @@ function intEnv(name, fallback, min = 0) {
 
 export function frontEndGuardConfig() {
   return {
-    idleWaitMs: intEnv("ONEGL_FRONTEND_IDLE_WAIT_MS", 30_000, 1_000),
+    idleWaitMs: intEnv("ONEGL_FRONTEND_IDLE_WAIT_MS", 60_000, 1_000),
     pollMs: intEnv("ONEGL_FRONTEND_GUARD_POLL_MS", 750, 100),
+    // A single "not busy" reading is not proof the turn finished: the progress row can
+    // disappear between two stream chunks. Requiring consecutive idle readings costs a
+    // couple of seconds and removes a whole class of premature sends.
+    stableIdlePolls: intEnv("ONEGL_FRONTEND_STABLE_IDLE_POLLS", 3, 1),
   };
 }
 
@@ -120,20 +124,24 @@ export async function prepareFrontEndForRun(page, config, options = {}) {
   let snapshot = await frontEndSnapshot(page);
   const wasBusy = snapshot.busy;
   const deadline = Date.now() + guard.idleWaitMs;
-  while (snapshot.busy && Date.now() < deadline) {
+  let idleStreak = snapshot.busy ? 0 : 1;
+  while (idleStreak < guard.stableIdlePolls && Date.now() < deadline) {
     await page.waitForTimeout(guard.pollMs);
     session = await inspectSession(page);
     throwForSessionState(session);
     snapshot = await frontEndSnapshot(page);
+    idleStreak = snapshot.busy ? 0 : idleStreak + 1;
   }
 
-  if (snapshot.busy) {
+  if (snapshot.busy || idleStreak < guard.stableIdlePolls) {
     throw new DoubaoMvpError(
       ErrorCode.SUBMISSION_FAILED,
       "The previous Doubao turn is still active; the next prompt was not submitted.",
       {
         stage: "frontend-preflight",
-        reason: "previous-turn-still-busy",
+        reason: snapshot.busy ? "previous-turn-still-busy" : "frontend-not-stably-idle",
+        idleStreak,
+        requiredIdlePolls: guard.stableIdlePolls,
         initialUrl,
         snapshot,
       },
@@ -150,7 +158,19 @@ export async function prepareFrontEndForRun(page, config, options = {}) {
     snapshot = await frontEndSnapshot(page);
   }
 
-  if (snapshot.composerCount === 0 && session?.state === "healthy") {
+  // Fail closed on any state we could not positively identify. "unknown" here means the
+  // page did not prove it is a usable, logged-in chat - continuing would send a prompt
+  // into a page whose state we cannot describe, and the failure would surface much later
+  // as an unexplainable timeout.
+  if (session?.state !== "healthy") {
+    throw new DoubaoMvpError(
+      ErrorCode.PAGE_CHANGED,
+      `Front-end preflight could not confirm a healthy chat page (state=${session?.state ?? "unknown"}).`,
+      { stage: "frontend-preflight", initialUrl, currentUrl: page.url(), snapshot, session },
+    );
+  }
+
+  if (snapshot.composerCount === 0) {
     throw new DoubaoMvpError(
       ErrorCode.PAGE_CHANGED,
       "The page looked logged in but no normal chat composer was visible.",

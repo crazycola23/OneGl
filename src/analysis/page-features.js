@@ -1,3 +1,4 @@
+import { canonicalizeUrl } from "../url.js";
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import net from "node:net";
@@ -220,7 +221,19 @@ export function extractPageFeatures(html, { url = null, contentType = "text/html
   const titleText = firstMatch(source, /<title\b[^>]*>([\s\S]*?)<\/title>/i);
   const metaDescription = firstMeta(meta, ["description", "og:description", "twitter:description"]);
   const canonicalMatch = source.match(/<link\b[^>]*rel\s*=\s*(?:"canonical"|'canonical'|canonical)[^>]*>/i);
-  const canonicalHref = canonicalMatch ? parseAttributes(canonicalMatch[0]).href ?? null : null;
+  const canonicalRaw = canonicalMatch ? parseAttributes(canonicalMatch[0]).href ?? null : null;
+  // Resolved against the fetched (final) URL and normalised with the same helper the
+  // citation matcher uses. A raw attribute is useless as a matching key: it is often
+  // relative, and it never had the tracking parameters removed.
+  let canonicalHref = canonicalRaw;
+  if (canonicalRaw) {
+    try {
+      const resolved = new URL(canonicalRaw, validHttpUrl(url) ?? undefined);
+      canonicalHref = canonicalizeUrl(resolved.href) ?? canonicalRaw;
+    } catch {
+      canonicalHref = canonicalRaw;
+    }
+  }
 
   const bodyWithoutCode = source
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")

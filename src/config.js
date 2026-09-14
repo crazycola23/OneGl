@@ -5,6 +5,12 @@ function boolEnv(value, fallback) {
   return /^(1|true|yes|on)$/i.test(value.trim());
 }
 
+function strEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw == null || String(raw).trim() === "") return fallback;
+  return String(raw).trim();
+}
+
 function intEnv(name, fallback, min = 1) {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -54,6 +60,19 @@ export function loadConfig(overrides = {}) {
     browser,
     browserExecutable:
       overrides.browserExecutable ?? process.env.ONEGL_BROWSER_EXECUTABLE ?? null,
+    // Context-level environment. These exist so one account presents the *same*
+    // browser environment on every cold start: an automation that switches locale,
+    // timezone and window size between runs is not behaving like the same user
+    // returning, it is behaving like a new device each time. This is consistency,
+    // not spoofing - the values are the operator's real locale/timezone.
+    locale:
+      overrides.locale ?? strEnv("ONEGL_BROWSER_LOCALE", "zh-CN"),
+    timezoneId:
+      overrides.timezoneId ?? strEnv("ONEGL_BROWSER_TIMEZONE", "Asia/Shanghai"),
+    viewportWidth:
+      overrides.viewportWidth ?? intEnv("ONEGL_BROWSER_VIEWPORT_WIDTH", 1_440, 320),
+    viewportHeight:
+      overrides.viewportHeight ?? intEnv("ONEGL_BROWSER_VIEWPORT_HEIGHT", 900, 240),
     camoufoxPython:
       overrides.camoufoxPython ??
       process.env.ONEGL_CAMOUFOX_PYTHON ??

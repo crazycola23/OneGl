@@ -74,6 +74,32 @@ test("citation extraction reproduces the recorded result for every real DOM fixt
             `${fixture.name}: UI-declared citation count`,
           );
         }
+
+        // The extractor must always report *why* a declared count and a captured count
+        // differ, so a mismatch is diagnosable from the run artifact alone.
+        assert.equal(typeof result.selectorUsed, "string", `${fixture.name}: selector provenance`);
+        assert.ok(result.counts, `${fixture.name}: structured counts`);
+        assert.equal(
+          result.counts.captured,
+          result.citations.length,
+          `${fixture.name}: counts.captured matches the emitted citations`,
+        );
+        assert.equal(
+          result.counts.expected,
+          result.expectedCount,
+          `${fixture.name}: counts.expected matches the UI signal`,
+        );
+        if (result.counts.expected !== null && result.counts.expected !== result.counts.captured) {
+          assert.match(
+            result.counts.diagnostic,
+            /^reference-count-mismatch:/,
+            `${fixture.name}: mismatch carries a machine-readable diagnostic`,
+          );
+          assert.ok(
+            result.diagnostics.includes(result.counts.diagnostic),
+            `${fixture.name}: mismatch diagnostic is surfaced on the result`,
+          );
+        }
       });
     }
   } finally {

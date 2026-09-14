@@ -134,14 +134,22 @@ same run
 AND retrieved canonical_url == visible citation canonical_url
 ```
 
-Stored match method:
+Stored match method, evaluated in confidence order (first hit wins):
 
 ```text
-canonical_url_exact
+canonical_url_exact     same normalised URL (authoritative)
+canonical_url_redirect  candidate's redirect target
+canonical_url_html      page-declared <link rel="canonical">
+site_rule_alias         www. / m. / amp. / trailing-slash folding
+content_hash_alias      identical body hash
 ```
 
-No domain-only, title-similarity, redirect, embedding or LLM judgement is used for this relation.
-That intentionally favors false negatives over unsupported positives.
+No domain-only, title-similarity, embedding or LLM judgement is used for this relation, and the
+alias tiers never replace the exact tier: `exactCitationMatches` keeps its original meaning, and the
+wider figure is reported separately as `aliasCitationMatches` / `matchedCitationConversionRate`.
+That still favours false negatives over unsupported positives, but it no longer counts an obviously
+identical article as "not cited" merely because the network copy and the rendered citation were
+observed under different URL shapes.
 
 ## Citation factor analysis
 

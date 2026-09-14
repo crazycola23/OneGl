@@ -51,14 +51,19 @@ Migration `0006_retrieval_evidence.sql` adds:
 Search queries and retrieved candidates are persisted inside the same PostgreSQL transaction as
 the run and visible citations.
 
-The only automatic candidate -> visible citation relation is exact canonical URL equality within
-the same run:
+Candidate -> visible citation relations only ever happen within the same run, and every relation is
+labelled with the rule that produced it:
 
 ```text
-match_method = canonical_url_exact
+match_method = canonical_url_exact | canonical_url_redirect | canonical_url_html
+             | site_rule_alias | content_hash_alias
 ```
 
-No domain-only, title-similarity, redirect, embedding or LLM match is silently substituted.
+`canonical_url_exact` is the only exact metric and keeps its original definition; the alias tiers
+are reported separately (`aliasCitationMatches`, `matchedCitationConversionRate`) so a wider
+overlap can never be mistaken for the strict one. No domain-only, title-similarity, embedding or
+LLM match is silently substituted. The redirect and HTML-canonical tiers are defined and accepted
+by the schema but are not populated yet - they need page evidence wired into the per-run match.
 
 Report:
 

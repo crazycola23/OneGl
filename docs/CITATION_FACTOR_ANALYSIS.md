@@ -20,7 +20,10 @@ A candidate enters the factor report only when its run satisfies all of these:
 cited = retrieved_sources.visible_citation_id IS NOT NULL
 ```
 
-The relation is still the strict `canonical_url_exact` match defined in `RETRIEVAL_ANALYTICS.md`.
+The relation uses the match tiers defined in `RETRIEVAL_ANALYTICS.md`, and every row records which
+tier produced it in `match_method`. The exact tier (`canonical_url_exact`) remains the strict
+baseline; `site_rule_alias` covers the same article observed under a presentation-host variant. No
+title-similarity, embedding or LLM judgement contributes to the binary outcome.
 
 ## Retrieval-side factors
 

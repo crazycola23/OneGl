@@ -34,9 +34,16 @@ async function buildReport(batchId) {
          (SELECT count(*) FROM batch_runs WHERE network_evidence_state = 'found') AS runs_with_network_evidence,
          (SELECT COALESCE(sum(search_query_count), 0) FROM batch_runs) AS search_queries,
          (SELECT count(*) FROM retrieval) AS retrieved_sources,
-         (SELECT count(*) FROM retrieval WHERE visible_citation_id IS NOT NULL) AS exact_citation_matches,
+         (SELECT count(*) FROM retrieval
+           WHERE match_method = 'canonical_url_exact') AS exact_citation_matches,
+         (SELECT count(*) FROM retrieval
+           WHERE visible_citation_id IS NOT NULL
+             AND match_method IS DISTINCT FROM 'canonical_url_exact') AS alias_citation_matches,
+         (SELECT count(*) FROM retrieval
+           WHERE visible_citation_id IS NOT NULL) AS matched_citation_sources,
          (SELECT count(DISTINCT article_id) FROM retrieval) AS unique_retrieved_articles,
-         (SELECT count(DISTINCT article_id) FROM retrieval WHERE visible_citation_id IS NOT NULL) AS unique_matched_articles`,
+         (SELECT count(DISTINCT article_id) FROM retrieval
+           WHERE visible_citation_id IS NOT NULL) AS unique_matched_articles`,
       [batchId],
     )
   ).rows;
@@ -94,12 +101,37 @@ async function main() {
       有网络证据的运行: Number(s.runs_with_network_evidence ?? 0),
       搜索词: Number(s.search_queries ?? 0),
       候选来源: Number(s.retrieved_sources ?? 0),
-      精确命中最终引用: Number(s.exact_citation_matches ?? 0),
-      候选转化率: pct(s.exact_citation_matches, s.retrieved_sources),
+      精确命中: Number(s.exact_citation_matches ?? 0),
+      精确转化率: pct(s.exact_citation_matches, s.retrieved_sources),
+      别名命中: Number(s.alias_citation_matches ?? 0),
+      含别名命中: Number(s.matched_citation_sources ?? 0),
+      含别名转化率: pct(s.matched_citation_sources, s.retrieved_sources),
       唯一候选文章: Number(s.unique_retrieved_articles ?? 0),
       唯一命中文章: Number(s.unique_matched_articles ?? 0),
     },
   ]);
+
+  const methods = (
+    await pool.query(
+      `SELECT COALESCE(rs.match_method, 'unmatched') AS method, count(*) AS sources
+         FROM retrieved_sources rs
+         JOIN runs r ON r.id = rs.run_id
+        WHERE r.sampling_batch_id = $1
+        GROUP BY 1
+        ORDER BY sources DESC, method`,
+      [batchId],
+    )
+  ).rows;
+  if (methods.length) {
+    console.log("\n=== 命中方式分布 ===");
+    console.table(
+      methods.map((row) => ({
+        命中方式: row.method,
+        候选数: Number(row.sources),
+        占比: pct(row.sources, s.retrieved_sources),
+      })),
+    );
+  }
 
   if (report.domains.length) {
     console.log("\n=== 按域名的候选采用率 ===");
@@ -132,7 +164,9 @@ async function main() {
   }
 
   console.log(
-    "\n说明：最终命中只采用同一 Run 内 canonical URL 完全相等（canonical_url_exact），不使用标题或语义相似推断。",
+    "\n说明：命中只发生在一个 Run 内部，并且每条记录都标注了 match_method。" +
+      "canonical_url_exact 是唯一的精确口径；site_rule_alias 等别名口径单独统计，" +
+      "不使用标题、语义相似或 LLM 推断。",
   );
 }
 

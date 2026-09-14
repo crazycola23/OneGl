@@ -3,8 +3,8 @@ import os from "node:os";
 import { DelayedError, UnrecoverableError, Worker } from "bullmq";
 import {
   ACCOUNT_BLOCKING_CODES,
-  RETRYABLE_CODES,
   accountAvailability,
+  canRetryOutcome,
   beginAccountRun,
   markStorageStatePresent,
   randomDelayMs,
@@ -105,7 +105,13 @@ async function publishHeartbeat() {
 /** 每个账号一个浏览器会话，复用以免每次任务都重启一次 Camoufox。 */
 async function getSession(accountKey) {
   const existing = sessions.get(accountKey);
-  if (existing) return existing;
+  if (existing) {
+    // 复用前先确认会话还活着。坏掉的会话会让后面每个任务都稳定失败，看起来像
+    // 平台在拒绝我们，实际只是浏览器进程已经死了。重建是廉价操作。
+    if (existing.isHealthy?.() !== false) return existing;
+    log({ event: "session-unhealthy", account_key: accountKey });
+    await closeSession(accountKey);
+  }
 
   const accountConfig = loadConfig({ accountKey });
   const session = await launchBrowserSession(accountConfig);
@@ -359,8 +365,23 @@ async function handleJob(job, token) {
     if (failure.blocked && ACCOUNT_BLOCKING_CODES[code]) {
       throw new UnrecoverableError(`账号 ${accountKey} 已暂停：${failure.message}`);
     }
-    if (!RETRYABLE_CODES.has(code)) {
-      throw new UnrecoverableError(`错误 ${code} 不属于可重试类型，已停止重试`);
+    // 重试前必须确认上一次提问没有送到平台。否则「重试」等于再发一次同样的提问，
+    // 既污染样本，也正是平台最容易识别为滥用的行为。
+    if (!canRetryOutcome(code, outcome.normalized?.details)) {
+      const submitted = outcome.normalized?.details?.promptSubmitted;
+      const reason =
+        submitted === true || submitted === undefined
+          ? "上次提问可能已经提交，重试会造成重复提问"
+          : `错误 ${code} 不属于可重试类型`;
+      log({
+        event: "job-no-retry",
+        batch_id: batchId,
+        run_id: runId,
+        account_key: accountKey,
+        error_code: code,
+        prompt_submitted: submitted ?? null,
+      });
+      throw new UnrecoverableError(`${reason}，已停止重试`);
     }
     throw new Error(`${code}: ${outcome.normalized?.message ?? "未知错误"}`);
   } finally {
