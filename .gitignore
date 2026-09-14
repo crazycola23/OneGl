@@ -12,3 +12,5 @@ examples/keyword-pool.qidaifuzhengtang.json
 .DS_Store
 npm-debug.log*
 pnpm-debug.log*
+# 提交信息临时文件（勿提交）
+.commit-msg.tmp
