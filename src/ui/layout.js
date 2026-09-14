@@ -1,5 +1,7 @@
 import { escapeHtml } from "./format.js";
 import { STYLE } from "./style.js";
+import { WARM_THEME } from "./warm-theme.js";
+import { reportExportBootstrap } from "./report-export.js";
 import { riskDashboardPanel, sidebarRisk } from "./risk-dashboard.js";
 import {
   CONNECTION_STATES,
@@ -102,29 +104,31 @@ function deckStatus(system) {
 export function layout({ title, active = "", body, system = undefined }) {
   const status = system == null ? cachedSystemStatus() : system;
   const riskPanel = riskDashboardPanel(status, { active });
+  const reportActions = reportExportBootstrap(active);
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${escapeHtml(title)} · OneGl 操作台</title>
-<style>${STYLE}</style>
+<style>${STYLE}${WARM_THEME}</style>
 </head>
 <body>
 <div class="deck">
   <aside class="side">
-    <div class="brand"><span class="mark"></span><div><span class="name">OneGl</span><span class="sub">OPERATOR CONSOLE</span></div></div>
+    <div class="brand"><span class="mark"></span><div><span class="name">OneGl</span><span class="sub">CITATION INTELLIGENCE</span></div></div>
     <nav class="nav">${navHtml(active)}</nav>
     ${deckStatus(status)}
   </aside>
   <div class="main">
     <main>${riskPanel}${body}</main>
     <footer>
-      网页端可直接创建抽样批次并启动监测（BullMQ → Worker）；命令行 <code>npm run batch:run -- --batch &lt;ID&gt;</code> 保留为高级与故障排查方式。
+      OneGl 将采集、统计、专业评估与 HTML 报告统一到同一批次口径；高级命令行仍保留用于复现和故障排查。
       服务仅监听 <code>127.0.0.1</code>，无登录鉴权，请勿对外暴露。
     </footer>
   </div>
 </div>
+${reportActions}
 </body></html>`;
 }
 
@@ -195,7 +199,7 @@ export function dataTable({ columns, rows, empty = "暂无数据", rowKey = null
     })
     .join("");
 
-  const body = rows
+  const tableBody = rows
     .map((row) => {
       const cells = columns
         .map((column) => {
@@ -212,7 +216,7 @@ export function dataTable({ columns, rows, empty = "暂无数据", rowKey = null
     })
     .join("");
 
-  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  return `<table><thead><tr>${head}</tr></thead><tbody>${tableBody}</tbody></table>`;
 }
 
 /** 空状态必须告诉操作者下一步做什么。 */
@@ -257,7 +261,7 @@ export function runLink(localRunId, text = null) {
 }
 
 /**
- * 按钮层级：primary（创建 / 开始监测，金色）、secondary（恢复 / 重试，描边）、
+ * 按钮层级：primary（创建 / 开始监测，暖陶土色）、secondary（恢复 / 重试，描边）、
  * danger（停止 / 禁用 / 删除，红色描边，一律带确认）。
  */
 export function formButton({
