@@ -4,181 +4,188 @@
 
 | Phase | Scope | Status |
 |---|---|---|
-| **Phase 0** — Doubao capture validation | Browser capture of answer + DOM-visible citations, per-run evidence artifacts | Implemented |
-| **Phase 1** — Persistent collection | PostgreSQL schema, SQL migrations, single-transaction run persistence, article dedup | Implemented |
+| **Phase 0** — Doubao capture validation | Answer + DOM-visible citations + per-run evidence | Implemented |
+| **Phase 1** — Persistent collection | PostgreSQL schema, migrations, transactional persistence, article dedup | Implemented |
 | **Phase 2** — Batch / queue / operator workflow | Keyword pools, seeded sampling, per-account profiles, BullMQ worker, account safety, dashboard | Implemented |
-| **Phase 3** — Analytics / client reporting | Batch mention-rate reports, domain aggregation, self-contained HTML report | Implemented |
-| **Experimental** — Network/SSE provenance | Opt-in search-query + retrieved-source evidence; local artifacts only | Implemented; needs real-account validation |
-| Beyond | Other providers, retrieved->cited inference, scoring models | Not started, deliberately |
+| **Phase 3** — Visibility analytics | Mention rates, domain/article aggregation, HTML report | Implemented |
+| **Experimental A** — Network/SSE provenance | Search-query + retrieved-candidate capture | Implemented; opt-in, needs current real-account validation |
+| **Experimental B** — Retrieval -> citation analytics | Candidate persistence, exact matching, conversion reporting | Implemented |
+| **Experimental C** — Citation factor analysis | Descriptive factor rates/uplift/confidence intervals | Implemented |
+| Beyond | Multivariable estimated citation probability, other providers | Not started deliberately |
 
-"Implemented" means the code exists and its testable logic is covered by the offline suite. It
-does not mean every browser-facing behaviour has been re-verified against the live Doubao UI.
-Those are listed under [Awaiting real-account validation](#awaiting-real-account-validation).
+"Implemented" means the code exists and offline-testable logic is covered where possible. Browser
+and provider-facing behaviour still requires authorised real-account re-validation.
 
 ## Phase 0 — Doubao capture validation
 
-- Doubao Web entry at `https://www.doubao.com/chat/`.
 - Camoufox-first Playwright browser launcher.
-- Manual first login; `storageState` stored per account under `.onegl/auth/accounts/`.
-- Session states: healthy, login required/expired, verification required, access restricted,
-  unknown/page-changed.
-- **Clean conversation enforced before every prompt.** A session that cannot be proven empty is
-  never used: the prompt is not submitted and the run fails with
-  `DOUBAO_CONVERSATION_RESET_FAILED`, keeping its artifacts.
-- Prompt input verification and fail-closed submission confirmation (no blind auto-resubmit).
-- Answer capture that excludes the user's own bubble (Doubao uses the same `.md-box-root` class
-  for both), with streaming/stability completion checks.
-- DOM-visible source extraction from the Doubao `block_type:10025` reference block.
-- Parsing and enforcement of the UI-declared `参考 M 篇资料` count.
-- Reference overlay fallback for sources hidden behind a UI expander.
-- Conservative URL canonicalization that removes tracking parameters but preserves generic
-  `source`/`ref` parameters.
-- Per-attempt evidence: `screenshot.png`, `page.html`, `answer.md`, `citations.json`,
-  `dom-observation.json`, plus `run.json`. When experimental network evidence is enabled, the
-  attempt also gets `network-evidence.json`.
+- Manual first login; local per-account `storageState`.
+- Session classification: healthy / login / verification / access restricted / unknown.
+- Confirmed fresh conversation before every prompt; fail closed before submit if isolation cannot
+  be proven.
+- Prompt input verification and fail-closed submission confirmation.
+- Assistant-answer capture excluding the user's own renderer bubble.
+- DOM-visible source extraction from the current reference block/UI.
+- Enforcement of visible `参考 M 篇资料` count; unresolved count gaps become `partial`.
+- Per-attempt evidence directories; retries never overwrite earlier attempts.
 
-## Experimental — Network / SSE provenance
+## Experimental A — Network / SSE provenance
 
-- Opt-in via `ONEGL_NETWORK_EVIDENCE=true`; disabled by default until a live authorised account
-  confirms the current Doubao response shape.
-- Passively observes Playwright response events; it does not alter requests or bypass login,
-  verification, rate limits, or access controls.
-- Parses JSON/SSE search-result-shaped payloads, including nested/stringified blocks such as
-  `block_type:10025` / `search_query_result`.
-- Extracts generated search queries and external retrieved source candidates when the payload
-  exposes them.
-- Raw response bodies are parsed in memory but not persisted. Saved endpoint metadata has query
-  strings removed.
-- Network sources are explicitly marked `sourceType=retrieved`, `capturedFrom=NETWORK`,
-  `visibleToUser=false`, `relationStatus=unresolved`.
-- Network evidence never changes `citationState`, `expectedCitationCount`, visible citation
-  totals, or success/partial semantics.
-- Evidence is currently stored in per-attempt artifacts and `run.json`; it is deliberately not
-  written into citation analytics/database reports yet.
+- Opt-in via `ONEGL_NETWORK_EVIDENCE=true`.
+- Passive Playwright response observer; no request mutation or access-control bypass.
+- Parses JSON/SSE search-result-shaped payloads including nested/stringified structures.
+- Extracts generated search queries, external candidate URLs and optional title/source/summary.
+- Raw response bodies are parsed in memory but not persisted.
+- Stored endpoint metadata strips query strings; cookies/auth headers are not copied.
+- Retrieved sources remain `NETWORK`, `visible_to_user=false`, separate from citation truth.
+- Per-attempt `network-evidence.json` is retained for audit.
 
-See [NETWORK_EVIDENCE.md](NETWORK_EVIDENCE.md) for the trust model and validation checklist.
+## Experimental B — Retrieval -> citation analytics
 
-## Phase 1 — Persistent collection
+Migration `0006_retrieval_evidence.sql` adds:
 
-- PostgreSQL schema: `projects`, `prompts`, `runs`, `articles`, `citations`,
-  `schema_migrations`.
-- Plain numbered SQL migrations applied by `src/db/migrate.js` with a checksum ledger; no ORM.
-- One transaction per run: Project/Prompt upsert, Run upsert, Article upsert, Citation upsert.
-  A run can never end up with only half of its citations.
-- Articles deduplicate on `canonical_url`; one article cited many times stays one row.
-- `expected_citation_count` and `captured_citation_count` are both persisted, so the
-  UI-declared vs captured signal survives in the database.
-- `citations.source_type` (`visible` | `retrieved`, default `visible`), enforced by a check
-  constraint. Current database persistence still writes DOM-visible citation rows only; the
-  experimental network collector keeps retrieved evidence outside citation analytics until its
-  semantics are validated.
-- `DATABASE_URL` is optional: without it the collector still runs artifact-only.
+- `run_search_queries`;
+- `retrieved_sources`;
+- run-level network evidence state/diagnostic/count fields.
 
-## Phase 2 — Batch / queue / operator workflow
+Search queries and retrieved candidates are persisted inside the same PostgreSQL transaction as
+the run and visible citations.
 
-- Keyword pools imported from JSON, with categories and a pool version.
-- Seeded sampling (`random` or `stratified`); seed, method, pool version and the selected
-  prompts are recorded, so a batch is reproducible.
-- Per-account anonymous identifiers and per-account browser profiles; credentials never reach
-  the database or the repository.
-- BullMQ queues, one per account, concurrency 1 per account, so a single account is serial by
-  construction and one blocked account cannot stall the others.
-- Deterministic run identity (`run_token`, `job_id`, `attempt`) with a unique index, so a retried
-  job rewrites the same Run instead of producing a duplicate.
-- Per-attempt artifact directories: retries never overwrite an earlier attempt's evidence.
-- Account safety: daily limit, consecutive-failure cooldown, pause/resume, and a distinction
-  between **temporary** states (cooldown, rate limit, daily limit) which **delay** the task until
-  recovery, and **permanent/manual** states (disabled, login required, session expired,
-  verification required, access restricted, manual pause) which skip the task and stop hitting
-  the account.
-- The daily limit is computed in the account timezone (`ONEGL_ACCOUNT_TIMEZONE`, default
-  `Asia/Shanghai`), not UTC and not the server's local timezone.
-- Batch terminal status: `completed` only when real data was produced and nothing failed or was
-  skipped; `partial` when successes are mixed with failures or skips, and also when **everything
-  was skipped**; `failed` when nothing succeeded; `aborted` stays `aborted`.
-- Read-only dashboard: runs, run detail, sources, projects, accounts, batch progress.
+The only automatic candidate -> visible citation relation is exact canonical URL equality within
+the same run:
 
-## Phase 3 — Analytics / client reporting
+```text
+match_method = canonical_url_exact
+```
 
-- Batch report: run-level and prompt-level mention rates kept separate, citation totals, unique
-  articles/domains, per-category and per-account breakdowns, top domains and top articles.
-- Self-contained HTML client report (`tools/build-report-html.js`) with no CDN or webfont
-  dependency, so it opens offline.
-- The generic renderer depends only on the batch snapshot. Client-specific wording, highlight
-  terms, own-domain monitoring and conclusions live in an external profile under `local/`
-  (gitignored), never in the renderer.
+No domain-only, title-similarity, redirect, embedding or LLM match is silently substituted.
 
-## Stabilization pass (data-reliability fixes)
+Report:
 
-| Fix | Behaviour now |
-|---|---|
-| Conversation reset | Fail closed before submit; new error code `DOUBAO_CONVERSATION_RESET_FAILED`; failure artifacts preserved |
-| Batch terminal status | All-skipped is `partial`, never `completed`; `completed + failed + skipped` is consistent with `requested` |
-| Retry attempt | Real `job.attemptsMade + 1` recorded on the Run and in PostgreSQL; one Run per `run_token` |
-| Artifact evidence | `attempts/<n>/` per attempt; retries cannot overwrite an earlier failure's evidence |
-| Cooldown | Temporary states delay the job until recovery (bounded number of waits); permanent states skip and stop |
-| Citation source type | `source_type` column with `visible` / `retrieved`, default `visible` |
-| Network provenance | Opt-in passive parser; retrieved evidence stays separate from visible citation metrics |
-| Account daily limit | Account-timezone day key; also fixed `runs_today_date` comparison against pg's `date` type |
-| Report | De-client-ified; expected/captured gap described as unconfirmed rather than attributed to a specific cause |
+```bash
+npm run report:retrieval -- --batch <id>
+```
+
+Outputs candidate counts, exact matches, conversion rate, per-domain conversion and per-run
+query/candidate/match counts.
+
+## Experimental C — Citation factor analysis
+
+Report:
+
+```bash
+npm run report:factors -- --batch <id>
+```
+
+The analysis cohort is intentionally strict:
+
+```text
+status = success
+conversation_reset_confirmed = true
+network_evidence_state = found
+```
+
+`partial` runs are excluded so incomplete visible citation capture cannot create false negatives.
+
+Current observable factors:
+
+- candidate position;
+- title <-> prompt lexical overlap;
+- title <-> observed generated-query lexical overlap;
+- summary <-> prompt lexical overlap;
+- title / summary / source-name presence;
+- search-query count;
+- repeated candidate frequency inside the analyzed batch.
+
+Each factor bucket reports sample size, exact citation rate, uplift versus cohort baseline and a
+Wilson 95% interval. Results are descriptive associations, not causal effects or proprietary
+Doubao weights.
+
+See [CITATION_FACTOR_ANALYSIS.md](CITATION_FACTOR_ANALYSIS.md).
+
+## Persistent collection
+
+- Numbered SQL migrations with checksum ledger; no ORM.
+- One transaction per run.
+- `articles` deduplicate on `canonical_url`.
+- Visible citation truth remains in `citations`.
+- Retrieval evidence remains in `run_search_queries` / `retrieved_sources`.
+- `DATABASE_URL` is optional; artifact-only collection still works without PostgreSQL.
+
+## Batch / queue / account safety
+
+- Seeded random or stratified sampling with stored seed and pool version.
+- Per-account browser profiles and anonymous account keys.
+- BullMQ queue per account, concurrency 1 per account.
+- Deterministic run identity and retry attempts.
+- Temporary cooldown states delay jobs; permanent/manual states skip and stop the account.
+- Daily limits use configured account timezone.
+- Terminal batch status distinguishes completed / partial / failed / aborted consistently.
+
+## Reporting layers
+
+The three main reports have deliberately different truth scopes:
+
+```text
+npm run report
+  DOM-visible citation + brand visibility metrics
+
+npm run report:retrieval
+  observed retrieval candidate -> exact visible citation overlap
+
+npm run report:factors
+  descriptive associations inside the clean retrieval/citation cohort
+```
+
+Experimental retrieval/factor metrics do not silently enter client-facing headline citation
+numbers.
 
 ## Deliberately not implemented
 
-- Network/SSE retrieved evidence as a production database/report data source.
-- Retrieved Source / Cited Source inference beyond UI evidence, and any automatic promotion of
-  `retrieved` to a visible citation.
-- Multi-provider support (Kimi, DeepSeek, Yuanbao, Qwen) and any provider-abstraction refactor.
-- GEO, sentiment, recommendation, competitor, or brand scoring.
-- Training-data claims.
-- Prompt generation, payment, multi-tenant SaaS permissions.
+- claims about training data or hidden model reads;
+- fuzzy candidate/citation matching presented as exact evidence;
+- query -> source attribution when the network payload does not explicitly provide it;
+- Doubao internal ranking-score claims;
+- multivariable citation-probability modelling before sufficient repeated real data exists;
+- multi-provider abstraction/refactor;
+- payment or multi-tenant SaaS permissions.
 
 ## Awaiting real-account validation
 
-The following were changed by the stabilization pass or experimental provenance work and are
-covered by offline tests only. They must be re-verified with an authorised live account before
-being treated as proven:
+The following must be re-verified with an authorised live account before network-derived analysis
+is treated as production-grade:
 
-- `NEEDS_REAL_ACCOUNT_VALIDATION` — conversation-reset detection against the live Doubao UI, and
-  that a genuine fresh conversation still passes the new fail-closed gate.
-- `NEEDS_REAL_ACCOUNT_VALIDATION` — session state judgement (healthy / login / verification /
-  access restricted) after the change.
-- `NEEDS_REAL_ACCOUNT_VALIDATION` — Doubao DOM selector validity, prompt submit behaviour, and
-  answer completion detection.
-- `NEEDS_REAL_ACCOUNT_VALIDATION` — citation expander behaviour and the real cause of
-  expected/captured gaps.
-- `NEEDS_REAL_ACCOUNT_VALIDATION` — real platform behaviour for rate limits, verification and
-  session expiry, and therefore the cooldown delay policy's usefulness in practice.
-- `NEEDS_REAL_ACCOUNT_VALIDATION` — queue retry behaviour end to end (attempt 2 writing into
-  `attempts/2/` while `attempts/1/` survives).
-- `NEEDS_REAL_ACCOUNT_VALIDATION` — actual Doubao Network/SSE response endpoint and payload shape,
-  including whether search queries and retrieved source URLs map to the expected `block_type:10025`
-  structures on current Web builds.
-- `NEEDS_REAL_ACCOUNT_VALIDATION` — network capture has no measurable effect on answer completion,
-  citation extraction, account safety state, or visible citation counts.
+- `NEEDS_REAL_ACCOUNT_VALIDATION` — fresh-conversation detection on current Doubao Web;
+- `NEEDS_REAL_ACCOUNT_VALIDATION` — session/login/verification/access-restriction classification;
+- `NEEDS_REAL_ACCOUNT_VALIDATION` — current DOM selectors, prompt submission and answer completion;
+- `NEEDS_REAL_ACCOUNT_VALIDATION` — citation expander/count reconciliation;
+- `NEEDS_REAL_ACCOUNT_VALIDATION` — real rate-limit/session-expiry behaviour;
+- `NEEDS_REAL_ACCOUNT_VALIDATION` — queue retry attempts and artifact preservation end to end;
+- `NEEDS_REAL_ACCOUNT_VALIDATION` — current Network/SSE endpoint and payload shape;
+- `NEEDS_REAL_ACCOUNT_VALIDATION` — observed search queries / retrieved URLs map to the intended
+  current product retrieval layer;
+- `NEEDS_REAL_ACCOUNT_VALIDATION` — passive network capture does not alter answer completion,
+  visible citation counts or account safety behaviour.
 
 ## Known risks
 
-- A run's mention-rate value depends on the conversation genuinely being fresh; the fail-closed
-  gate reduces (but cannot fully prove) that risk.
-- Citation-source statistics are a conservative floor whenever the UI declares more sources than
-  were parsed.
-- Network evidence field names are reverse-observed implementation details and may change without
-  notice; the parser must fail to `none/partial` rather than infer unsupported meanings.
-- The 30-case Phase 0 suite has not been re-run as a whole against the current code.
+- Network field names are reverse-observed implementation details and may change.
+- Exact URL matching can undercount true candidate/citation overlap when redirects or alternate
+  canonical forms are involved; this is preferable to unsupported positive matches.
+- Citation-factor analysis is univariate/descriptive, so confounding and Simpson's paradox are
+  possible.
+- Small buckets can produce unstable uplift; use sample thresholds and Wilson intervals.
+- The full fixed live validation suite must be rerun after provider-facing changes.
 
-## Validation gate before further feature work
+## Gate before estimated-probability modelling
 
-Re-run the fixed prompt suite against an authorised account and confirm, per run:
+Do not add a multivariable model until repeated authorised batches show:
 
-1. answer present in UI vs answer captured;
-2. visible reference count in UI vs `expectedCitationCount`;
-3. source title/URL/order vs the expanded reference UI;
-4. new-conversation isolation between consecutive prompts (and that no run was silently allowed
-   through without a confirmed reset);
-5. session-expiry and verification behaviour, including that a real cooldown delays rather than
-   drops the task;
-6. with network evidence enabled for a small subset, `network-evidence.json` contains only
-   provenance-shaped data, does not leak session/auth material, and does not alter visible
-   citation results.
+1. stable enough network evidence capture;
+2. acceptable exact match coverage;
+3. enough positive and negative candidate outcomes;
+4. reproducible feature distributions across repeated prompts/batches;
+5. enough data for train/test or time-split out-of-sample evaluation.
 
-Feature work should not resume until these hold.
+Any future model must be labelled **estimated citation probability**, never Doubao's internal
+score.

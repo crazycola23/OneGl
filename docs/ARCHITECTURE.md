@@ -2,107 +2,93 @@
 
 ## Goal
 
-OneGl measures how a target brand appears in Doubao's answers, and which sources Doubao cites,
-by asking a reproducible sample of questions in independent fresh conversations:
+OneGl measures how a target brand appears in Doubao answers and which observable sources are
+retrieved and cited, using reproducible prompts in independent fresh conversations:
 
 ```text
 Keyword pool -> seeded sample -> per-account queue -> fresh conversation
-  -> Doubao Web -> Answer -> brand detection -> visible citations
-  -> article dedup -> PostgreSQL -> batch report
-                    \\-> optional Network/SSE provenance -> local evidence
+  -> Doubao Web
+     -> Answer -> brand detection
+     -> DOM-visible citations -----------------------> citations
+     -> optional Network/SSE search provenance
+          -> generated search queries --------------> run_search_queries
+          -> retrieved candidate sources -----------> retrieved_sources
+                 -> canonical URL exact overlap -----^ visible citation relation
+  -> PostgreSQL -> visibility report / retrieval report / factor report
 ```
 
-The browser UI is the source of truth for `visible_to_user`. Experimental network evidence can
-show search queries and retrieved candidates, but a network-observed source is not automatically
-a citation and does not prove that the final answer used it.
+The browser UI remains the source of truth for `visible_to_user`. Network evidence can show search
+queries and retrieved candidates, but a network-observed source is not automatically a citation
+and does not prove that the final answer used it.
 
-The governing rule is **数据可信度 > 功能数量**: when a run cannot be trusted it is recorded as a
-failure, and when a number cannot be confirmed it is reported as unconfirmed.
+The governing rule is **数据可信度 > 功能数量**: unsupported relations are left unknown rather than
+filled in by inference.
 
 ## Runtime topology
 
-Three processes, all sharing one collector core (`src/collect/runner.js`):
+Three processes share one collector core (`src/collect/runner.js`):
 
 | Process | Entry point | Role |
 |---|---|---|
-| Collector CLI | `src/cli.js` | `auth` / `run` / `batch`, project setup, sampling, reports |
-| Worker | `src/worker.js` | Drains BullMQ queues, one per account |
-| Web | `src/server.js` | Read-only dashboard plus batch start/stop |
+| Collector CLI | `src/cli.js` | auth / run / batch, project setup, sampling, reports |
+| Worker | `src/worker.js` | drains BullMQ queues, one serial queue per account |
+| Web | `src/server.js` | read-only dashboard plus batch start/stop |
 
 - **Browser automation:** Playwright Core.
-- **Default browser:** Camoufox, resolved through the same Python `camoufox.utils.launch_options`
-  approach used by upstream OneGlanse. Its snake_case options are mapped to Playwright's
-  camelCase keys explicitly; passing them through unchanged makes Playwright silently ignore the
-  Camoufox executable.
-- **Authentication:** first login is manual; Playwright `storageState` is persisted locally per
-  account under `.onegl/auth/accounts/` and reused by later runs. Credentials never reach the
-  database or the repository.
-- **Queue:** BullMQ over Redis. One queue per account with concurrency 1, so a single account is
-  serial by construction. `ONEGL_ACCOUNT_PARALLELISM` caps how many accounts run at once.
-- **Database:** PostgreSQL, reached through migrations in `migrations/*.sql`.
+- **Default browser:** Camoufox.
+- **Authentication:** manual first login; `storageState` stays local under `.onegl/auth/`.
+- **Queue:** BullMQ over Redis; one queue per account with concurrency 1.
+- **Database:** PostgreSQL through numbered migrations in `migrations/*.sql`.
 
 ## Prompt isolation and fail-closed
 
-Every prompt must run in a conversation that is provably empty, because the quantity being
-measured is `P(brand mentioned | prompt)` and not `P(brand mentioned | prompt + history)`.
+Every prompt must run in a conversation that is provably empty. If emptiness cannot be confirmed
+within `DOUBAO_CONVERSATION_SETTLE_MS`, the prompt is not submitted and the run fails with
+`DOUBAO_CONVERSATION_RESET_FAILED`.
 
-- The runner clicks Doubao's 新对话 control (or reopens `/chat/`), then waits until no assistant
-  message bubble remains.
-- If emptiness cannot be confirmed within `DOUBAO_CONVERSATION_SETTLE_MS`, the prompt is **not
-  submitted**. The run fails with `DOUBAO_CONVERSATION_RESET_FAILED` and keeps its screenshot,
-  HTML snapshot, DOM observation and current URL.
-- This is an execution-stage gate, not a reporting filter: excluding such runs later would still
-  mean the prompt had been sent.
+This is an execution gate rather than a reporting filter: a contaminated answer cannot be made
+valid later by excluding it from a report.
 
 ## Answer capture
 
-Doubao renders the user's own message bubble with the same `.md-box-root` class it uses for
-assistant answers, so a bare selector match mistakes the submitted prompt for the answer.
-Candidates are filtered by walking up to six ancestors for the `justify-end` row that right-aligns
-a user bubble. Completion is gated on the answer node's `data-streaming` attribute, because the
-stop-generation button is not rendered on current Doubao builds.
+Doubao renders user and assistant content with overlapping renderer classes, so answer extraction
+filters user bubbles by ancestor alignment and uses streaming/stability signals to detect
+completion. A partial answer is kept as evidence on timeout but does not become a successful run.
 
 ## Citation truth model
 
-Only DOM-confirmed visible sources are stored as citation truth:
+DOM-confirmed visible sources are citation truth:
 
-- `source_type = visible` (persisted, check-constrained to `visible` | `retrieved`)
-- `captured_from = DOM`
-- `visible_to_user = true`
+```text
+source_type = visible
+captured_from = DOM
+visible_to_user = true
+```
 
-When Doubao renders a block identified by `block_type:10025`, the collector reads the UI signal
-`搜索 N 个关键词，参考 M 篇资料`. `M` becomes an explicit expected citation count.
+When Doubao renders `搜索 N 个关键词，参考 M 篇资料`, `M` is treated as an explicit expected visible
+citation count. If the final unique visible URLs do not reconcile with `M`, the run becomes
+`partial` with `CITATION_PARSE_FAILED`.
 
-If fewer visible links are present, the collector tries to open the reference UI and reads the
-visible reference overlay. If the final unique URL count still differs from `M`, the run is
-**partial** with `CITATION_PARSE_FAILED`; it is not silently treated as a successful run.
+A retrieved source is never auto-promoted into this visible set.
 
-When the UI-declared count exceeds the parsed count, **the cause is not determined**. It may be
-collapsed UI, a DOM change, or a gap in parsing. Reports must therefore present citation-source
-statistics as a conservative floor, not as an exact figure, and must not attribute the gap to a
-specific cause.
+## Network / SSE provenance
 
-A retrieved source must never be auto-promoted into a visible citation. Whether an
-answer-to-citation link was actually confirmed is expressed separately by `relation_status`
-(`matched` | `unresolved`); the tool never invents that relation to make the data look complete.
+`src/network-evidence.js` is an opt-in passive observer enabled with:
 
-## Experimental Network / SSE provenance
+```bash
+ONEGL_NETWORK_EVIDENCE=true
+```
 
-`src/network-evidence.js` is an opt-in passive observer enabled with
-`ONEGL_NETWORK_EVIDENCE=true`. It listens to Playwright response events during a run and examines
-only internal Doubao/ByteDance response traffic with search-result-shaped content.
-
-It can parse JSON, SSE `data:` chunks, and nested/stringified JSON. Search evidence is recognized
-through structures such as `block_type:10025`, `search_query_result`, and related search-result
-keys. When present, the collector extracts:
+It listens to Playwright response events and looks for search-result-shaped JSON/SSE payloads such
+as `block_type:10025` / `search_query_result`. When exposed, it extracts:
 
 - generated search queries;
-- external retrieved source URL;
-- title / source-site / summary when exposed;
-- source position or rank when exposed;
-- sanitized response endpoint metadata.
+- external candidate URLs;
+- title / source name / summary when present;
+- candidate position when present;
+- sanitized endpoint metadata.
 
-Every network candidate is marked conservatively:
+Every network candidate is represented conservatively:
 
 ```json
 {
@@ -113,96 +99,160 @@ Every network candidate is marked conservatively:
 }
 ```
 
-The collector parses response bodies in memory, but raw response bodies are not written to disk.
-Saved endpoint identity strips query strings, and the evidence object does not copy browser
-cookies or authorization headers. Body size and body-read time are capped so a long event stream
-cannot block a run indefinitely.
+Raw response bodies are parsed in memory but not persisted. Stored endpoint identity strips query
+strings, and cookies / authorization headers are not copied into evidence artifacts.
 
-This evidence currently stays in `network-evidence.json` plus the local `run.json`. It is not
-inserted into citation analytics or batch reports yet, because doing so would mix two different
-measurements: "retrieved candidate" and "visible citation". The intended future comparison is
-candidate-to-visible conversion, not an implicit source upgrade.
+Per-attempt provenance is written to `network-evidence.json`; normalized search queries and
+retrieved candidates are also persisted when PostgreSQL is enabled.
 
-See [NETWORK_EVIDENCE.md](NETWORK_EVIDENCE.md) for the validation checklist and evidence semantics.
+## Retrieval persistence
+
+Migration `0006_retrieval_evidence.sql` keeps search/retrieval evidence separate from citation
+truth:
+
+- `run_search_queries` — ordered, deduplicated queries observed for one run;
+- `retrieved_sources` — deduplicated candidate articles observed in network evidence;
+- run-level network evidence state / diagnostics / counts.
+
+Persistence happens inside the same `persistRun` transaction as answer and visible-citation
+storage. Therefore a database run cannot commit visible citations while silently losing its
+retrieval evidence, or vice versa.
+
+`retrieved_sources` is constrained to:
+
+```text
+captured_from = NETWORK
+visible_to_user = false
+```
+
+## Candidate -> visible citation relation
+
+The only automatic candidate/citation relation currently stored is:
+
+```text
+same run
+AND retrieved canonical_url == visible citation canonical_url
+```
+
+Stored match method:
+
+```text
+canonical_url_exact
+```
+
+No domain-only, title-similarity, redirect, embedding or LLM judgement is used for this relation.
+That intentionally favors false negatives over unsupported positives.
+
+## Citation factor analysis
+
+`src/analysis/citation-factors.js` derives reproducible, observable factor buckets from already
+captured evidence. `tools/citation-factor-report.js` analyzes only clean runs:
+
+```text
+status = success
+conversation_reset_confirmed = true
+network_evidence_state = found
+```
+
+`partial` runs are excluded because incomplete visible-citation capture would create false
+negative candidate outcomes.
+
+Current factors include:
+
+- candidate position bucket;
+- title <-> prompt lexical overlap;
+- title <-> observed search-query lexical overlap;
+- summary <-> prompt lexical overlap;
+- title / summary / source-name presence;
+- run search-query count;
+- article retrieval recurrence inside the batch.
+
+For each bucket OneGl reports sample size, exact citation rate, uplift relative to the cohort
+baseline and a Wilson 95% interval.
+
+These outputs are **descriptive associations**, not causal effects and not Doubao internal
+weights. See [CITATION_FACTOR_ANALYSIS.md](CITATION_FACTOR_ANALYSIS.md).
 
 ## Storage: dual track
 
-Structured business data goes to PostgreSQL; per-run debug/provenance artifacts stay on disk.
+Structured research/business data goes to PostgreSQL while per-attempt audit evidence stays on
+disk:
 
 ```text
 .onegl/runs/<run_id>/
-  run.json                  # current attempt, final status/answer/error, latest artifact path
+  run.json
   attempts/
-    1/                      # attempt 1 evidence
+    1/
       screenshot.png
       page.html
       answer.md
       citations.json
       dom-observation.json
-      network-evidence.json # only when experimental network capture is enabled
-    2/                      # attempt 2 evidence, attempt 1 untouched
+      network-evidence.json   # when enabled
+    2/
       ...
 ```
 
-A queued retry re-enters with the same deterministic `run_id` (`run_b<batch>_i<index>`) and the
-same `run_token`. The Run record and `run.json` are reused; only the attempt directory is new. A
-unique index on `runs.run_token` plus the local directory reuse together guarantee that one
-assignment never produces two Runs and never loses the previous attempt's failure evidence.
+Retries reuse the deterministic run identity but write to a new attempt directory so earlier
+failure evidence is not overwritten.
 
 ## Error semantics
 
-Session-blocking errors stop work on that account instead of hammering Doubao:
+Session-blocking errors stop work on an account rather than repeatedly hitting the provider:
 
 - `DOUBAO_LOGIN_REQUIRED`
 - `DOUBAO_SESSION_EXPIRED`
 - `DOUBAO_VERIFICATION_REQUIRED`
 - `DOUBAO_ACCESS_RESTRICTED`
 
-Other run errors include `DOUBAO_TIMEOUT`, `DOUBAO_SUBMISSION_FAILED`,
-`DOUBAO_CONVERSATION_RESET_FAILED`, `ANSWER_NOT_FOUND`, `CITATION_PARSE_FAILED`, `PAGE_CHANGED`,
-`RATE_LIMITED`, `NETWORK_ERROR`, and `UNKNOWN_ERROR`.
+Other run errors include timeout, submission, conversation-reset, answer-not-found, citation-parse,
+page-change, rate-limit and network failures.
 
-Account availability is classified into two kinds, and the worker acts differently on each:
-
-| Kind | Examples | Action |
-|---|---|---|
-| temporary | cooldown, rate-limit cooldown, daily limit reached | delay the job until the recovery time; does not consume retry attempts, bounded by a maximum number of waits |
-| permanent / manual | disabled, login required, session expired, verification required, access restricted, manual pause | skip the assignment (counted in `skipped_jobs`) and stop hitting that account |
-
-The daily limit is evaluated against the account timezone's calendar day
-(`ONEGL_ACCOUNT_TIMEZONE`, default `Asia/Shanghai`), never UTC and never the server's local zone.
+Temporary account states delay work until recovery; permanent/manual states skip work and stop
+hitting the account. Daily limits use the configured account timezone.
 
 ## Batch state machine
 
-Counts are kept consistent with `requested_jobs`: `completed_jobs + failed_jobs + skipped_jobs`
-never exceeds it, and at terminal time equals "how many assignments have a conclusion".
+`completed_jobs + failed_jobs + skipped_jobs` never exceeds requested assignments.
 
 | Situation | Terminal status |
 |---|---|
 | real data produced, nothing failed or skipped | `completed` |
-| successes mixed with failures and/or skips | `partial` |
-| everything skipped, nothing produced | `partial` (never `completed`) |
+| successes mixed with failures/skips | `partial` |
+| everything skipped | `partial` |
 | nothing succeeded | `failed` |
 | manually stopped | `aborted` |
 
-## Reporting
+## Reporting layers
 
-`tools/export-batch.js` dumps a batch snapshot; `tools/build-report-html.js` renders it into a
-single self-contained HTML file (no CDN, no webfont, works offline). The renderer is generic and
-depends only on the snapshot plus an optional profile. Client-specific wording, highlight terms,
-own-domain monitoring and conclusions live in a profile under `local/`, which is gitignored.
+The reporting surfaces intentionally answer different questions:
 
-Experimental retrieved-source evidence is intentionally excluded from these citation reports for
-now. Headline citation metrics continue to mean DOM-visible citations only.
+```text
+npm run report -- --batch <id>
+  -> brand visibility + DOM-visible citation metrics
 
-## Next integration step
+npm run report:retrieval -- --batch <id>
+  -> retrieved candidates + exact retrieved->cited conversion
 
-Remaining work is validation rather than expanding provider surface area. The immediate step is an
-authorised real-account run of the fixed prompt suite plus a small network-evidence subset to
-re-verify the items listed as `NEEDS_REAL_ACCOUNT_VALIDATION` in [MVP_STATUS.md](MVP_STATUS.md).
+npm run report:factors -- --batch <id>
+  -> descriptive factor/citation-rate associations
+```
 
-For the network layer specifically, validation must confirm that current Doubao responses expose
-the expected search-query / retrieved-source structures, that no auth/session material is saved,
-and that enabling the passive observer does not alter answer completion or visible citation
-results. Only after that should retrieved candidates be normalized into a separate persistent
-research model for candidate-to-citation conversion analysis.
+Client-facing HTML output remains based on the standard batch visibility snapshot. Experimental
+network/factor research should not silently enter client headline metrics.
+
+## Validation gate
+
+Before treating network-derived analytics as production-grade evidence, an authorised live run
+must confirm:
+
+1. current Doubao response endpoint/payload shapes still expose the intended search layer;
+2. extracted queries and candidate URLs correspond to the product's actual search/retrieval UI
+   behaviour;
+3. passive response observation does not change answer completion or visible citation counts;
+4. no auth/session material is written into evidence;
+5. exact candidate/citation overlap is stable enough across repeated batches for downstream
+   analysis.
+
+A multivariable estimated-citation-probability model is deliberately gated on those checks and on
+having enough repeated data for out-of-sample evaluation.
