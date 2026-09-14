@@ -1,13 +1,37 @@
 import "dotenv/config";
 import { fetchPageEvidence } from "../src/analysis/page-features.js";
+import { DEFAULT_BREAKER } from "../src/analysis/page-fetch-guard.js";
 import { createPool } from "../src/db/pool.js";
 
 const pool = createPool();
 
+// Shared across workers for the whole run: one robots.txt per domain, and one circuit
+// breaker per domain so a blocked site is not retried by every other candidate.
+const robotsCache = new Map();
+const breakers = new Map();
+
+// Deterministic per-domain stagger. Random jitter would make a re-run unreproducible;
+// a stable offset per domain spreads the load without changing the sample.
 function positiveInt(value, fallback) {
   const n = Number(value);
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
+function domainOffsetMs(domain) {
+  let hash = 0;
+  for (let index = 0; index < domain.length; index += 1) {
+    hash = (hash * 31 + domain.charCodeAt(index)) % 1000;
+  }
+  return hash;
+}
+
+function domainSpacingMs() {
+  return positiveInt(process.env.ONEGL_PAGE_DOMAIN_SPACING_MS, 1500);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 
 function parseArgs(argv) {
   const args = {
@@ -17,6 +41,8 @@ function parseArgs(argv) {
     maxBytes: positiveInt(process.env.ONEGL_PAGE_MAX_BYTES, 2 * 1024 * 1024),
     refresh: false,
     limit: null,
+    robots: true,
+    conditional: true,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const value = argv[i];
@@ -26,6 +52,8 @@ function parseArgs(argv) {
     else if (value === "--max-bytes") args.maxBytes = positiveInt(argv[++i], null);
     else if (value === "--limit") args.limit = positiveInt(argv[++i], null);
     else if (value === "--refresh") args.refresh = true;
+    else if (value === "--no-robots") args.robots = false;
+    else if (value === "--unconditional") args.conditional = false;
     else if (!value.startsWith("--") && args.batchId == null) args.batchId = Number(value);
     else throw new Error(`Unknown argument: ${value}`);
   }
@@ -64,7 +92,42 @@ async function loadArticles(batchId, { refresh, limit }) {
   ).rows;
 }
 
+async function loadPreviousObservation(batchId, articleId) {
+  const { rows } = await pool.query(
+    `SELECT etag, last_modified, final_url, content_hash, fetch_state
+       FROM article_page_observations
+      WHERE batch_id = $1 AND article_id = $2`,
+    [batchId, articleId],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * A 304 means the version we already hold is still current, so the stored features stay
+ * valid: nothing is recomputed and only the "we checked" timestamp moves. This is what
+ * makes repeated captures cheap for the origin and for us.
+ */
+async function touchObservation(batchId, articleId, result) {
+  await pool.query(
+    `UPDATE article_page_observations
+        SET captured_at = now(),
+            http_status = 304,
+            fetch_state = 'success',
+            etag = COALESCE($3, etag),
+            last_modified = COALESCE($4, last_modified),
+            final_url = COALESCE($5, final_url),
+            error_code = NULL,
+            error_message = NULL
+      WHERE batch_id = $1 AND article_id = $2`,
+    [batchId, articleId, result.validators?.etag ?? null, result.validators?.lastModified ?? null, result.finalUrl ?? null],
+  );
+}
+
 async function persistObservation(batchId, article, result) {
+  if (result.state === "not_modified") {
+    await touchObservation(batchId, article.article_id, result);
+    return;
+  }
   const f = result.features ?? {};
   await pool.query(
     `INSERT INTO article_page_observations (
@@ -74,9 +137,9 @@ async function persistObservation(batchId, article, result) {
        numeric_tokens_per_1000_chars, h1_count, h2_count, h3_count, table_count, list_count,
        faq_heading_count, question_heading_count, external_link_count, jsonld_count, schema_types,
        has_article_schema, has_faq_schema, author_present, published_at_raw, modified_at_raw,
-       robots_noindex, robots_nofollow, diagnostics
+       robots_noindex, robots_nofollow, diagnostics, etag, last_modified
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,now(),$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28::jsonb,$29,$30,$31,$32,$33,$34,$35,$36::jsonb
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,now(),$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28::jsonb,$29,$30,$31,$32,$33,$34,$35,$36::jsonb,$37,$38
      )
      ON CONFLICT (batch_id, article_id) DO UPDATE SET
        requested_url = EXCLUDED.requested_url,
@@ -113,7 +176,9 @@ async function persistObservation(batchId, article, result) {
        modified_at_raw = EXCLUDED.modified_at_raw,
        robots_noindex = EXCLUDED.robots_noindex,
        robots_nofollow = EXCLUDED.robots_nofollow,
-       diagnostics = EXCLUDED.diagnostics`,
+       diagnostics = EXCLUDED.diagnostics,
+       etag = COALESCE(EXCLUDED.etag, article_page_observations.etag),
+       last_modified = COALESCE(EXCLUDED.last_modified, article_page_observations.last_modified)`,
     [
       batchId,
       article.article_id,
@@ -151,6 +216,8 @@ async function persistObservation(batchId, article, result) {
       f.robotsNoindex ?? null,
       f.robotsNofollow ?? null,
       JSON.stringify(f.diagnostics ?? []),
+      result.validators?.etag ?? null,
+      result.validators?.lastModified ?? null,
     ],
   );
 }
@@ -159,13 +226,32 @@ async function worker(queue, options, stats) {
   while (queue.length) {
     const article = queue.shift();
     const url = article.original_url || article.canonical_url;
-    const result = await fetchPageEvidence(url, { timeoutMs: options.timeoutMs, maxBytes: options.maxBytes });
+    const domain = String(article.normalized_domain ?? "").toLowerCase();
+
+    // Deterministic stagger so a domain never receives a burst when many of its URLs are
+    // adjacent in the queue.
+    if (domain) await sleep(domainOffsetMs(domain) % domainSpacingMs());
+
+    const previous = options.conditional ? await loadPreviousObservation(options.batchId, article.article_id) : null;
+    const result = await fetchPageEvidence(url, {
+      timeoutMs: options.timeoutMs,
+      maxBytes: options.maxBytes,
+      robots: robotsCache,
+      breakers,
+      breakerConfig: DEFAULT_BREAKER,
+      validateRobots: options.robots,
+      previous: previous
+        ? { etag: previous.etag ?? null, lastModified: previous.last_modified ?? null }
+        : null,
+      unconditional: !options.conditional,
+    });
     await persistObservation(options.batchId, article, result);
     stats.total += 1;
     stats[result.state] = (stats[result.state] ?? 0) + 1;
-    const marker = result.state === "success" ? "✓" : "·";
+    const marker = result.state === "success" ? "✓" : result.state === "not_modified" ? "=" : "·";
     const charset = result.contentCharset ? ` charset=${result.contentCharset}` : "";
-    console.log(`${marker} [${stats.total}] ${article.normalized_domain} ${result.state}${charset} ${url}`);
+    const note = result.diagnostics?.length ? ` (${result.diagnostics.join(", ")})` : "";
+    console.log(`${marker} [${stats.total}] ${article.normalized_domain} ${result.state}${charset}${note} ${url}`);
   }
 }
 
@@ -174,6 +260,7 @@ async function main() {
   const articles = await loadArticles(options.batchId, options);
   console.log(`Page evidence batch=${options.batchId}: ${articles.length} unique retrieved articles to capture`);
   console.log(`Limits: concurrency=${options.concurrency}, timeout=${options.timeoutMs}ms, maxBytes=${options.maxBytes}`);
+  console.log(`Politeness: robots=${options.robots ? "on" : "off"}, conditional=${options.conditional ? "on" : "off"}, domainSpacing=${domainSpacingMs()}ms, breaker=${DEFAULT_BREAKER.failureThreshold} failures / ${DEFAULT_BREAKER.openMs / 60000}min`);
   if (!articles.length) return;
 
   const stats = { total: 0 };
@@ -182,6 +269,7 @@ async function main() {
   console.log("\nPage evidence states:");
   console.table(Object.entries(stats).filter(([key]) => key !== "total").map(([state, count]) => ({ state, count })));
   console.log("No raw page HTML is persisted; only derived fields, detected charset and a SHA-256 content hash are stored.");
+  console.log("A 'not_modified' row means the stored features were revalidated, not re-fetched; 'unusable' rows are 200 responses with no usable HTML and are excluded from factor analysis.");
 }
 
 main()

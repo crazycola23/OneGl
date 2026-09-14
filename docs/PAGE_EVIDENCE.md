@@ -4,6 +4,29 @@ OneGl can optionally capture **observable page features** for URLs that already 
 
 This layer exists to test practical GEO hypotheses such as whether cited candidates are more often structured, dated, authored, data-dense or table/list-heavy. It does **not** claim that Doubao fetched the page in the same way, at the same time, or with the same rendering environment.
 
+## Crawler behaviour
+
+Page evidence is collected by a polite crawler, not a fetcher that hits every URL in the batch:
+
+- **robots.txt is honoured.** A domain's rules are fetched once per run and cached; a disallowed
+  path is skipped and recorded as `blocked` with `ROBOTS_DISALLOW`. If robots.txt itself cannot be
+  fetched (network error or 5xx), the domain is skipped rather than assumed to consent.
+- **Per-domain circuit breaker.** Three consecutive failures (blocked, HTTP error, timeout,
+  redirect limit) open a 15-minute window for that domain, during which remaining candidates are
+  skipped without a request. A success, including a 304, resets the counter.
+- **Conditional requests.** When a previous observation stored an `etag` or `last-modified`, the
+  next capture sends `if-none-match` / `if-modified-since`. A `304` is stored as
+  `not_modified`: the row is timestamped, the existing features are kept, and the page is not
+  re-read. This is what makes repeated captures cheap for the origin.
+- **Deterministic per-domain spacing.** `ONEGL_PAGE_DOMAIN_SPACING_MS` (default 1500) applies a
+  stable per-domain offset so a queue of same-site URLs does not arrive as a burst. It is
+  deterministic on purpose: random jitter would make a re-run unreproducible.
+- **Content quality gate.** A `200` response with no usable body (JavaScript shell, interstitial,
+  or under 200 characters of text) is stored as `unusable`, not `success`. Otherwise "the page did
+  not load" silently becomes "the page has no FAQ schema" in the factor table.
+
+CLI switches: `--no-robots` and `--unconditional` exist for environments where the operator has
+already established permission and wants to re-read everything.
 ## Scope
 
 Page evidence is intentionally downstream of retrieval capture:

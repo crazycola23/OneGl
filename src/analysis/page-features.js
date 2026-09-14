@@ -1,4 +1,14 @@
 import { canonicalizeUrl } from "../url.js";
+import {
+  DEFAULT_BREAKER,
+  assessContentQuality,
+  captureValidators,
+  conditionalHeaders,
+  isBreakerOpen,
+  registerDomainOutcome,
+  robotsDecision,
+  userAgentToken,
+} from "./page-fetch-guard.js";
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import net from "node:net";
@@ -311,43 +321,194 @@ async function readLimitedBody(response, maxBytes) {
   return { data: merged, bytes: total, tooLarge: false };
 }
 
+/**
+ * robots.txt lookup, kept deliberately small.
+ *
+ * Status meanings:
+ *   found       - usable rules were returned
+ *   missing     - the origin answered 4xx: treat the site as having no rules
+ *   unavailable - network failure, 5xx or an unreadable body: the caller decides, and the
+ *                 crawler's choice is to skip the domain rather than assume consent
+ */
+async function fetchRobots(baseUrl, { timeoutMs = 10000, userAgent = DEFAULT_USER_AGENT } = {}) {
+  const robotsUrl = new URL("/robots.txt", baseUrl);
+  try {
+    const response = await fetch(robotsUrl, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(Math.min(timeoutMs, 5000)),
+      headers: { "user-agent": userAgent, accept: "text/plain,*/*;q=0.1" },
+    });
+    if (response.status >= 400 && response.status < 500) return { status: "missing" };
+    if (!response.ok) return { status: "unavailable", httpStatus: response.status };
+    const text = await response.text();
+    if (!text || text.length > 512 * 1024) return { status: "missing" };
+    return { status: "found", text };
+  } catch {
+    return { status: "unavailable" };
+  }
+}
 export async function fetchPageEvidence(inputUrl, {
   timeoutMs = 10000,
   maxBytes = 2 * 1024 * 1024,
   maxRedirects = 5,
   userAgent = DEFAULT_USER_AGENT,
+  robots = null,
+  breakers = null,
+  breakerConfig = DEFAULT_BREAKER,
+  validateRobots = true,
+  previous = null,
+  unconditional = false,
 } = {}) {
-  let current = null;
   const startedAt = new Date().toISOString();
+  let current = null;
+  let breaker = null;
+
+  const finish = (result) => {
+    const state = String(result?.state ?? "error");
+    if (breakers && breaker?.domain) {
+      breakers.set(breaker.domain, registerDomainOutcome(breaker.state, state, Date.now(), breakerConfig));
+    }
+    return result;
+  };
+
   try {
     current = await assertPublicHttpUrl(inputUrl);
+    const domain = current.hostname.toLowerCase();
+    breaker = breakers?.has?.(domain)
+      ? { domain, state: breakers.get(domain) }
+      : { domain, state: null };
+
+    // A domain that already answered with blocks or timeouts is left alone. This is the
+    // cheapest way to avoid turning a soft block into a hard one across a batch.
+    if (isBreakerOpen(breaker.state, Date.now(), breakerConfig)) {
+      return finish({
+        state: "blocked",
+        startedAt,
+        finalUrl: current.href,
+        errorCode: "DOMAIN_BREAKER_OPEN",
+        diagnostics: [`域 ${domain} 在熔断窗口内，未发起请求`],
+      });
+    }
+
+    if (validateRobots) {
+      const token = userAgentToken(userAgent);
+      const cached = robots?.get?.(domain);
+      let decision;
+      if (cached?.text) {
+        decision = robotsDecision(cached.text, { path: current.pathname || "/", userAgent });
+      } else if (cached?.status === "denied") {
+        return finish({
+          state: "blocked",
+          startedAt,
+          finalUrl: current.href,
+          errorCode: "ROBOTS_DISALLOW",
+          diagnostics: [`robots.txt 不可用，已按保守策略跳过域 ${domain}`],
+        });
+      } else if (cached?.status === "unverified") {
+        decision = { rule: "allow", matched: null };
+      } else {
+        const robotsResult = await fetchRobots(current, { timeoutMs, userAgent, maxBytes });
+        if (robotsResult.status === "found") {
+          robots?.set?.(domain, { status: "found", text: robotsResult.text, fetchedAt: Date.now() });
+          decision = robotsDecision(robotsResult.text, { path: current.pathname || "/", userAgent });
+        } else if (robotsResult.status === "missing") {
+          robots?.set?.(domain, { status: "unverified", fetchedAt: Date.now() });
+          decision = { rule: "allow", matched: null };
+        } else {
+          robots?.set?.(domain, { status: "denied", fetchedAt: Date.now() });
+          return finish({
+            state: "blocked",
+            startedAt,
+            finalUrl: current.href,
+            errorCode: "ROBOTS_UNAVAILABLE",
+            diagnostics: [`robots.txt 抓取失败（${robotsResult.status}），已按保守策略跳过`],
+          });
+        }
+      }
+      if (decision.rule === "disallow") {
+        return finish({
+          state: "blocked",
+          startedAt,
+          finalUrl: current.href,
+          errorCode: "ROBOTS_DISALLOW",
+          diagnostics: [`robots.txt 禁止抓取 ${decision.matched ?? current.pathname}`],
+        });
+      }
+    }
+
     for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
+      const headers = {
+        "user-agent": userAgent,
+        accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
+        ...(unconditional ? {} : conditionalHeaders(previous)),
+      };
       const response = await fetch(current, {
         redirect: "manual",
         signal: AbortSignal.timeout(timeoutMs),
-        headers: { "user-agent": userAgent, accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1" },
+        headers,
       });
 
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.get("location");
-        if (!location) return { state: "http_error", startedAt, finalUrl: current.href, httpStatus: response.status, errorCode: "REDIRECT_WITHOUT_LOCATION" };
-        if (redirectCount >= maxRedirects) return { state: "redirect_limit", startedAt, finalUrl: current.href, httpStatus: response.status, errorCode: "PAGE_REDIRECT_LIMIT" };
+        if (!location) return finish({ state: "http_error", startedAt, finalUrl: current.href, httpStatus: response.status, errorCode: "REDIRECT_WITHOUT_LOCATION" });
+        if (redirectCount >= maxRedirects) return finish({ state: "redirect_limit", startedAt, finalUrl: current.href, httpStatus: response.status, errorCode: "PAGE_REDIRECT_LIMIT" });
         current = await assertPublicHttpUrl(new URL(location, current).href);
         continue;
       }
 
+      // The server says nothing changed. That is a useful observation in itself: it means
+      // the version OneGl already holds is still current, so features stay valid without
+      // re-reading the page.
+      if (response.status === 304) {
+        return finish({
+          state: "not_modified",
+          startedAt,
+          finalUrl: current.href,
+          httpStatus: 304,
+          validators: captureValidators(response),
+        });
+      }
+
       const contentType = response.headers.get("content-type") ?? "";
       const contentLength = Number(response.headers.get("content-length") ?? 0);
-      if (contentLength > maxBytes) return { state: "too_large", startedAt, finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: contentLength, errorCode: "PAGE_TOO_LARGE" };
-      if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) return { state: "non_html", startedAt, finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: contentLength || null };
-      if (!response.ok) return { state: response.status === 401 || response.status === 403 ? "blocked" : "http_error", startedAt, finalUrl: current.href, httpStatus: response.status, contentType, errorCode: `HTTP_${response.status}` };
+      const validators = captureValidators(response);
+      if (contentLength > maxBytes) return finish({ state: "too_large", startedAt, finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: contentLength, errorCode: "PAGE_TOO_LARGE", validators });
+      if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) return finish({ state: "non_html", startedAt, finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: contentLength || null, validators });
+      if (!response.ok) {
+        return finish({
+          state: response.status === 401 || response.status === 403 || response.status === 429 ? "blocked" : "http_error",
+          startedAt,
+          finalUrl: current.href,
+          httpStatus: response.status,
+          contentType,
+          errorCode: `HTTP_${response.status}`,
+          validators,
+        });
+      }
 
       const body = await readLimitedBody(response, maxBytes);
-      if (body.tooLarge) return { state: "too_large", startedAt, finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: body.bytes, errorCode: "PAGE_TOO_LARGE" };
+      if (body.tooLarge) return finish({ state: "too_large", startedAt, finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: body.bytes, errorCode: "PAGE_TOO_LARGE", validators });
       const decoded = decodeHtmlBytes(body.data, contentType);
+      const quality = assessContentQuality({ text: decoded.text, html: decoded.text, contentType });
+      if (!quality.usable) {
+        return finish({
+          state: "unusable",
+          startedAt,
+          finalUrl: current.href,
+          httpStatus: response.status,
+          contentType,
+          contentCharset: decoded.charset,
+          responseBytes: body.bytes,
+          errorCode: quality.code === "THIN_CONTENT" ? "PAGE_THIN_CONTENT" : "PAGE_JAVASCRIPT_SHELL",
+          diagnostics: quality.diagnostics.map((item) => item.code),
+          validators,
+        });
+      }
+
       const features = extractPageFeatures(decoded.text, { url: current.href, contentType });
       if (decoded.fallback) features.diagnostics = [...features.diagnostics, { code: "CHARSET_FALLBACK", declared: detectHtmlCharset(body.data, contentType) }];
-      return {
+      if (quality.diagnostics.length) features.diagnostics = [...features.diagnostics, ...quality.diagnostics];
+      return finish({
         state: "success",
         startedAt,
         finalUrl: current.href,
@@ -355,17 +516,19 @@ export async function fetchPageEvidence(inputUrl, {
         contentType,
         contentCharset: decoded.charset,
         responseBytes: body.bytes,
+        validators,
         features,
-      };
+      });
     }
-    return { state: "redirect_limit", startedAt, finalUrl: current.href, errorCode: "PAGE_REDIRECT_LIMIT" };
+    return finish({ state: "redirect_limit", startedAt, finalUrl: current.href, errorCode: "PAGE_REDIRECT_LIMIT" });
   } catch (error) {
-    return {
-      state: error?.code === "PAGE_URL_PRIVATE" ? "blocked" : "error",
+    const state = error?.code === "PAGE_URL_PRIVATE" ? "blocked" : (error?.name === "TimeoutError" ? "timeout" : "error");
+    return finish({
+      state,
       startedAt,
       finalUrl: current?.href ?? null,
-      errorCode: ["AbortError", "TimeoutError"].includes(error?.name) ? "PAGE_TIMEOUT" : error?.code ?? "PAGE_FETCH_ERROR",
+      errorCode: error?.code ?? "PAGE_FETCH_ERROR",
       errorMessage: error instanceof Error ? error.message : String(error),
-    };
+    });
   }
 }

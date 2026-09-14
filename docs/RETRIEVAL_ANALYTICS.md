@@ -103,6 +103,57 @@ Internal-host detection (which decides whether a link is an external source at a
 DNS label boundaries, so `notdoubao.com` is no longer mistaken for a Doubao host and `byteimg.com`
 sub-domains are still excluded.
 
+## Evidence gate and domain-stratified analysis
+
+Two additions exist because the factor table is persuasive by construction: it has uplift,
+confidence intervals and q-values, and that makes a purely observational number look like a
+finding.
+
+### Evidence gate
+
+`buildEvidenceGate()` runs *before* any recommendation is produced. It records blockers
+(insufficient match coverage, too few candidates, page-evidence coverage below 70%) and warnings
+(few domains, too few paired domains). When a blocker is present:
+
+- `strongestSignals` is returned empty;
+- the signals that would have been shown are moved to `suppressedSignals`, which the CLI and the
+  HTML report label as diagnostic-only;
+- the HTML report renders the blocker messages inline instead of a recommendation list.
+
+The gate is not a statistical correction. It is a statement that a number resting on an
+unobserved majority of the retrieval layer cannot support an action, regardless of how small its
+p-value looks.
+
+### Domain stratification
+
+Candidate rows are clustered by domain, and the pooled analysis treats them as independent. The
+stratified layer computes, per factor bucket:
+
+| Field | Meaning |
+|---|---|
+| `domains` | how many domains contributed to this bucket |
+| `pairedDomains` | domains that contained BOTH this bucket and its complement, i.e. the only ones that can compare the factor to itself |
+| `withinDomainDifference` | mean per-domain rate difference (each domain counts once, whatever its row count) |
+| `withinDomainPValue` | Wilcoxon signed-rank over the paired differences |
+| `directionConsistent` | ≥80% of paired domains agree in direction |
+| `evidenceLevel` | capped at exploratory when the pooled test had to be used |
+
+Three rules follow from this, and each is covered by a test:
+
+1. **Complete pairs cannot hide a reversal.** When every domain contributes both arms, the pooled
+   difference is algebraically proportional to the within-domain difference, so the two can never
+   disagree in sign. The composition risk is therefore about *unbalanced* designs, not balanced
+   ones.
+2. **A bucket no domain can pair is capped at exploratory.** `significanceBasis` becomes
+   `pooled_naive` and the evidence ladder refuses to go higher, because the pooled difference is
+   then a statement about which sites use the feature.
+3. **Domains that disagree in direction cap the claim.** Even with a small p-value, a bucket whose
+   per-domain differences point both ways is reported as directionally inconsistent.
+
+`design.nEff` reports how many independent observations the domain structure actually buys, based
+on a variance decomposition of the citation outcome. It is routinely much smaller than the row
+count, and that gap is the honest sample size.
+
 ## What is deliberately not calculated yet
 
 ### Query -> source attribution

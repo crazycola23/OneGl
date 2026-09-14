@@ -95,21 +95,41 @@ async function main() {
   const report = await buildReport(batchId);
   const s = report.summary;
 
+  const total = Number(s.retrieved_sources ?? 0);
+  const exact = Number(s.exact_citation_matches ?? 0);
+  const alias = Number(s.alias_citation_matches ?? 0);
+  const matched = Number(s.matched_citation_sources ?? 0);
+  const unmatched = Math.max(0, total - matched);
+
   console.log(`\n=== Retrieval -> Citation / Batch ${batchId} ===`);
   console.table([
     {
       有网络证据的运行: Number(s.runs_with_network_evidence ?? 0),
       搜索词: Number(s.search_queries ?? 0),
-      候选来源: Number(s.retrieved_sources ?? 0),
-      精确命中: Number(s.exact_citation_matches ?? 0),
-      精确转化率: pct(s.exact_citation_matches, s.retrieved_sources),
-      别名命中: Number(s.alias_citation_matches ?? 0),
-      含别名命中: Number(s.matched_citation_sources ?? 0),
-      含别名转化率: pct(s.matched_citation_sources, s.retrieved_sources),
+      候选来源: total,
+      精确命中: exact,
+      精确转化率: pct(exact, total),
+      别名命中: alias,
+      含别名命中: matched,
+      含别名转化率: pct(matched, total),
+      未匹配: unmatched,
+      未匹配占比: pct(unmatched, total),
       唯一候选文章: Number(s.unique_retrieved_articles ?? 0),
       唯一命中文章: Number(s.unique_matched_articles ?? 0),
     },
   ]);
+
+  // A conversion rate is only interpretable next to how much of the retrieval layer was
+  // actually observed. If the network collector missed most of the candidates, the
+  // survivors look proportionally better than they are, so say so before the number is
+  // read as a finding.
+  const unmatchedShare = total ? unmatched / total : null;
+  if (unmatchedShare != null && unmatchedShare >= 0.5) {
+    console.log(
+      `\n⚠ 未匹配占比 ${pct(unmatched, total)}：多数候选既不是精确命中也不是别名命中。` +
+        "在把它读成「豆包没有引用」之前，先确认网络证据是否抓全了（network_evidence_state、body 超限/超时诊断）。",
+    );
+  }
 
   const methods = (
     await pool.query(

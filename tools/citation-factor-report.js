@@ -53,7 +53,39 @@ function printReport(report) {
     return;
   }
 
-  console.log("\n口径：只分析 success + 已确认新会话 + network evidence=found 的运行；partial/failed 不进入因子分析。");
+  const coverage = report.matchCoverage;
+  if (coverage) {
+    console.log("\n=== 匹配覆盖（先看这个，再看任何转化率） ===");
+    console.table([{
+      候选数: coverage.candidates,
+      精确命中: coverage.exact,
+      别名命中: coverage.alias,
+      未匹配: coverage.unmatched,
+      未匹配占比: pct(coverage.unmatchedShare),
+      涉及域名: coverage.domains,
+    }]);
+  }
+
+  const gate = report.evidenceGate;
+  if (gate) {
+    console.log(`\n=== 证据门槛：${gate.label} (${gate.status}) ===`);
+    for (const item of gate.blockers) console.log(`  ✖ [${item.code}] ${item.message}`);
+    for (const item of gate.warnings) console.log(`  ⚠ [${item.code}] ${item.message}`);
+    if (!gate.allowOptimizationAdvice) {
+      console.log("  → 本批次不输出优化建议；下面的最强信号仅作诊断，不能作为行动依据。");
+    }
+    console.log("");
+  }
+
+  if (report.design) {
+    console.log(
+      `观察单位：${cohort.candidates} 条候选来自 ${report.design.domainCount} 个域名，` +
+        `平均每域名 ${report.design.meanClusterSize} 条 → 有效样本量约 ${report.design.nEff}。` +
+        "（候选行不是相互独立的观察，同域名页面共享平台看不见的站点特征。）\n",
+    );
+  }
+
+  console.log("口径：只分析 success + 已确认新会话 + network evidence=found 的运行；partial/failed 不进入因子分析。");
   console.log(`页面证据：${report.pageEvidence.successfulArticles}/${report.pageEvidence.totalArticles} 篇唯一候选文章抓取成功（${pct(report.pageEvidence.successRate)}）。页面特征只对抓取成功样本有效。\n`);
 
   const grouped = new Map();
@@ -68,10 +100,27 @@ function printReport(report) {
     console.table(rows.map((row) => ({
       分组: row.bucket,
       样本: row.candidates,
+      域名数: row.domains ?? "—",
+      可配对域名: row.pairedDomains ?? 0,
       命中: row.cited,
       引用率: pct(row.rate),
       相对基线: signedPct(row.uplift),
-      "95%区间": `${pct(row.ciLow)} ~ ${pct(row.ciHigh)}`,
+      "域内差值": signedPct(row.withinDomainDifference),
+      "FDR q": pct(row.qValue),
+      方向一致: row.directionConsistent ? "是" : "否",
+      检验口径: row.significanceBasis ?? "—",
+      证据等级: row.evidenceLevel,
+    })));
+  }
+
+  if (report.suppressedSignals?.length) {
+    console.log("=== 被证据门槛抑制的信号（仅诊断，不得作为行动依据） ===");
+    console.table(report.suppressedSignals.map((row) => ({
+      因子: row.factorLabel ?? FACTOR_LABELS[row.factor] ?? row.factor,
+      分组: row.bucket,
+      样本: row.candidates,
+      域名数: row.domains ?? "—",
+      域内差值: signedPct(row.withinDomainDifference),
       "FDR q": pct(row.qValue),
       证据等级: row.evidenceLevel,
     })));
@@ -103,7 +152,12 @@ function printReport(report) {
     })));
   }
 
-  console.log("\n注意：uplift 是观察到的相关性，不等于因果影响，也不是豆包内部权重。q-value 使用 Benjamini-Hochberg 对本报告非 missing bucket 做 FDR 校正，仍不能替代跨批次复现与多变量分析。页面特征来自 OneGl 自己的公开 HTTP 抓取快照。\n");
+  console.log(
+    "\n注意：uplift 是观察到的相关性，不等于因果影响，也不是豆包内部权重。" +
+      "主检验口径是「域内配对」（Wilcoxon signed-rank，对每个域名比较该分组与其同域对照），" +
+      "再做 Benjamini-Hochberg FDR 校正；pValueNaive 的合并口径只作参考。" +
+      "页面特征来自 OneGl 自己的公开 HTTP 抓取快照，可能与豆包当时看到的版本不同。\n",
+  );
 }
 
 async function main() {

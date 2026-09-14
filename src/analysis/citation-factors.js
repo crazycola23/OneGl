@@ -274,3 +274,275 @@ export function rankFactorSignals(analysis, { minN = 20 } = {}) {
     .map((row) => ({ ...row, signalStrength: Math.abs(row.uplift) }))
     .sort((a, b) => b.signalStrength - a.signalStrength || b.candidates - a.candidates);
 }
+
+// ---------------------------------------------------------------------------
+// Domain-stratified analysis
+//
+// Candidate rows are not independent observations. One site contributes many URLs,
+// and pages from the same site share everything the feature table cannot see
+// (authority, topic coverage, being indexed at all). Treating those as independent
+// inflates the effective sample size and makes every bucket look more certain than it is.
+//
+// The functions below answer the question the pooled analysis cannot: does this feature
+// still separate cited from uncited *inside the same domain*? A bucket that only wins
+// because it is common on authoritative sites collapses here, which is the point.
+// ---------------------------------------------------------------------------
+
+function groupByDomain(rows) {
+  const byDomain = new Map();
+  for (const row of rows) {
+    const domain = row?.domain || "unknown";
+    const list = byDomain.get(domain) ?? [];
+    list.push(row);
+    byDomain.set(domain, list);
+  }
+  return byDomain;
+}
+
+function rankWithTies(values) {
+  const sorted = values
+    .map((value, index) => ({ value, index }))
+    .sort((left, right) => left.value - right.value);
+  const ranks = new Array(values.length).fill(0);
+  let position = 0;
+  while (position < sorted.length) {
+    let end = position;
+    while (end + 1 < sorted.length && sorted[end + 1].value === sorted[position].value) end += 1;
+    const averageRank = (position + end) / 2 + 1;
+    for (let cursor = position; cursor <= end; cursor += 1) ranks[sorted[cursor].index] = averageRank;
+    position = end + 1;
+  }
+  return ranks;
+}
+
+function normalQuantile(p) {
+  if (p <= 0) return -Infinity;
+  if (p >= 1) return Infinity;
+  const a = [-3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2, 1.38357751867269e2, -3.066479806614716e1, 2.506628277459239];
+  const b = [-5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2, 6.680131188771972e1, -1.328068155288572e1];
+  const c = [-7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+  const d = [7.784695709041462e-3, 3.224671290700398e-1, 2.445134137142996, 3.754408661907416];
+  const lower = 0.02425;
+  const upper = 1 - lower;
+  if (p < lower) {
+    const q = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+  }
+  if (p > upper) {
+    const q = Math.sqrt(-2 * Math.log(1 - p));
+    return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+  }
+  const q = p - 0.5;
+  const r = q * q;
+  return ((((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q) / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+}
+
+export function normalTwoSidedP(z) {
+  const value = Number(z);
+  if (!Number.isFinite(value)) return null;
+  const x = Math.abs(value);
+  const t = 1 / (1 + 0.2316419 * x);
+  const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  const tail = poly * Math.exp(-x * x / 2) / Math.sqrt(2 * Math.PI);
+  return Math.max(0, Math.min(1, 2 * tail));
+}
+
+/**
+ * Wilcoxon signed-rank test over per-domain paired differences.
+ *
+ * Each domain contributes one pair: (rate inside the bucket, rate outside the bucket
+ * within that same domain). Domains that contain only the bucket or only the
+ * complement carry no information about the difference and are dropped, so the test
+ * cannot be carried by a single site's volume.
+ */
+export function pairedDomainPValue(pairs) {
+  const usable = (Array.isArray(pairs) ? pairs : []).filter((pair) => {
+    const difference = Number(pair?.difference);
+    return Number.isFinite(difference) && difference !== 0;
+  });
+  const n = usable.length;
+  if (n < 3) return { pValue: null, n, z: null, note: "too-few-paired-domains" };
+
+  const ranks = rankWithTies(usable.map((pair) => Math.abs(Number(pair.difference))));
+  let positive = 0;
+  let negative = 0;
+  for (let index = 0; index < usable.length; index += 1) {
+    if (Number(usable[index].difference) > 0) positive += ranks[index];
+    else negative += ranks[index];
+  }
+  const w = Math.min(positive, negative);
+  const totalRanks = (n * (n + 1)) / 2;
+  const mean = totalRanks / 2;
+  // Tie correction for the variance of the signed-rank statistic.
+  const tieGroups = new Map();
+  for (const pair of usable) {
+    const key = Math.abs(Number(pair.difference));
+    tieGroups.set(key, (tieGroups.get(key) ?? 0) + 1);
+  }
+  let tieSum = 0;
+  for (const size of tieGroups.values()) tieSum += size ** 3 - size;
+  const variance = (n * (n + 1) * (2 * n + 1)) / 24 - tieSum / 48;
+
+  // Degenerate case: every domain shows the *same* difference. That is maximal
+  // consistency, not absence of evidence, but the signed-rank statistic has no
+  // variance left to stand on. It is reported as degenerate and the decision is
+  // carried by the direction-consistency rule instead of by a fake p-value.
+  if (!(variance > 0)) {
+    return { pValue: null, n, z: null, note: "degenerate-all-tied" };
+  }
+  const z = (w - mean) / Math.sqrt(variance);
+  return { pValue: normalTwoSidedP(z), n, z, note: null };
+}
+
+/**
+ * Design effect for clustered data: how many independent observations the domain
+ * structure actually buys. n_eff = n / (1 + (m-1) * ICC) with a conservative ICC
+ * derived from the between-domain spread of citation rates.
+ */
+/**
+ * Design effect for clustered data: how many independent observations the domain
+ * structure actually buys.
+ *
+ * ICC is estimated from a binomial variance decomposition rather than supplied as a
+ * guess: with y_ij the citation indicator of row j in domain i, the within-domain
+ * variance p(1-p) is what independent rows would give, and anything above it is
+ * between-domain structure. When every domain has the same citation rate the ICC is 0
+ * (correctly - there is nothing site-specific to correct for), and it grows as sites
+ * diverge.
+ */
+export function designEffect({ rows, domainRateVariance = 0 }) {
+  const candidates = Array.isArray(rows) ? rows : [];
+  const byDomain = groupByDomain(candidates);
+  const domainCount = byDomain.size;
+  if (!candidates.length || domainCount < 2) {
+    return { nEff: candidates.length, domainCount: domainCount || 0, icc: 0 };
+  }
+
+  const overallRate = candidates.filter((row) => row?.cited).length / candidates.length;
+  // Variance decomposition for a binary outcome: the total variance of the citation
+  // indicator is p(1-p); a 1/(1-p) share of it sits *between* domains when the observed
+  // between-domain spread exceeds what independent Bernoulli draws would produce.
+  const total = overallRate * (1 - overallRate);
+  const between = Math.max(0, Number(domainRateVariance) || 0);
+  const icc = total > 0 && between > 0 ? Math.max(0, Math.min(1, between / total)) : 0;
+
+  const meanClusterSize = candidates.length / domainCount;
+  const deff = 1 + (meanClusterSize - 1) * icc;
+  return {
+    nEff: Math.round(candidates.length / (deff || 1)),
+    domainCount,
+    meanClusterSize: Number(meanClusterSize.toFixed(2)),
+    icc: Number(icc.toFixed(4)),
+    designEffect: Number(deff.toFixed(3)),
+  };
+}
+
+function binomialVariance(rate, n) {
+  if (!Number.isFinite(rate) || !(n > 0)) return 0;
+  return (rate * (1 - rate)) / n;
+}
+
+export function analyzeCitationFactorsStratified(rows, { factorRows = null, rowsForFactor = null } = {}) {
+  const candidates = Array.isArray(rows) ? rows : [];
+  const byDomain = groupByDomain(candidates);
+  const domainRates = [...byDomain.values()].map((list) => (list.length ? list.filter((row) => row?.cited).length / list.length : 0));
+  const overallRate = domainRates.length ? domainRates.reduce((sum, value) => sum + value, 0) / domainRates.length : 0;
+  // Between-domain variance of citation rates is what makes two candidates from two
+  // sites non-exchangeable; it is a deliberately shallow substitute for a full ICC
+  // estimate, which needs repeated measures per domain.
+  const domainVariance = domainRates.length > 1
+    ? domainRates.reduce((sum, value) => sum + (value - overallRate) ** 2, 0) / (domainRates.length - 1)
+    : 0;
+
+  const pick = typeof rowsForFactor === "function" ? rowsForFactor : (row) => (factorRows ? factorRows(row) : null);
+  const out = [];
+  for (const factorRow of Array.isArray(factorRows) ? factorRows : []) {
+    const bucketOf = (row) => pick(row)?.[factorRow.factor];
+    let candidateCount = 0;
+    let citedCount = 0;
+    let observed = 0;
+    const domains = new Set();
+    const pairs = [];
+
+    for (const [domain, list] of byDomain) {
+      let inside = 0;
+      let insideCited = 0;
+      let outside = 0;
+      let outsideCited = 0;
+      for (const row of list) {
+        const matches = bucketOf(row) === factorRow.bucket;
+        const cited = Boolean(row?.cited);
+        if (matches) {
+          inside += 1;
+          observed += 1;
+          if (cited) insideCited += 1;
+        } else {
+          outside += 1;
+          if (cited) outsideCited += 1;
+        }
+      }
+      candidateCount += inside;
+      citedCount += insideCited;
+      if (inside > 0) domains.add(domain);
+      if (inside > 0 && outside > 0) {
+        const insideRate = insideCited / inside;
+        const outsideRate = outsideCited / outside;
+        pairs.push({
+          domain,
+          inside,
+          outside,
+          insideRate,
+          outsideRate,
+          difference: insideRate - outsideRate,
+          differenceVariance: binomialVariance(insideRate, inside) + binomialVariance(outsideRate, outside),
+        });
+      }
+    }
+
+    // Every domain is one observation, regardless of how many rows it contributed.
+    // Inverse-variance weighting would let one large site decide the answer, which is the
+    // very failure mode this analysis exists to prevent.
+    const paired = pairs.filter((pair) => pair.differenceVariance >= 0);
+    const meanDifference = paired.length
+      ? paired.reduce((sum, pair) => sum + pair.difference, 0) / paired.length
+      : null;
+    const differenceVariance = paired.length > 1 && meanDifference != null
+      ? paired.reduce((sum, pair) => sum + (pair.difference - meanDifference) ** 2, 0) / (paired.length - 1)
+      : null;
+    const standardError = paired.length > 1 && differenceVariance != null
+      ? Math.sqrt(differenceVariance / paired.length)
+      : null;
+    const weightedDifference = meanDifference;
+    const test = pairedDomainPValue(pairs);
+
+    out.push({
+      factor: factorRow.factor,
+      bucket: factorRow.bucket,
+      candidates: candidateCount,
+      cited: citedCount,
+      rate: candidateCount ? citedCount / candidateCount : null,
+      pooledUplift: factorRow.uplift,
+      observedCandidateShare: candidates.length ? observed / candidates.length : null,
+      domains: domains.size,
+      pairedDomains: test.n,
+      withinDomainDifference: weightedDifference,
+      withinDomainCiLow: weightedDifference != null && standardError != null ? weightedDifference - 1.96 * standardError : null,
+      withinDomainCiHigh: weightedDifference != null && standardError != null ? weightedDifference + 1.96 * standardError : null,
+      withinDomainPValue: test.pValue,
+      withinDomainNote: test.note,
+      domainsWithPositiveDifference: pairs.filter((pair) => pair.difference > 0).length,
+      domainsWithNegativeDifference: pairs.filter((pair) => pair.difference < 0).length,
+      directionConsistent:
+        pairs.length >= 3 &&
+        (pairs.filter((pair) => pair.difference > 0).length >= Math.ceil(pairs.length * 0.8) ||
+          pairs.filter((pair) => pair.difference < 0).length >= Math.ceil(pairs.length * 0.8)),
+    });
+  }
+
+  return {
+    domains: byDomain.size,
+    domainRateVariance: domainVariance,
+    design: designEffect({ rows: candidates, domainRateVariance: domainVariance }),
+    factors: out,
+  };
+}
