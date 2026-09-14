@@ -127,6 +127,40 @@ function validHttpUrl(value) {
   }
 }
 
+function normalizeCharset(value) {
+  const label = String(value ?? "").trim().toLowerCase().replace(/^['"]|['"]$/g, "");
+  if (!label) return null;
+  if (["utf8", "unicode-1-1-utf-8"].includes(label)) return "utf-8";
+  if (["gb2312", "gb_2312-80", "gbk", "x-gbk", "cp936", "ms936"].includes(label)) return "gb18030";
+  if (["big5-hkscs", "cn-big5"].includes(label)) return "big5";
+  return label;
+}
+
+export function detectHtmlCharset(bytes, contentType = "") {
+  const header = String(contentType).match(/charset\s*=\s*["']?([^;\s"']+)/i);
+  if (header?.[1]) return normalizeCharset(header[1]) ?? "utf-8";
+
+  const input = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes ?? []);
+  const prefix = input.slice(0, Math.min(input.length, 8192));
+  // HTML charset declarations are ASCII-compatible even when the document body is GBK/Big5.
+  const sniff = new TextDecoder("windows-1252", { fatal: false }).decode(prefix);
+  const direct = sniff.match(/<meta\b[^>]*charset\s*=\s*["']?([^\s"'/>;]+)/i);
+  if (direct?.[1]) return normalizeCharset(direct[1]) ?? "utf-8";
+  const httpEquiv = sniff.match(/<meta\b[^>]*(?:http-equiv\s*=\s*["']?content-type["']?[^>]*content\s*=\s*["'][^"']*charset\s*=\s*([^\s;"']+)|content\s*=\s*["'][^"']*charset\s*=\s*([^\s;"']+)[^"']*["'][^>]*http-equiv\s*=\s*["']?content-type)/i);
+  const declared = httpEquiv?.[1] ?? httpEquiv?.[2];
+  return normalizeCharset(declared) ?? "utf-8";
+}
+
+export function decodeHtmlBytes(bytes, contentType = "") {
+  const input = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes ?? []);
+  const charset = detectHtmlCharset(input, contentType);
+  try {
+    return { text: new TextDecoder(charset, { fatal: false }).decode(input), charset, fallback: false };
+  } catch {
+    return { text: new TextDecoder("utf-8", { fatal: false }).decode(input), charset: "utf-8", fallback: true };
+  }
+}
+
 function isPrivateIp(address) {
   if (!net.isIP(address)) return true;
   if (net.isIPv4(address)) {
@@ -242,7 +276,7 @@ export function extractPageFeatures(html, { url = null, contentType = "text/html
 
 async function readLimitedBody(response, maxBytes) {
   const reader = response.body?.getReader();
-  if (!reader) return { text: "", bytes: 0, tooLarge: false };
+  if (!reader) return { data: new Uint8Array(), bytes: 0, tooLarge: false };
   const chunks = [];
   let total = 0;
   while (true) {
@@ -251,7 +285,7 @@ async function readLimitedBody(response, maxBytes) {
     total += value.byteLength;
     if (total > maxBytes) {
       await reader.cancel().catch(() => undefined);
-      return { text: "", bytes: total, tooLarge: true };
+      return { data: new Uint8Array(), bytes: total, tooLarge: true };
     }
     chunks.push(value);
   }
@@ -261,7 +295,7 @@ async function readLimitedBody(response, maxBytes) {
     merged.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return { text: new TextDecoder("utf-8", { fatal: false }).decode(merged), bytes: total, tooLarge: false };
+  return { data: merged, bytes: total, tooLarge: false };
 }
 
 export async function fetchPageEvidence(inputUrl, {
@@ -297,14 +331,18 @@ export async function fetchPageEvidence(inputUrl, {
 
       const body = await readLimitedBody(response, maxBytes);
       if (body.tooLarge) return { state: "too_large", startedAt, finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: body.bytes, errorCode: "PAGE_TOO_LARGE" };
+      const decoded = decodeHtmlBytes(body.data, contentType);
+      const features = extractPageFeatures(decoded.text, { url: current.href, contentType });
+      if (decoded.fallback) features.diagnostics = [...features.diagnostics, { code: "CHARSET_FALLBACK", declared: detectHtmlCharset(body.data, contentType) }];
       return {
         state: "success",
         startedAt,
         finalUrl: current.href,
         httpStatus: response.status,
         contentType,
+        contentCharset: decoded.charset,
         responseBytes: body.bytes,
-        features: extractPageFeatures(body.text, { url: current.href, contentType }),
+        features,
       };
     }
     return { state: "redirect_limit", startedAt, finalUrl: current.href, errorCode: "PAGE_REDIRECT_LIMIT" };
