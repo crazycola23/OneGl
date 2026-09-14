@@ -5,7 +5,7 @@ const JSONISH_LIMIT = 1_000_000;
 const DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024;
 const DEFAULT_BODY_TIMEOUT_MS = 8_000;
 const ELIGIBLE_CONTENT_TYPE = /(json|event-stream|text\/plain|octet-stream)/i;
-const SEARCH_SIGNAL = /(block_type["']?\s*[:=]\s*["']?10025|search_query_result|search_result_block|search_queries)/i;
+const SEARCH_SIGNAL = /(10025|search_query_result|search_result_block|search_queries)/i;
 const INTERNAL_RESPONSE_HOST = /(doubao\.com|zijieapi|bytedance|byteimg|feiliao)/i;
 
 function compactText(value, max = 1_000) {
