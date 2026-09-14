@@ -16,6 +16,10 @@ import { extractVisibleCitations } from "../src/doubao.js";
  * extractor is replayed against the genuine DOM, so any change that breaks
  * citation capture - or that starts inventing citations - fails here instead of
  * silently writing wrong rows into PostgreSQL.
+ *
+ * This is an offline DOM regression test, not a production-browser compatibility
+ * test. Use ordinary Playwright Chromium explicitly so CI does not depend on the
+ * optional Camoufox Python/runtime installation used by some live collectors.
  */
 
 const FIXTURES_DIR = path.resolve("test/fixtures");
@@ -41,7 +45,7 @@ test("citation extraction reproduces the recorded result for every real DOM fixt
   const fixtures = await loadFixtures();
   assert.ok(fixtures.length > 0, "no fixtures found under test/fixtures");
 
-  const config = loadConfig({ headless: true });
+  const config = loadConfig({ browser: "chromium", headless: true });
   const session = await launchBrowserSession(config, { headless: true });
 
   try {

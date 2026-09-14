@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install test browser
+        run: npx playwright-core install --with-deps chromium
+
       - name: Syntax check
         run: |
           find src tools test -type f \( -name '*.js' -o -name '*.mjs' \) -print0 \
