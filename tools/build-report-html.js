@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 
 import { evaluateBatchDetail } from "../src/report/evaluation.js";
-import { buildHtmlReport } from "../src/report/html-report.js";
+import { buildHtmlReportWithFactors } from "../src/report/html-report-factors.js";
 
 /**
  * 把 tools/export-batch.js 导出的批次快照渲染成自包含 HTML 报告。
@@ -39,7 +39,7 @@ const detail = {
 };
 
 const evaluation = evaluateBatchDetail(detail);
-const html = buildHtmlReport(detail, evaluation, {
+const html = buildHtmlReportWithFactors(detail, evaluation, {
   generatedAt: new Date().toISOString(),
   title: profile.title ?? null,
   subtitle: profile.subtitle ?? null,
@@ -50,5 +50,6 @@ console.log(`已生成 ${outputFile}`);
 console.log(
   `综合准备度=${evaluation.metrics.readinessIndex}/100 ` +
     `数据质量=${evaluation.metrics.dataQualityScore}/100 ` +
-    `品牌可见度=${evaluation.metrics.visibilityIndex}/100`,
+    `品牌可见度=${evaluation.metrics.visibilityIndex}/100 ` +
+    `因子证据=${evaluation.metrics.factorEvidence.evidenceScore}/100`,
 );
