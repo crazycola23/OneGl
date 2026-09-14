@@ -14,13 +14,15 @@ test("two-proportion evidence is stronger for a large rate separation", () => {
   assert.ok(strong < 0.01);
 });
 
-test("Benjamini-Hochberg q-values are bounded and preserve ordered evidence", () => {
-  const q = benjaminiHochberg([0.001, 0.01, 0.03, 0.4]);
-  assert.equal(q.length, 4);
-  assert.ok(q.every((value) => value >= 0 && value <= 1));
-  assert.ok(q[0] <= q[1]);
-  assert.ok(q[1] <= q[2]);
-  assert.ok(q[2] <= q[3]);
+test("Benjamini-Hochberg keeps missing values missing and preserves ordered evidence", () => {
+  const q = benjaminiHochberg([0.001, null, 0.01, 0.03, 0.4]);
+  assert.equal(q.length, 5);
+  assert.equal(q[1], null);
+  const observed = [q[0], q[2], q[3], q[4]];
+  assert.ok(observed.every((value) => value >= 0 && value <= 1));
+  assert.ok(observed[0] <= observed[1]);
+  assert.ok(observed[1] <= observed[2]);
+  assert.ok(observed[2] <= observed[3]);
 });
 
 test("factor report annotates non-missing buckets with FDR q-values and evidence levels", () => {
