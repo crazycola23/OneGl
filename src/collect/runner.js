@@ -153,10 +153,34 @@ export async function runOnePrompt({
   if (validation) await store.updateRun(run.id, { validation });
 
   const attemptArtifactPath = store.attemptPath(run.id, attempt);
+  // Turn scope for retrieval evidence.
+  //
+  // `im/conversation/batch_get` replays the whole conversation, so evidence is only
+  // accepted once the page has actually navigated into this run's conversation. Until
+  // then the collector is looking at history - which is exactly how a single run ended up
+  // reporting 403 candidates accumulated from twenty earlier, unrelated questions.
+  const turnScope = { conversationId: null };
+  const observeTurnScope = (response) => {
+    try {
+      if (!/\/im\/conversation\//.test(response.url())) return;
+      const body = response.request()?.postData();
+      if (!body) return;
+      const match = body.match(/"(?:conversation_id|conversationId)"\s*:\s*"?(\d{6,})"?/);
+      if (match) turnScope.conversationId = match[1];
+    } catch {
+      // Scope detection is best-effort; failure must not disturb collection.
+    }
+  };
+  page.on("request", observeTurnScope);
+
   const networkCollector = createNetworkEvidenceCollector(page, {
     enabled: config.networkEvidenceEnabled === true,
     maxBodyBytes: config.networkEvidenceMaxBodyBytes,
     bodyTimeoutMs: config.networkEvidenceBodyTimeoutMs,
+    getTurnId: () => {
+      const fromUrl = page.url().match(/\/chat\/(\d{6,})/);
+      return turnScope.conversationId ?? fromUrl?.[1] ?? null;
+    },
   });
   let networkEvidence = null;
   let frontEndPreflight = null;
@@ -172,6 +196,7 @@ export async function runOnePrompt({
     const result = await executeDoubaoPrompt(guardedPage, prompt, config);
 
     networkEvidence = await finalizeNetworkEvidence(networkCollector);
+    page.off("request", observeTurnScope);
     await writeNetworkEvidenceArtifact(store, run.id, attempt, networkEvidence);
     await captureArtifacts(store, run.id, page, prompt, attempt);
     await store.writeAttemptArtifact(run.id, attempt, "answer.md", `${result.answer}\n`);
@@ -208,6 +233,7 @@ export async function runOnePrompt({
     });
   } catch (error) {
     networkEvidence = await finalizeNetworkEvidence(networkCollector);
+    page.off("request", observeTurnScope);
     await writeNetworkEvidenceArtifact(store, run.id, attempt, networkEvidence);
     await captureArtifacts(store, run.id, page, prompt, attempt);
     normalized = normalizeError(error);

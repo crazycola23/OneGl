@@ -76,7 +76,7 @@ test("collector keeps only structured evidence and strips endpoint query strings
       Buffer.from(
         `data: ${JSON.stringify({
           block_type: 10025,
-          queries: ["q"],
+          queries: ["绍兴正骨推荐"],
           results: [{ title: "A", url: "https://example.com/a" }],
         })}\n\n`,
       ),
@@ -86,7 +86,7 @@ test("collector keeps only structured evidence and strips endpoint query strings
   const evidence = await collector.stop();
 
   assert.equal(evidence.state, "found");
-  assert.deepEqual(evidence.queries, ["q"]);
+  assert.deepEqual(evidence.queries, ["绍兴正骨推荐"]);
   assert.equal(evidence.retrievedSources.length, 1);
   assert.equal(evidence.responses[0].endpoint, "https://www.doubao.com/api/chat/stream");
   assert.equal(listeners.has("response"), false);
@@ -123,4 +123,40 @@ test("collector parses search evidence nested inside stringified event_data", as
   const evidence = await collector.stop();
   assert.deepEqual(evidence.queries, ["nested q"]);
   assert.equal(evidence.retrievedSources[0].canonicalUrl, "https://example.org/source");
+});
+test("collector drops identifiers and log sentences that are not real queries", async () => {
+  const listeners = new Map();
+  const page = {
+    on(event, fn) {
+      listeners.set(event, fn);
+    },
+    off(event, fn) {
+      if (listeners.get(event) === fn) listeners.delete(event);
+    },
+  };
+  const collector = createNetworkEvidenceCollector(page, { bodyTimeoutMs: 100 });
+  const response = {
+    url: () => "https://www.doubao.com/im/conversation/batch_get",
+    status: () => 200,
+    headers: () => ({ "content-type": "application/json" }),
+    body: async () =>
+      Buffer.from(
+        JSON.stringify({
+          block_type: 10025,
+          queries: [
+            "绍兴中医馆推荐",
+            "96baaa315e688ddea88a3aeb7684a071",
+            "辑消息",
+            "心跳正常 第三方活动更新 历史任务后台生成中 模型等待阶段",
+          ],
+          results: [{ title: "A", url: "https://example.com/a" }],
+        }),
+      ),
+  };
+
+  listeners.get("response")(response);
+  const evidence = await collector.stop();
+
+  assert.deepEqual(evidence.queries, ["绍兴中医馆推荐"]);
+  assert.ok(evidence.rejectedQueryCount >= 2);
 });

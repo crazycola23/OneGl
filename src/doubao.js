@@ -131,13 +131,39 @@ export async function inspectSession(page) {
     const hasVisible = (selector) =>
       [...document.querySelectorAll(selector)].some(visible);
 
+    // Session detection has two independent sources, because each one alone has been
+    // observed to be wrong: the app's own router payload (absent in newer builds) and the
+    // passport cookies/localStorage the login flow leaves behind. `loggedIn` is the OR of
+    // both; `routerLogin` alone must never be trusted to mean "logged out".
     const routerLogin =
       window._ROUTER_DATA?.loaderData?.chat_layout?.userSetting?.data?.is_login;
+    const cookieNames = document.cookie
+      .split(";")
+      .map((entry) => entry.split("=")[0].trim().toLowerCase())
+      .filter(Boolean);
+    const passportCookie = cookieNames.some((name) =>
+      name === "x-tt-multi-sids" ||
+      name === "flow_cur_user_sec_id" ||
+      name === "flow_multi_user_sec_info" ||
+      name === "passport_csrf_token" ||
+      name === "passport_csrf_token_default",
+    );
+    let loginStorage = false;
+    try {
+      loginStorage = Boolean(localStorage.getItem("flow_web_login_changed"));
+    } catch {
+      loginStorage = false;
+    }
+    const loggedIn = routerLogin === true || passportCookie || loginStorage;
 
     const captcha =
       hasVisible('iframe[src*="captcha"], iframe[src*="verify"], iframe[src*="rmc"], input[placeholder*="验证码"], input[aria-label*="验证码"]') ||
       visibleText.some((text) => /人机验证|完成安全验证|滑动验证|拖动滑块/.test(text));
 
+    // `routerLogin` is the app's own answer and is the only *positive* signal available.
+    // The previous version also treated a visible 登录 button as "not logged in" while
+    // simultaneously letting a page with both a login button and an editable box count as
+    // healthy - which is exactly the shape of the logged-out chat page.
     const explicitLogin =
       routerLogin === false ||
       visibleText.some((text) => /扫码登录|请登录后使用|登录后继续|登录以解锁更多功能/.test(text));
@@ -153,27 +179,51 @@ export async function inspectSession(page) {
 
     const textbox = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')].some(visible);
 
-    if (captcha) return { state: "verification_required", routerLogin, loginButton, textbox };
-    if (explicitLogin || loginButton) return { state: "login_required", routerLogin, loginButton, textbox };
-    if (accessRestricted) return { state: "access_restricted", routerLogin, loginButton, textbox };
-    if (textbox) return { state: "healthy", routerLogin, loginButton, textbox };
-    return { state: "unknown", routerLogin, loginButton, textbox };
+    if (captcha) return { state: "verification_required", routerLogin, loggedIn, loginButton, textbox };
+    if (explicitLogin && !loggedIn) return { state: "login_required", routerLogin, loggedIn, loginButton, textbox };
+    // A visible 登录 control only counts as "not logged in" when we have no positive proof
+    // of a session; otherwise a logged-in page that happens to render a 登录 entry (e.g. an
+    // account switcher) would be misread.
+    if (loginButton && !loggedIn) return { state: "login_required", routerLogin, loggedIn, loginButton, textbox };
+    if (accessRestricted) return { state: "access_restricted", routerLogin, loggedIn, loginButton, textbox };
+    if (textbox && loggedIn) return { state: "healthy", routerLogin, loggedIn, loginButton, textbox };
+    return { state: "unknown", routerLogin, loggedIn, loginButton, textbox };
   });
 }
 
 export async function waitForManualLogin(page, config) {
   const deadline = Date.now() + config.loginTimeoutMs;
   let healthyPolls = 0;
+  let lastNavigationAt = Date.now();
   while (Date.now() < deadline) {
-    const state = await inspectSession(page);
+    // The login flow navigates to an OAuth provider and back, and inspecting the DOM during
+    // that navigation throws "Execution context was destroyed". Treating that as fatal
+    // killed the auth command mid-login, so it is counted as "still settling" instead.
+    let state;
+    try {
+      state = await inspectSession(page);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/Execution context was destroyed|navigation|Target closed|Cannot find context/i.test(message)) {
+        healthyPolls = 0;
+        lastNavigationAt = Date.now();
+        await page.waitForTimeout(1_000);
+        continue;
+      }
+      throw error;
+    }
     if (state.state === "healthy") {
-      healthyPolls += 1;
-      if (healthyPolls >= 2) return state;
+      // A healthy reading right after a navigation is not trustworthy: the SPA may still be
+      // about to bounce to the login page. Require a short quiet period as well as two
+      // consecutive healthy polls.
+      if (Date.now() - lastNavigationAt < 2_000) {
+        healthyPolls = 0;
+      } else {
+        healthyPolls += 1;
+        if (healthyPolls >= 2) return state;
+      }
     } else {
       healthyPolls = 0;
-      if (state.state === "verification_required") {
-        // The user can solve the challenge in the open browser; keep waiting.
-      }
     }
     await page.waitForTimeout(2_000);
   }

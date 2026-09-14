@@ -250,24 +250,70 @@ function mergeSource(target, source) {
   });
 }
 
-function timeoutAfter(ms) {
-  return new Promise((_, reject) => {
-    const timer = setTimeout(() => reject(new Error("network-body-timeout")), ms);
-    timer.unref?.();
-  });
+/**
+ * Incremental reader for a possibly-still-open response body.
+ *
+ * The previous implementation awaited `response.body()` for the *whole* response and gave
+ * up after a timeout. On a streaming endpoint (`/chat/completion` answers over SSE) the
+ * body is not complete until generation ends, and is sometimes never closed at all - so
+ * every capture timed out and the retrieval layer stayed permanently empty.
+ *
+ * Reading chunk by chunk fixes that: bytes already received are parsed immediately, and the
+ * only cost of an endless stream is that we stop accumulating once the cap is reached.
+ */
+async function readStreamIncrementally(body, { maxBytes, stopSignal, onChunk }) {
+  if (!body) return { bytes: 0, truncated: false, ended: false, error: null };
+
+  // A non-streaming response (or a test double) hands back a Buffer; deliver it whole.
+  if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
+    const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+    if (buffer.length > maxBytes) return { bytes: buffer.length, truncated: true, ended: false, error: null };
+    onChunk(buffer);
+    return { bytes: buffer.length, truncated: false, ended: true, error: null };
+  }
+
+  let total = 0;
+  let truncated = false;
+  let ended = false;
+  let error = null;
+  try {
+    for await (const chunk of body) {
+      if (stopSignal?.stopped) break;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buffer.length;
+      if (total > maxBytes) {
+        truncated = true;
+        break;
+      }
+      onChunk(buffer);
+    }
+    ended = !truncated && !stopSignal?.stopped;
+  } catch (streamError) {
+    // "Premature close" is the normal shape of an aborted/abandoned stream, not a parser bug.
+    error = streamError?.message ?? String(streamError);
+  }
+  return { bytes: total, truncated, ended, error };
 }
 
 export function createNetworkEvidenceCollector(page, options = {}) {
   const enabled = options.enabled !== false;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  // Retained for callers/tests: this is how long stop() waits for in-flight stream reads
+  // to wind down before snapshotting. It is no longer a whole-body deadline.
   const bodyTimeoutMs = options.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
+  // Turn scoping. A conversation is not an isolated event: the page loads the whole
+  // history, and `/im/conversation/batch_get` replays every previous turn's search blocks
+  // in one go. Without this gate a single run "discovers" hundreds of candidates from
+  // earlier, unrelated questions, and the retrieval layer becomes unusable.
+  const getTurnId = typeof options.getTurnId === "function" ? options.getTurnId : null;
   const pending = new Set();
   const responseEvidence = [];
   const querySet = new Set();
   const queries = [];
   const sources = new Map();
   const diagnostics = [];
-  let stopped = false;
+  const rejectedQueries = [];
+  const stopSignal = { stopped: false };
 
   const snapshot = () => ({
     version: 1,
@@ -280,11 +326,35 @@ export function createNetworkEvidenceCollector(page, options = {}) {
     })),
     responses: [...responseEvidence],
     diagnostics: [...new Set(diagnostics)],
+    rejectedQueryCount: rejectedQueries.length,
   });
 
   if (!enabled) {
     return { stop: async () => snapshot(), snapshot };
   }
+
+  /** Returns true when this text contained search evidence at all (new or repeat). */
+  const absorb = (text) => {
+    if (!text || !SEARCH_SIGNAL.test(text)) return false;
+    if (getTurnId && !getTurnId()) {
+      diagnostics.push("evidence-before-turn-scope");
+      return false;
+    }
+    const evidence = extractSearchEvidence(text);
+    for (const query of evidence.queries) {
+      if (!isPlausibleQuery(query)) {
+        rejectedQueries.push(String(query).slice(0, 60));
+        continue;
+      }
+      const key = query.toLocaleLowerCase();
+      if (!querySet.has(key)) {
+        querySet.add(key);
+        queries.push(query);
+      }
+    }
+    for (const source of evidence.retrievedSources) mergeSource(sources, source);
+    return Boolean(evidence.queries.length || evidence.retrievedSources.length);
+  };
 
   const captureResponse = async (response) => {
     if (!eligibleResponse(response)) return;
@@ -298,46 +368,65 @@ export function createNetworkEvidenceCollector(page, options = {}) {
 
     let body;
     try {
-      body = await Promise.race([response.body(), timeoutAfter(bodyTimeoutMs)]);
+      body = await response.body();
     } catch (error) {
-      if (String(error?.message || error).includes("network-body-timeout")) {
-        diagnostics.push(`body-timeout:${endpointIdentity(response.url()) || "unknown"}`);
-      }
-      return;
-    }
-    if (!body?.length || body.length > maxBodyBytes) {
-      if (body?.length > maxBodyBytes) {
-        diagnostics.push(`body-too-large:${endpointIdentity(response.url()) || "unknown"}`);
-      }
+      diagnostics.push(`body-unavailable:${endpointIdentity(response.url()) || "unknown"}`);
       return;
     }
 
-    const text = body.toString("utf8");
-    if (!SEARCH_SIGNAL.test(text)) return;
-    const evidence = extractSearchEvidence(text);
-    if (!evidence.queries.length && !evidence.retrievedSources.length) return;
+    // The stream is scanned as it arrives, and the same buffer is scanned once more at the
+    // end: a search block can straddle a chunk boundary, and the final parse is what catches
+    // it once more bytes have landed.
+    let buffered = "";
+    let sawEvidence = false;
+    const record = () => {
+      if (!buffered) return;
+      if (absorb(buffered)) sawEvidence = true;
+      // The buffer is dropped once a search block has been seen, so a long stream is not
+      // re-parsed from the beginning on every chunk.
+      if (sawEvidence) buffered = "";
+    };
 
-    for (const query of evidence.queries) {
-      const key = query.toLocaleLowerCase();
-      if (!querySet.has(key)) {
-        querySet.add(key);
-        queries.push(query);
-      }
-    }
-    for (const source of evidence.retrievedSources) mergeSource(sources, source);
-
-    responseEvidence.push({
-      endpoint: endpointIdentity(response.url()),
-      status: response.status(),
-      contentType: headers["content-type"] || null,
-      bodyBytes: body.length,
-      queryCount: evidence.queries.length,
-      retrievedSourceCount: evidence.retrievedSources.length,
-      matchedBlockCount: evidence.matchedBlockCount,
+    const read = await readStreamIncrementally(body, {
+      maxBytes: maxBodyBytes,
+      stopSignal,
+      onChunk: (chunk) => {
+        buffered += chunk.toString("utf8");
+        // Bound the working buffer: a stream can be far larger than one response.
+        if (buffered.length > 4 * maxBodyBytes) buffered = buffered.slice(-2 * maxBodyBytes);
+        // Parse whenever a plausible block terminator has arrived, plus periodically so a
+        // chunk that never ends with one is still scanned.
+        if (blockCount(buffered) || buffered.length > 16_384) record();
+      },
     });
+    record();
+
+    const endpoint = endpointIdentity(response.url()) || "unknown";
+    if (read.truncated) diagnostics.push(`body-truncated:${endpoint}`);
+    if (read.error && !/aborted|premature close|target closed/i.test(read.error)) {
+      diagnostics.push(`stream-error:${endpoint}`);
+    }
+    if (read.bytes === 0) diagnostics.push(`body-empty:${endpoint}`);
+
+    // One row per captured response, capped so a long-lived page cannot grow the artifact
+    // without bound. `matched` records whether this response actually carried search
+    // evidence, which is what makes an empty retrieval layer explainable.
+    if (responseEvidence.length < 50) {
+      responseEvidence.push({
+        endpoint,
+        status: response.status(),
+        contentType: headers["content-type"] || null,
+        bodyBytes: read.bytes,
+        streamEnded: read.ended,
+        queryCount: sawEvidence ? queries.length : 0,
+        retrievedSourceCount: sawEvidence ? sources.size : 0,
+        matched: sawEvidence,
+      });
+    }
   };
 
   const onResponse = (response) => {
+    // Endpoints that are not internal, stream-shaped, or relevant never reach the reader.
     const task = captureResponse(response)
       .catch((error) => diagnostics.push(`capture-error:${error?.message || String(error)}`))
       .finally(() => pending.delete(task));
@@ -349,12 +438,60 @@ export function createNetworkEvidenceCollector(page, options = {}) {
   return {
     snapshot,
     async stop() {
-      if (!stopped) {
-        stopped = true;
+      if (!stopped()) {
+        stopSignal.stopped = true;
         page.off("response", onResponse);
       }
-      await Promise.allSettled([...pending]);
+      if (pending.size) {
+        const grace = Math.min(Math.max(Number(bodyTimeoutMs) || 0, 500), 5_000);
+        await Promise.race([
+          Promise.allSettled([...pending]),
+          new Promise((resolve) => setTimeout(resolve, grace).unref?.()),
+        ]);
+      }
       return snapshot();
     },
   };
+
+  function stopped() {
+    return stopSignal.stopped;
+  }
+}
+
+/**
+ * A query string that Doubao would actually send to a search engine.
+ *
+ * The real payload also carries internal identifiers, log sentences and truncated UI
+ * strings ("辑消息", a 32-hex id, "心跳正常 第三方活动更新..."). Those are not search
+ * queries, and letting them through both pollutes the query list and inflates the
+ * apparent retrieval breadth. Requiring at least two characters of real text in a CJK or
+ * Latin script is deliberately loose: it only removes strings that could not be a query.
+ */
+function isPlausibleQuery(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return false;
+  // A bare long hex id has no spaces and no separators.
+  if (/^[0-9a-f]{16,}$/i.test(text)) return false;
+  // Log lines arrive as several space-separated clauses and always end in sentence
+  // punctuation; no search query looks like that.
+  if (/[。！？]$/.test(text)) return false;
+  if (text.split(/\s+/).filter(Boolean).length >= 4) return false;
+  const letters = text.match(/[A-Za-z\u4e00-\u9fff]/g) ?? [];
+  if (letters.length < 4) return false;
+  // Chinese queries are content words: a two-character fragment is a UI label or a
+  // truncated string, not something anyone searches for.
+  const han = text.match(/[\u4e00-\u9fff]/g) ?? [];
+  if (han.length === text.length && han.length < 4) return false;
+  return true;
+}
+
+/** Cheap pre-check so we only run the JSON parser when a block boundary is present. */
+function blockCount(text) {
+  let index = text.indexOf("block_type");
+  let count = 0;
+  while (index >= 0 && count < 3) {
+    count += 1;
+    index = text.indexOf("block_type", index + 1);
+  }
+  return count;
 }
