@@ -1,5 +1,6 @@
 import { escapeHtml } from "./format.js";
 import { STYLE } from "./style.js";
+import { riskDashboardPanel, sidebarRisk } from "./risk-dashboard.js";
 import {
   CONNECTION_STATES,
   WORKER_STATES,
@@ -70,7 +71,7 @@ export function workerText(state) {
   return workerState(state).text;
 }
 
-/** 侧栏底部的就绪模块：结论 + 五个状态灯。 */
+/** 侧栏底部的就绪模块：结论 + 状态灯。 */
 function deckStatus(system) {
   if (!system) return "";
 
@@ -80,6 +81,8 @@ function deckStatus(system) {
   const accounts = system.accounts ?? { usable: 0, total: 0 };
   const running = (system.activeBatches ?? []).length;
   const ready = system.readiness?.ready;
+  const risk = sidebarRisk(system);
+  const riskTone = risk.level === "high" ? "bad" : risk.level === "medium" ? "warn" : "ok";
 
   return `<div class="deck-status">
   <div class="verdict ${ready ? "ready" : "blocked"}">${lamp(ready ? "ok" : "bad")}${ready ? "可以开始" : "未就绪"}</div>
@@ -89,6 +92,7 @@ function deckStatus(system) {
     ${statusItem("Worker", worker.text, worker.tone)}
     ${statusItem("可用账号", `${accounts.usable} / ${accounts.total}`, accounts.usable > 0 ? "ok" : accounts.total > 0 ? "warn" : "muted")}
     ${statusItem("运行中批次", String(running), running > 0 ? "info" : "muted")}
+    ${statusItem("运行风险", risk.label, riskTone)}
   </ul>
 </div>`;
 }
@@ -97,6 +101,7 @@ function deckStatus(system) {
 
 export function layout({ title, active = "", body, system = undefined }) {
   const status = system == null ? cachedSystemStatus() : system;
+  const riskPanel = riskDashboardPanel(status, { active });
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -113,7 +118,7 @@ export function layout({ title, active = "", body, system = undefined }) {
     ${deckStatus(status)}
   </aside>
   <div class="main">
-    <main>${body}</main>
+    <main>${riskPanel}${body}</main>
     <footer>
       网页端可直接创建抽样批次并启动监测（BullMQ → Worker）；命令行 <code>npm run batch:run -- --batch &lt;ID&gt;</code> 保留为高级与故障排查方式。
       服务仅监听 <code>127.0.0.1</code>，无登录鉴权，请勿对外暴露。
