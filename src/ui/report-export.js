@@ -73,7 +73,6 @@ function browserBootstrapSource() {
 
   function downloadHtml(detail){
     const evaluation = evaluateBatchDetail(detail);
-    const batch = detail && detail.report && detail.report.batch ? detail.report.batch : {};
     const html = buildHtmlReport(detail, evaluation, { generatedAt: new Date().toISOString() });
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -144,5 +143,5 @@ function browserBootstrapSource() {
 
 export function reportExportBootstrap(active) {
   if (active !== "batches") return "";
-  return `<script>${browserBootstrapSource().replace(/<\\/script/gi, "<\\/script")}</script>`;
+  return `<script>${browserBootstrapSource()}</script>`;
 }
