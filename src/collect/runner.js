@@ -3,6 +3,10 @@ import { persistRun } from "../db/persist.js";
 import { captureDomObservation } from "../dom-observer.js";
 import { executeDoubaoPrompt } from "../doubao.js";
 import { ErrorCode, normalizeError } from "../errors.js";
+import {
+  createConservativeDoubaoPage,
+  prepareFrontEndForRun,
+} from "../front-end-guard.js";
 import { createNetworkEvidenceCollector } from "../network-evidence.js";
 
 /**
@@ -134,7 +138,6 @@ export async function runOnePrompt({
   const samplingBatchId = context.samplingBatchId ?? null;
   const runToken = context.runToken ?? null;
   const jobId = context.jobId ?? null;
-  // 队列重试时传入真实 attempt；命令行单次运行没有这个概念，固定为 1。
   const attempt = Number.isInteger(context.attempt) && context.attempt > 0 ? context.attempt : 1;
 
   const run = await store.createRun({
@@ -149,7 +152,6 @@ export async function runOnePrompt({
   });
   if (validation) await store.updateRun(run.id, { validation });
 
-  // 本次尝试的产物目录（相对仓库根），与函数入参 artifactPath（调用方指定）区分开。
   const attemptArtifactPath = store.attemptPath(run.id, attempt);
   const networkCollector = createNetworkEvidenceCollector(page, {
     enabled: config.networkEvidenceEnabled === true,
@@ -157,12 +159,18 @@ export async function runOnePrompt({
     bodyTimeoutMs: config.networkEvidenceBodyTimeoutMs,
   });
   let networkEvidence = null;
+  let frontEndPreflight = null;
   let saved = null;
   let normalized = null;
   let ok = false;
 
   try {
-    const result = await executeDoubaoPrompt(page, prompt, config);
+    // Conservative front-end gate: do not start another turn while the UI is still busy,
+    // do not automatically enter the "新工作任务" mode, and fail closed on abnormal UI state.
+    frontEndPreflight = await prepareFrontEndForRun(page, config);
+    const guardedPage = createConservativeDoubaoPage(page);
+    const result = await executeDoubaoPrompt(guardedPage, prompt, config);
+
     networkEvidence = await finalizeNetworkEvidence(networkCollector);
     await writeNetworkEvidenceArtifact(store, run.id, attempt, networkEvidence);
     await captureArtifacts(store, run.id, page, prompt, attempt);
@@ -188,6 +196,7 @@ export async function runOnePrompt({
       conversationReset: result.conversationReset,
       conversationResetConfirmed: result.conversationResetConfirmed ?? null,
       currentUrl: result.currentUrl,
+      frontEndPreflight,
       attempt,
       artifactPath: attemptArtifactPath,
       ...networkEvidencePatch(networkEvidence),
@@ -226,10 +235,10 @@ export async function runOnePrompt({
       errorMessage: normalized.message,
       errorDetails: normalized.details,
       currentUrl: page?.url?.() || null,
+      frontEndPreflight,
       attempt,
       artifactPath: attemptArtifactPath,
       ...networkEvidencePatch(networkEvidence),
-      // 这条失败恰恰说明没有独立新会话，明确记 false，而不是留空让统计去猜。
       conversationResetConfirmed:
         normalized.code === ErrorCode.CONVERSATION_RESET_FAILED
           ? false
@@ -237,7 +246,6 @@ export async function runOnePrompt({
     });
   }
 
-  // 数据库写入独立于采集结果：采集成功但入库失败时，本地调试产物仍然保留。
   let persistSummary = null;
   let persistError = null;
   if (pool) {
