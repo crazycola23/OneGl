@@ -8,6 +8,18 @@ const FACTOR_ORDER = [
   "source_name_present",
   "search_query_count",
   "article_retrieval_frequency",
+  "page_text_length",
+  "page_h2_count",
+  "page_table_present",
+  "page_list_present",
+  "page_faq_heading_signal",
+  "page_article_schema",
+  "page_faq_schema",
+  "page_author_signal",
+  "page_modified_date_signal",
+  "page_noindex_signal",
+  "page_numeric_density",
+  "page_external_links",
 ];
 
 const BUCKET_ORDER = {
@@ -20,6 +32,18 @@ const BUCKET_ORDER = {
   source_name_present: ["yes", "no"],
   search_query_count: ["0", "1", "2", "3-4", "5+"],
   article_retrieval_frequency: ["1", "2-3", "4-9", "10+"],
+  page_text_length: ["missing", "<1k", "1k-5k", "5k-15k", "15k+"],
+  page_h2_count: ["missing", "0", "1-2", "3-5", "6+"],
+  page_table_present: ["missing", "yes", "no"],
+  page_list_present: ["missing", "yes", "no"],
+  page_faq_heading_signal: ["missing", "yes", "no"],
+  page_article_schema: ["missing", "yes", "no"],
+  page_faq_schema: ["missing", "yes", "no"],
+  page_author_signal: ["missing", "yes", "no"],
+  page_modified_date_signal: ["missing", "yes", "no"],
+  page_noindex_signal: ["missing", "yes", "no"],
+  page_numeric_density: ["missing", "0", "low", "medium", "high"],
+  page_external_links: ["missing", "0", "1-4", "5-14", "15+"],
 };
 
 function normalize(value) {
@@ -40,9 +64,7 @@ export function lexicalUnits(value) {
       units.add(run);
       continue;
     }
-    for (let index = 0; index < run.length - 1; index += 1) {
-      units.add(run.slice(index, index + 2));
-    }
+    for (let index = 0; index < run.length - 1; index += 1) units.add(run.slice(index, index + 2));
   }
 
   return units;
@@ -103,6 +125,51 @@ export function bucketRetrievalFrequency(value) {
   return "10+";
 }
 
+function pageAvailable(row) {
+  return (row?.pageEvidenceState ?? row?.page_evidence_state) === "success";
+}
+
+function yesNo(value, available) {
+  if (!available) return "missing";
+  return value ? "yes" : "no";
+}
+
+export function bucketPageTextLength(value, available = true) {
+  if (!available || !Number.isFinite(Number(value))) return "missing";
+  const count = Number(value);
+  if (count < 1000) return "<1k";
+  if (count < 5000) return "1k-5k";
+  if (count < 15000) return "5k-15k";
+  return "15k+";
+}
+
+export function bucketPageH2Count(value, available = true) {
+  if (!available || !Number.isFinite(Number(value))) return "missing";
+  const count = Number(value);
+  if (count <= 0) return "0";
+  if (count <= 2) return "1-2";
+  if (count <= 5) return "3-5";
+  return "6+";
+}
+
+export function bucketPageNumericDensity(value, available = true) {
+  if (!available || !Number.isFinite(Number(value))) return "missing";
+  const density = Number(value);
+  if (density <= 0) return "0";
+  if (density < 5) return "low";
+  if (density < 15) return "medium";
+  return "high";
+}
+
+export function bucketExternalLinks(value, available = true) {
+  if (!available || !Number.isFinite(Number(value))) return "missing";
+  const count = Number(value);
+  if (count <= 0) return "0";
+  if (count <= 4) return "1-4";
+  if (count <= 14) return "5-14";
+  return "15+";
+}
+
 export function wilsonInterval(successes, total, z = 1.96) {
   const n = Number(total);
   const x = Number(successes);
@@ -111,8 +178,7 @@ export function wilsonInterval(successes, total, z = 1.96) {
   const z2 = z * z;
   const denominator = 1 + z2 / n;
   const center = (p + z2 / (2 * n)) / denominator;
-  const margin =
-    (z / denominator) * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n));
+  const margin = (z / denominator) * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n));
   return [Math.max(0, center - margin), Math.min(1, center + margin)];
 }
 
@@ -122,6 +188,7 @@ export function candidateFeatures(row) {
   const sourceName = String(row?.sourceName ?? row?.source_name ?? "").trim();
   const queries = Array.isArray(row?.queries) ? row.queries.filter(Boolean) : [];
   const prompt = row?.prompt ?? "";
+  const page = pageAvailable(row);
 
   const titlePrompt = title ? diceSimilarity(title, prompt) : null;
   const titleQuery = title ? maxDiceSimilarity(title, queries) : null;
@@ -136,9 +203,19 @@ export function candidateFeatures(row) {
     summary_present: summary ? "yes" : "no",
     source_name_present: sourceName ? "yes" : "no",
     search_query_count: bucketSearchQueryCount(row?.searchQueryCount ?? row?.search_query_count),
-    article_retrieval_frequency: bucketRetrievalFrequency(
-      row?.articleRetrievals ?? row?.article_retrievals,
-    ),
+    article_retrieval_frequency: bucketRetrievalFrequency(row?.articleRetrievals ?? row?.article_retrievals),
+    page_text_length: bucketPageTextLength(row?.pageTextLength ?? row?.page_text_length, page),
+    page_h2_count: bucketPageH2Count(row?.pageH2Count ?? row?.page_h2_count, page),
+    page_table_present: yesNo(Number(row?.pageTableCount ?? row?.page_table_count ?? 0) > 0, page),
+    page_list_present: yesNo(Number(row?.pageListCount ?? row?.page_list_count ?? 0) > 0, page),
+    page_faq_heading_signal: yesNo(Number(row?.pageFaqHeadingCount ?? row?.page_faq_heading_count ?? 0) > 0, page),
+    page_article_schema: yesNo(Boolean(row?.pageHasArticleSchema ?? row?.page_has_article_schema), page),
+    page_faq_schema: yesNo(Boolean(row?.pageHasFaqSchema ?? row?.page_has_faq_schema), page),
+    page_author_signal: yesNo(Boolean(row?.pageAuthorPresent ?? row?.page_author_present), page),
+    page_modified_date_signal: yesNo(Boolean(row?.pageModifiedAtRaw ?? row?.page_modified_at_raw), page),
+    page_noindex_signal: yesNo(Boolean(row?.pageRobotsNoindex ?? row?.page_robots_noindex), page),
+    page_numeric_density: bucketPageNumericDensity(row?.pageNumericDensity ?? row?.page_numeric_density, page),
+    page_external_links: bucketExternalLinks(row?.pageExternalLinkCount ?? row?.page_external_link_count, page),
   };
 }
 
@@ -187,20 +264,13 @@ export function analyzeCitationFactors(rows, { minN = 1 } = {}) {
       return bucketIndex(left.factor, left.bucket) - bucketIndex(right.factor, right.bucket);
     });
 
-  return {
-    summary: {
-      candidates: total,
-      cited,
-      baselineRate,
-    },
-    factors: factorRows,
-  };
+  return { summary: { candidates: total, cited, baselineRate }, factors: factorRows };
 }
 
 export function rankFactorSignals(analysis, { minN = 20 } = {}) {
   const rows = Array.isArray(analysis?.factors) ? analysis.factors : [];
   return rows
-    .filter((row) => row.candidates >= minN && row.uplift != null)
+    .filter((row) => row.candidates >= minN && row.uplift != null && row.bucket !== "missing")
     .map((row) => ({ ...row, signalStrength: Math.abs(row.uplift) }))
     .sort((a, b) => b.signalStrength - a.signalStrength || b.candidates - a.candidates);
 }
