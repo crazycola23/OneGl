@@ -33,9 +33,11 @@ async function exists(path) {
 }
 
 async function camoufoxLaunchOptions(config, forceHeadful) {
+  // Deliberately do not request Camoufox's behavior-humanization options. OneGl's
+  // operational safety comes from low volume, explicit backoff and manual handling of
+  // verification/access restrictions, not from trying to disguise automated behavior.
   const payload = {
     headless: forceHeadful ? false : config.headless,
-    humanize: 1.5,
   };
 
   try {
