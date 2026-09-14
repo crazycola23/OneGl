@@ -152,7 +152,7 @@ export async function runOnePrompt({
   // 本次尝试的产物目录（相对仓库根），与函数入参 artifactPath（调用方指定）区分开。
   const attemptArtifactPath = store.attemptPath(run.id, attempt);
   const networkCollector = createNetworkEvidenceCollector(page, {
-    enabled: config.networkEvidenceEnabled,
+    enabled: config.networkEvidenceEnabled === true,
     maxBodyBytes: config.networkEvidenceMaxBodyBytes,
     bodyTimeoutMs: config.networkEvidenceBodyTimeoutMs,
   });
