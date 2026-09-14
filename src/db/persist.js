@@ -1,5 +1,6 @@
 import { canonicalizeUrl, domainFromUrl } from "../url.js";
 import { normalizeDomain } from "./domain.js";
+import { persistRetrievalEvidence } from "./persist-retrieval.js";
 
 export class DatabasePersistError extends Error {
   constructor(message, options = undefined) {
@@ -218,8 +219,8 @@ export async function recordAccountHealth(pool, { accountKey, provider = "doubao
  * Writes one collector run into PostgreSQL as a single all-or-nothing transaction.
  *
  * Ordering follows the pipeline: upsert Project and Prompt, upsert the Run, then
- * upsert each Article and attach a Citation. Any failure rolls the whole thing back,
- * so a Run can never end up with half of its Citations written.
+ * upsert each Article and attach a Citation. Network retrieval evidence is written in
+ * the same transaction but remains in its own tables; it is never promoted to a Citation.
  */
 export async function persistRun({
   pool,
@@ -334,6 +335,8 @@ export async function persistRun({
       ]);
     }
 
+    const retrieval = await persistRetrievalEvidence({ client, runId, run });
+
     await client.query("COMMIT");
 
     return {
@@ -346,6 +349,7 @@ export async function persistRun({
       citationsWritten: citationRows.length,
       citationsSkipped: skipped.length,
       trackedCitations,
+      ...retrieval,
       accountKey: effectiveAccountKey,
       samplingBatchId: effectiveBatchId,
       runToken: runToken ?? run?.runToken ?? null,
