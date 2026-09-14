@@ -29,9 +29,10 @@ function appConfigFromEnv() {
   };
 }
 
-function badge(level) {
+function badge(level, accountKey = null) {
   const tone = LEVEL_TONE[level] ?? "muted";
-  return `<span class="badge ${tone}" data-risk-level-badge>${LEVEL_LABEL[level] ?? level}</span>`;
+  const marker = accountKey == null ? "" : ` data-risk-account="${escapeHtml(accountKey)}" data-risk-account-level="${escapeHtml(level)}"`;
+  return `<span class="badge ${tone}"${marker}>${LEVEL_LABEL[level] ?? level}</span>`;
 }
 
 function statusText(account) {
@@ -65,11 +66,12 @@ function accountTable(report, safety) {
   const rows = report.accounts
     .map((item) => {
       const account = item.account;
-      const key = escapeHtml(account.account_key);
+      const rawKey = String(account.account_key ?? "");
+      const key = escapeHtml(rawKey);
       const reasons = item.reasons.length ? item.reasons.join("；") : "当前未发现明显运行风险信号";
       return `<tr>
   <td><code>${key}</code></td>
-  <td>${badge(item.level)}</td>
+  <td>${badge(item.level, rawKey)}</td>
   <td>${escapeHtml(statusText(account))}</td>
   <td class="num"><span data-risk-hourly="${key}">—</span> / ${num(safety.accountHourlyLimit)}</td>
   <td class="num">${num(account.runs_today ?? 0)} / ${num(safety.accountDailyLimit)}</td>
@@ -90,6 +92,29 @@ function controlScript({ activeBatchIds, hourlyLimit }) {
   const activeBatches = ${batchJson};
   const hourlyLimit = ${Number(hourlyLimit) || 20};
   const stopButton = document.getElementById('risk-stop-all');
+  const levelRank = { low: 1, medium: 2, high: 3 };
+  const levelLabel = { low: '低', medium: '中', high: '高' };
+  const levelTone = { low: 'ok', medium: 'warn', high: 'bad' };
+
+  function promoteBadge(node, targetLevel) {
+    if (!node) return;
+    const current = node.getAttribute('data-risk-account-level') || 'low';
+    if ((levelRank[targetLevel] || 0) <= (levelRank[current] || 0)) return;
+    node.classList.remove('ok', 'warn', 'bad');
+    node.classList.add(levelTone[targetLevel]);
+    node.textContent = levelLabel[targetLevel];
+    node.setAttribute('data-risk-account-level', targetLevel);
+  }
+
+  function promoteOverall(targetLevel) {
+    const node = document.querySelector('[data-risk-overall]');
+    if (!node) return;
+    const current = node.getAttribute('data-risk-overall') || 'low';
+    if ((levelRank[targetLevel] || 0) <= (levelRank[current] || 0)) return;
+    node.textContent = levelLabel[targetLevel];
+    node.setAttribute('data-risk-overall', targetLevel);
+  }
+
   if (stopButton) {
     stopButton.addEventListener('click', async function(){
       if (!activeBatches.length) return;
@@ -130,12 +155,19 @@ function controlScript({ activeBatchIds, hourlyLimit }) {
       }
       for (const [key, times] of byAccount.entries()) {
         times.sort(function(a,b){ return a-b; });
-        const countNode = document.querySelector('[data-risk-hourly="' + CSS.escape(key) + '"]');
+        const selectorKey = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(key) : key.replace(/["\\]/g, '\\$&');
+        const countNode = document.querySelector('[data-risk-hourly="' + selectorKey + '"]');
         if (countNode) countNode.textContent = String(times.length);
+        const riskNode = document.querySelector('[data-risk-account="' + selectorKey + '"]');
         if (times.length >= hourlyLimit) {
+          promoteBadge(riskNode, 'high');
+          promoteOverall('high');
           const next = new Date(times[0] + 60 * 60 * 1000 + 1000);
-          const nextNode = document.querySelector('[data-risk-next="' + CSS.escape(key) + '"]');
+          const nextNode = document.querySelector('[data-risk-next="' + selectorKey + '"]');
           if (nextNode) nextNode.textContent = next.toLocaleString('zh-CN');
+        } else if (times.length / hourlyLimit >= 0.75) {
+          promoteBadge(riskNode, 'medium');
+          promoteOverall('medium');
         }
       }
       document.querySelectorAll('[data-risk-hourly]').forEach(function(node){
@@ -164,8 +196,9 @@ export function riskDashboardPanel(system, { active = "" } = {}) {
   const findingSummary = report.configAudit.findings.length
     ? report.configAudit.findings.slice(0, 3).map((item) => item.message).join("；")
     : "当前配置未触发高于低风险的本地启发式规则";
+  const panelClass = report.risk === "high" ? "card tone-blocked" : "card";
 
-  return `<section class="card tone-${LEVEL_TONE[report.risk] === "bad" ? "blocked" : ""}" id="operation-risk-panel">
+  return `<section class="${panelClass}" id="operation-risk-panel">
   <div class="card-head">
     <strong>运行风险与安全控制</strong>
     <span>本地运行风险启发式，不代表豆包内部风控分数</span>
@@ -176,7 +209,7 @@ export function riskDashboardPanel(system, { active = "" } = {}) {
   </div>
   <div class="card-body">
     <div class="stats">
-      <div class="stat ${LEVEL_TONE[report.risk]}"><div class="label">当前总体风险</div><div class="value">${escapeHtml(LEVEL_LABEL[report.risk])}</div><div class="hint">配置风险 ${escapeHtml(LEVEL_LABEL[report.configRisk])} · 高风险账号 ${num(report.highRiskAccounts)}</div></div>
+      <div class="stat ${LEVEL_TONE[report.risk]}"><div class="label">当前总体风险</div><div class="value" data-risk-overall="${escapeHtml(report.risk)}">${escapeHtml(LEVEL_LABEL[report.risk])}</div><div class="hint">配置风险 ${escapeHtml(LEVEL_LABEL[report.configRisk])} · 高风险账号 ${num(report.highRiskAccounts)}</div></div>
       <div class="stat"><div class="label">正在运行的批次</div><div class="value">${num(activeBatchIds.length)}</div><div class="hint">暂停按钮只操作 OneGl 本地队列，不处理验证码或绕过限制</div></div>
       <div class="stat"><div class="label">今日账号运行</div><div class="value">${num(report.totalRunsToday)}</div><div class="hint">单账号每日上限 ${num(safety.accountDailyLimit)}</div></div>
       <div class="stat"><div class="label">滚动小时上限</div><div class="value">${num(safety.accountHourlyLimit)}</div><div class="hint">页面打开后从现有 Runs 数据实时计算最近 1 小时用量</div></div>
