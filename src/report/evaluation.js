@@ -134,8 +134,70 @@ function accountMetrics(detail) {
   return { gap: sorted[0].rate - sorted.at(-1).rate, highest: sorted[0], lowest: sorted.at(-1) };
 }
 
+function factorEvidenceMetrics(detail) {
+  const factor = detail?.report?.citationFactors ?? detail?.citationFactors ?? null;
+  if (!factor || factor.available === false) {
+    return {
+      available: false,
+      reason: factor?.message ?? "暂无候选→引用因子数据",
+      candidates: 0,
+      cited: 0,
+      baselineRate: null,
+      pageEvidenceRate: null,
+      supportedSignals: [],
+      positiveSignals: [],
+      negativeSignals: [],
+      evidenceScore: 0,
+      evidenceLabel: "未就绪",
+    };
+  }
+
+  const candidates = toNumber(factor?.cohort?.candidates);
+  const cited = toNumber(factor?.cohort?.cited);
+  const baselineRate = Number.isFinite(Number(factor?.cohort?.baselineRate))
+    ? Number(factor.cohort.baselineRate)
+    : ratio(cited, candidates);
+  const pageEvidenceRate = Number.isFinite(Number(factor?.pageEvidence?.successRate))
+    ? Number(factor.pageEvidence.successRate)
+    : null;
+  const signals = Array.isArray(factor?.strongestSignals) ? factor.strongestSignals : [];
+  const supportedSignals = signals.filter(
+    (row) => row.bucket !== "missing" && Number.isFinite(Number(row.qValue)) && Number(row.qValue) <= 0.1 && toNumber(row.candidates) >= 30,
+  );
+  const positiveSignals = supportedSignals.filter((row) => Number(row.uplift) > 0).slice(0, 5);
+  const negativeSignals = supportedSignals.filter((row) => Number(row.uplift) < 0).slice(0, 5);
+
+  const samplePart = clamp(candidates / 300);
+  const pagePart = pageEvidenceRate == null ? 0 : clamp(pageEvidenceRate);
+  const supportPart = clamp(supportedSignals.length / 3);
+  const evidenceScore = score100(0.45 * samplePart + 0.35 * pagePart + 0.2 * supportPart);
+  const evidenceLabel = evidenceScore >= 80 ? "较强" : evidenceScore >= 60 ? "中等" : evidenceScore >= 35 ? "探索性" : "不足";
+
+  return {
+    available: true,
+    candidates,
+    cited,
+    baselineRate,
+    pageEvidenceRate,
+    pageEvidenceArticles: toNumber(factor?.pageEvidence?.totalArticles),
+    pageEvidenceSuccessful: toNumber(factor?.pageEvidence?.successfulArticles),
+    supportedSignals,
+    positiveSignals,
+    negativeSignals,
+    evidenceScore,
+    evidenceLabel,
+  };
+}
+
 function priority(level, title, evidence, direction, metric) {
   return { level, title, evidence, direction, metric };
+}
+
+function signalDescription(row) {
+  const label = row.factorLabel ?? row.factor ?? "页面因素";
+  const uplift = Number(row.uplift);
+  const q = Number(row.qValue);
+  return `${label}=${row.bucket}（n=${toNumber(row.candidates)}，uplift ${uplift >= 0 ? "+" : ""}${(uplift * 100).toFixed(0)}%，q=${Number.isFinite(q) ? q.toFixed(3) : "n/a"}）`;
 }
 
 function buildRecommendations(metrics) {
@@ -153,6 +215,18 @@ function buildRecommendations(metrics) {
     );
   }
 
+  if (metrics.factorEvidence.available && metrics.factorEvidence.pageEvidenceRate != null && metrics.factorEvidence.pageEvidenceRate < 0.7) {
+    items.push(
+      priority(
+        "P0",
+        "先提高候选页面证据覆盖，再解释页面因素",
+        `候选页面证据成功率仅 ${(metrics.factorEvidence.pageEvidenceRate * 100).toFixed(1)}%（${metrics.factorEvidence.pageEvidenceSuccessful}/${metrics.factorEvidence.pageEvidenceArticles}）。`,
+        "先定位 blocked、non_html、too_large 与编码问题，保证页面因素的 missing 不集中在某些域名/内容类型；覆盖不足时不要把 yes/no bucket 当成总体规律。",
+        "目标：页面证据成功率 ≥ 80%，并检查失败是否集中在特定域名",
+      ),
+    );
+  }
+
   if (metrics.promptCoverage != null && metrics.promptCoverage < 0.4) {
     items.push(
       priority(
@@ -165,14 +239,27 @@ function buildRecommendations(metrics) {
     );
   }
 
+  if (metrics.factorEvidence.positiveSignals.length) {
+    const top = metrics.factorEvidence.positiveSignals.slice(0, 3);
+    items.push(
+      priority(
+        "P1",
+        "把高关联页面信号转成受控验证实验",
+        `当前 FDR 校正后仍保留的正向观察包括：${top.map(signalDescription).join("；")}。`,
+        "不要直接把这些因素批量应用到所有页面。优先挑自有内容做单变量或小型析因实验：保持主题、域名、正文主体和时间窗尽量一致，只改变一个可控结构信号，再用固定 Prompt 池复测。",
+        "目标：至少 2 个独立批次保持同方向，且 q≤0.10；随后再进入多变量/样本外验证",
+      ),
+    );
+  }
+
   if (metrics.trackedRate != null && metrics.trackedRate < 0.25) {
     items.push(
       priority(
         "P1",
         "提升自有/目标文章进入最终引用层的概率",
         `目标文章被引用率 ${(metrics.trackedRate * 100).toFixed(1)}%。`,
-        "对已进入主题覆盖但未被引用的内容，测试更强的答案密度、明确数据出处、可独立引用段落、FAQ/表格和更新时间标识；用后续批次验证，不把这些建议视为平台官方权重。",
-        "目标：目标文章引用率提升至当前基线的 1.5×",
+        "优先从已经进入候选池但未进入最终引用的自有内容中选实验对象；结合当前因子证据做受控改版，不把页面因素关联视为平台官方权重。",
+        "目标：目标文章引用率提升至当前基线的 1.5×，并记录候选→引用转化变化",
       ),
     );
   }
@@ -285,6 +372,7 @@ export function evaluateBatchDetail(detail) {
   const source = sourceMetrics(detail);
   const category = categoryMetrics(detail);
   const account = accountMetrics(detail);
+  const factorEvidence = factorEvidenceMetrics(detail);
   const sampleConfidence =
     valid >= 100 ? "高" : valid >= 50 ? "中高" : valid >= 25 ? "中" : valid >= 10 ? "偏低" : "低";
 
@@ -321,23 +409,31 @@ export function evaluateBatchDetail(detail) {
     source,
     category,
     account,
+    factorEvidence,
     sampleConfidence,
     readinessIndex,
     readinessGrade: grade(readinessIndex),
   };
 
+  const caveats = [
+    "OneGl 评分是基于当前观测数据的内部评估框架，不是豆包官方评分或隐藏排序权重。",
+    "提及、引用和来源分布是相关性证据，不能单独证明某个页面特征导致了引用结果。",
+    valid < 50
+      ? `当前仅 ${valid} 个有效 Run，样本量较小，适合发现方向，不适合宣称稳定规律。`
+      : "当前样本量可用于稳定性观察，但跨时间、跨账号重复仍然重要。",
+    "页面/产品行为可能变化，报告应同时保留批次种子、时间、账号和失败样本口径。",
+  ];
+  if (factorEvidence.available) {
+    caveats.push(
+      "候选页面因子使用 OneGl 后续公开 HTTP 快照；FDR q-value 只降低多重比较中的偶然发现风险，不能替代跨批次复现、多变量控制和样本外验证。",
+    );
+  }
+
   return {
-    version: 1,
+    version: 2,
     metrics,
     recommendations: buildRecommendations(metrics),
-    caveats: [
-      "OneGl 评分是基于当前观测数据的内部评估框架，不是豆包官方评分或隐藏排序权重。",
-      "提及、引用和来源分布是相关性证据，不能单独证明某个页面特征导致了引用结果。",
-      valid < 50
-        ? `当前仅 ${valid} 个有效 Run，样本量较小，适合发现方向，不适合宣称稳定规律。`
-        : "当前样本量可用于稳定性观察，但跨时间、跨账号重复仍然重要。",
-      "页面/产品行为可能变化，报告应同时保留批次种子、时间、账号和失败样本口径。",
-    ],
+    caveats,
   };
 }
 
@@ -355,7 +451,9 @@ export function evaluationBrowserBundle() {
     citationCompleteness,
     categoryMetrics,
     accountMetrics,
+    factorEvidenceMetrics,
     priority,
+    signalDescription,
     buildRecommendations,
     evaluateBatchDetail,
   ]

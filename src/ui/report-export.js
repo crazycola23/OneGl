@@ -1,8 +1,8 @@
 import { evaluationBrowserBundle } from "../report/evaluation.js";
-import { htmlReportBrowserBundle } from "../report/html-report.js";
+import { htmlReportWithFactorsBrowserBundle } from "../report/html-report-factors.js";
 
 function browserBootstrapSource() {
-  return `${evaluationBrowserBundle()}\n${htmlReportBrowserBundle()}\n
+  return `${evaluationBrowserBundle()}\n${htmlReportWithFactorsBrowserBundle()}\n
 (function(){
   const match = window.location.pathname.match(/^\\/batches\\/(\\d+)$/);
   if (!match) return;
@@ -54,6 +54,11 @@ function browserBootstrapSource() {
         '<div style="margin-top:5px">' + safeText(item.direction) + '</div></div>';
     }).join('');
 
+    const factor = metrics.factorEvidence || {};
+    const factorCard = factor.available
+      ? scoreCard('因子证据质量', factor.evidenceScore, factor.evidenceLabel + ' · 页面覆盖 ' + reportPct(factor.pageEvidenceRate))
+      : scoreCard('因子证据质量', 0, factor.reason || '暂无候选→引用因子数据');
+
     section.innerHTML = '<div class="card-head"><strong>专业评估与建议方向</strong><span>OneGl 内部评估模型，不代表豆包官方评分</span></div>' +
       '<div class="card-body">' +
       '<div class="stats" style="margin:14px">' +
@@ -61,9 +66,10 @@ function browserBootstrapSource() {
       scoreCard('品牌可见度', metrics.visibilityIndex, 'PROMPT 覆盖 ' + reportPct(metrics.promptCoverage)) +
       scoreCard('来源多样性', metrics.source.diversityScore, metrics.source.concentrationLabel) +
       scoreCard('综合准备度', metrics.readinessIndex, '等级 ' + metrics.readinessGrade) +
+      factorCard +
       '</div>' +
       '<div style="border-top:1px solid var(--border-solid)">' + recommendations + '</div>' +
-      '<div class="hint" style="padding:12px 14px;margin:0">建议优先处理 P0/P1，并用固定 Prompt、固定种子做下一批对照实验；不要把单批次相关性直接解释成平台排序因果。</div>' +
+      '<div class="hint" style="padding:12px 14px;margin:0">建议优先处理 P0/P1，并用固定 Prompt、固定种子做下一批对照实验；因子证据质量独立于业务准备度评分，不把单批次相关性直接解释成平台排序因果。</div>' +
       '</div>';
 
     const head = document.querySelector('.page-head');
@@ -73,7 +79,7 @@ function browserBootstrapSource() {
 
   function downloadHtml(detail){
     const evaluation = evaluateBatchDetail(detail);
-    const html = buildHtmlReport(detail, evaluation, { generatedAt: new Date().toISOString() });
+    const html = buildHtmlReportWithFactors(detail, evaluation, { generatedAt: new Date().toISOString() });
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -87,7 +93,7 @@ function browserBootstrapSource() {
 
   function previewHtml(detail){
     const evaluation = evaluateBatchDetail(detail);
-    const html = buildHtmlReport(detail, evaluation, { generatedAt: new Date().toISOString() });
+    const html = buildHtmlReportWithFactors(detail, evaluation, { generatedAt: new Date().toISOString() });
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     window.open(url, '_blank', 'noopener,noreferrer');

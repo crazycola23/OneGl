@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { evaluateBatchDetail } from "../src/report/evaluation.js";
-import { buildHtmlReport } from "../src/report/html-report.js";
+import { buildHtmlReportWithFactors } from "../src/report/html-report-factors.js";
 import { reportExportBootstrap } from "../src/ui/report-export.js";
 import { WARM_THEME } from "../src/ui/warm-theme.js";
 
@@ -31,6 +31,35 @@ function fixture(overrides = {}) {
       prompts: { total: 50, mentioned: 20, mentionCoverage: 0.4 },
       citations: { total: 140, articles: 72, domains: 18 },
       tracked: { total: 10, cited: 2, citationRate: 0.2, articles: [] },
+      citationFactors: {
+        batchId: 7,
+        cohort: { runs: 80, candidates: 320, cited: 64, baselineRate: 0.2 },
+        pageEvidence: { totalArticles: 120, successfulArticles: 102, successRate: 0.85, states: { success: 102 } },
+        strongestSignals: [
+          {
+            factor: "page_table_present",
+            factorLabel: "页面包含表格",
+            bucket: "yes",
+            candidates: 72,
+            cited: 24,
+            rate: 1 / 3,
+            uplift: 0.6667,
+            qValue: 0.04,
+            evidenceLevel: "较强",
+          },
+          {
+            factor: "page_modified_date_signal",
+            factorLabel: "更新时间信号",
+            bucket: "yes",
+            candidates: 88,
+            cited: 25,
+            rate: 25 / 88,
+            uplift: 0.4205,
+            qValue: 0.08,
+            evidenceLevel: "中等",
+          },
+        ],
+      },
       byCategory: [
         { category: "推荐", validRuns: 40, mentioned: 28, mentionRate: 0.7 },
         { category: "科普", validRuns: 30, mentioned: 9, mentionRate: 0.3 },
@@ -69,6 +98,19 @@ test("专业评估同时考虑数据质量、品牌可见度和来源集中度",
   assert.ok(evaluation.recommendations.some((item) => /来源依赖/.test(item.title)));
 });
 
+test("因子证据质量独立于业务准备度，并只把 FDR 支持信号提升为实验建议", () => {
+  const detail = fixture();
+  const withEvidence = evaluateBatchDetail(detail);
+  const withoutEvidenceDetail = fixture();
+  delete withoutEvidenceDetail.report.citationFactors;
+  const withoutEvidence = evaluateBatchDetail(withoutEvidenceDetail);
+
+  assert.equal(withEvidence.metrics.readinessIndex, withoutEvidence.metrics.readinessIndex);
+  assert.ok(withEvidence.metrics.factorEvidence.evidenceScore > 0);
+  assert.equal(withEvidence.metrics.factorEvidence.positiveSignals.length, 2);
+  assert.ok(withEvidence.recommendations.some((item) => /受控验证实验/.test(item.title)));
+});
+
 test("小样本会明确降低结论置信表达，而不是伪装成稳定规律", () => {
   const detail = fixture();
   detail.report.runs.assignmentsRun = 8;
@@ -79,23 +121,28 @@ test("小样本会明确降低结论置信表达，而不是伪装成稳定规�
   assert.ok(evaluation.caveats.some((item) => /样本量较小/.test(item)));
 });
 
-test("HTML 报告是自包含暖色专业报告并转义外部数据", () => {
+test("HTML 报告是自包含暖色专业报告、包含因子证据并转义外部数据", () => {
   const detail = fixture();
   detail.report.batch.project_name = '<script>alert("x")</script>';
   const evaluation = evaluateBatchDetail(detail);
-  const html = buildHtmlReport(detail, evaluation, { generatedAt: "2026-09-14T07:00:00Z" });
+  const html = buildHtmlReportWithFactors(detail, evaluation, { generatedAt: "2026-09-14T07:00:00Z" });
   assert.match(html, /#F8F1E7/);
   assert.match(html, /专业评估与建议方向/);
   assert.match(html, /综合准备度/);
+  assert.match(html, /候选 → 最终引用：页面因素证据/);
+  assert.match(html, /FDR q/);
+  assert.match(html, /页面包含表格/);
   assert.doesNotMatch(html, /<script>alert/);
   assert.match(html, /&lt;script&gt;alert/);
   assert.doesNotMatch(html, /cdn|fonts\.googleapis/i);
 });
 
-test("批次页面脚本提供一键 HTML 导出与预览，不在其它页面注入", () => {
+test("批次页面脚本提供一键因子增强 HTML 导出与预览，不在其它页面注入", () => {
   const script = reportExportBootstrap("batches");
   assert.match(script, /生成 HTML 报告/);
   assert.match(script, /预览报告/);
+  assert.match(script, /buildHtmlReportWithFactors/);
+  assert.match(script, /因子证据质量/);
   assert.match(script, /onegl-batch-/);
   assert.equal(reportExportBootstrap("runs"), "");
 });

@@ -1,3 +1,4 @@
+import { loadCitationFactorReport } from "../analysis/citation-factor-report.js";
 import { loadBatch } from "../sampling/batch.js";
 
 /**
@@ -24,6 +25,28 @@ function pct(numerator, denominator) {
 }
 
 const num = (value) => Number(value ?? 0);
+
+async function optionalCitationFactors(pool, batchId) {
+  try {
+    return await loadCitationFactorReport(pool, batchId, { minN: 10, signalMinN: 20 });
+  } catch (error) {
+    // Keep the core batch report usable on a database that has not applied the retrieval/page
+    // evidence migrations yet. Other query failures remain visible instead of being hidden.
+    if (["42P01", "42703"].includes(error?.code)) {
+      return {
+        available: false,
+        errorCode: "MIGRATION_REQUIRED",
+        message: "运行 npm run db:migrate 后可启用候选→引用页面因子分析。",
+        cohort: { runs: 0, candidates: 0, cited: 0, baselineRate: null },
+        pageEvidence: { totalArticles: 0, successfulArticles: 0, successRate: null, states: {} },
+        factors: [],
+        strongestSignals: [],
+        domains: [],
+      };
+    }
+    throw error;
+  }
+}
 
 export async function buildBatchReport(pool, batchId) {
   const batch = await loadBatch(pool, batchId);
@@ -188,6 +211,7 @@ export async function buildBatchReport(pool, batchId) {
     )
   ).rows;
 
+  const citationFactors = await optionalCitationFactors(pool, batchId);
   const validRuns = num(runs.valid_runs);
 
   return {
@@ -221,6 +245,7 @@ export async function buildBatchReport(pool, batchId) {
         : null,
       articles: trackedArticles,
     },
+    citationFactors,
     topArticles,
     topDomains,
     byCategory: byCategory.map((row) => ({
@@ -290,6 +315,17 @@ export function printBatchReport(report, { log = console.log } = {}) {
         最近出现: row.last_seen_at,
         链接: String(row.canonical_url).slice(0, 70),
       })),
+    );
+  }
+
+  if (report.citationFactors?.cohort?.candidates) {
+    log("候选→引用因子证据");
+    log(
+      `  候选 / 精确引用命中 / 基线转化率 : ${report.citationFactors.cohort.candidates} / ` +
+        `${report.citationFactors.cohort.cited} / ${pct(report.citationFactors.cohort.cited, report.citationFactors.cohort.candidates)}`,
+    );
+    log(
+      `  页面证据成功 : ${report.citationFactors.pageEvidence.successfulArticles}/${report.citationFactors.pageEvidence.totalArticles}`,
     );
   }
 

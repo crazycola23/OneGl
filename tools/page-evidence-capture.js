@@ -69,14 +69,14 @@ async function persistObservation(batchId, article, result) {
   await pool.query(
     `INSERT INTO article_page_observations (
        batch_id, article_id, requested_url, final_url, fetch_state, http_status, content_type,
-       response_bytes, captured_at, error_code, error_message, content_hash, title_text,
+       content_charset, response_bytes, captured_at, error_code, error_message, content_hash, title_text,
        meta_description, canonical_href, text_length, numeric_token_count,
        numeric_tokens_per_1000_chars, h1_count, h2_count, h3_count, table_count, list_count,
        faq_heading_count, question_heading_count, external_link_count, jsonld_count, schema_types,
        has_article_schema, has_faq_schema, author_present, published_at_raw, modified_at_raw,
        robots_noindex, robots_nofollow, diagnostics
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,now(),$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27::jsonb,$28,$29,$30,$31,$32,$33,$34,$35::jsonb
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,now(),$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28::jsonb,$29,$30,$31,$32,$33,$34,$35,$36::jsonb
      )
      ON CONFLICT (batch_id, article_id) DO UPDATE SET
        requested_url = EXCLUDED.requested_url,
@@ -84,6 +84,7 @@ async function persistObservation(batchId, article, result) {
        fetch_state = EXCLUDED.fetch_state,
        http_status = EXCLUDED.http_status,
        content_type = EXCLUDED.content_type,
+       content_charset = EXCLUDED.content_charset,
        response_bytes = EXCLUDED.response_bytes,
        captured_at = now(),
        error_code = EXCLUDED.error_code,
@@ -121,6 +122,7 @@ async function persistObservation(batchId, article, result) {
       result.state,
       result.httpStatus ?? null,
       result.contentType ?? f.contentType ?? null,
+      result.contentCharset ?? null,
       result.responseBytes ?? null,
       result.errorCode ?? null,
       result.errorMessage ?? null,
@@ -162,7 +164,8 @@ async function worker(queue, options, stats) {
     stats.total += 1;
     stats[result.state] = (stats[result.state] ?? 0) + 1;
     const marker = result.state === "success" ? "✓" : "·";
-    console.log(`${marker} [${stats.total}] ${article.normalized_domain} ${result.state} ${url}`);
+    const charset = result.contentCharset ? ` charset=${result.contentCharset}` : "";
+    console.log(`${marker} [${stats.total}] ${article.normalized_domain} ${result.state}${charset} ${url}`);
   }
 }
 
@@ -178,7 +181,7 @@ async function main() {
   await Promise.all(Array.from({ length: Math.min(options.concurrency, queue.length) }, () => worker(queue, options, stats)));
   console.log("\nPage evidence states:");
   console.table(Object.entries(stats).filter(([key]) => key !== "total").map(([state, count]) => ({ state, count })));
-  console.log("No raw page HTML is persisted; only derived fields and a SHA-256 content hash are stored.");
+  console.log("No raw page HTML is persisted; only derived fields, detected charset and a SHA-256 content hash are stored.");
 }
 
 main()

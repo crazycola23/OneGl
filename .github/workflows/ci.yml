@@ -11,7 +11,21 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: onegl
+          POSTGRES_DB: onegl_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d onegl_ci"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,6 +38,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Migration check
+        env:
+          DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
+        run: |
+          npm run db:migrate
+          npm run db:status
 
       - name: Install test browser
         run: npx playwright-core install --with-deps chromium
