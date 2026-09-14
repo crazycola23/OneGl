@@ -1,0 +1,364 @@
+function toNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function ratio(numerator, denominator) {
+  const bottom = toNumber(denominator);
+  if (bottom <= 0) return null;
+  return toNumber(numerator) / bottom;
+}
+
+function clamp(value, min = 0, max = 1) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function score100(value) {
+  return Math.round(clamp(value) * 100);
+}
+
+function average(values) {
+  const usable = values.filter((value) => Number.isFinite(value));
+  if (!usable.length) return null;
+  return usable.reduce((sum, value) => sum + value, 0) / usable.length;
+}
+
+function grade(score) {
+  if (score >= 90) return "A";
+  if (score >= 80) return "B";
+  if (score >= 70) return "C";
+  if (score >= 60) return "D";
+  return "E";
+}
+
+function tone(score) {
+  if (score >= 80) return "good";
+  if (score >= 60) return "warn";
+  return "bad";
+}
+
+function normalizeSourceDistribution(detail) {
+  const total = toNumber(detail?.report?.citations?.total ?? detail?.sources?.totals?.citations);
+  const rows = Array.isArray(detail?.sources?.domains)
+    ? detail.sources.domains
+    : Array.isArray(detail?.report?.topDomains)
+      ? detail.report.topDomains
+      : [];
+  const buckets = rows
+    .map((row) => ({ domain: row.domain ?? "(unknown)", citations: toNumber(row.citations) }))
+    .filter((row) => row.citations > 0);
+  const known = buckets.reduce((sum, row) => sum + row.citations, 0);
+  const other = Math.max(0, total - known);
+  if (other > 0) buckets.push({ domain: "其它域名", citations: other });
+  return { total, buckets };
+}
+
+function sourceMetrics(detail) {
+  const { total, buckets } = normalizeSourceDistribution(detail);
+  if (!total || !buckets.length) {
+    return {
+      topDomainShare: null,
+      hhi: null,
+      effectiveDomains: 0,
+      diversityScore: 0,
+      concentrationLabel: "暂无引用数据",
+    };
+  }
+  const shares = buckets.map((row) => row.citations / total);
+  const topDomainShare = Math.max(...shares);
+  const hhi = shares.reduce((sum, share) => sum + share * share, 0);
+  const effectiveDomains = hhi > 0 ? 1 / hhi : 0;
+  const diversityScore = score100(
+    0.55 * clamp(1 - topDomainShare) + 0.45 * clamp(effectiveDomains / 6),
+  );
+  const concentrationLabel =
+    topDomainShare >= 0.6 || hhi >= 0.35
+      ? "高度集中"
+      : topDomainShare >= 0.4 || hhi >= 0.22
+        ? "中度集中"
+        : "相对分散";
+  return { topDomainShare, hhi, effectiveDomains, diversityScore, concentrationLabel };
+}
+
+function citationCompleteness(detail) {
+  const runs = Array.isArray(detail?.runs) ? detail.runs : [];
+  let expected = 0;
+  let captured = 0;
+  let comparable = 0;
+  for (const run of runs) {
+    const e = Number(run.expected_citation_count ?? run.expectedCitationCount);
+    const c = Number(run.captured_citation_count ?? run.capturedCitationCount);
+    if (!Number.isFinite(e) || e < 0 || !Number.isFinite(c) || c < 0) continue;
+    if (e === 0) continue;
+    expected += e;
+    captured += Math.min(c, e);
+    comparable += 1;
+  }
+  return {
+    comparableRuns: comparable,
+    expected,
+    captured,
+    rate: expected > 0 ? captured / expected : null,
+  };
+}
+
+function categoryMetrics(detail) {
+  const rows = Array.isArray(detail?.report?.byCategory) ? detail.report.byCategory : [];
+  const normalized = rows
+    .map((row) => ({
+      category: row.category ?? "uncategorized",
+      validRuns: toNumber(row.validRuns),
+      mentioned: toNumber(row.mentioned),
+      mentionRate: Number.isFinite(Number(row.mentionRate))
+        ? Number(row.mentionRate)
+        : ratio(row.mentioned, row.validRuns),
+    }))
+    .filter((row) => row.validRuns > 0 && row.mentionRate != null);
+  if (!normalized.length) return { rows: [], best: null, weakest: null, gap: null };
+  const sorted = [...normalized].sort((a, b) => b.mentionRate - a.mentionRate);
+  return {
+    rows: normalized,
+    best: sorted[0],
+    weakest: sorted.at(-1),
+    gap: sorted[0].mentionRate - sorted.at(-1).mentionRate,
+  };
+}
+
+function accountMetrics(detail) {
+  const rows = Array.isArray(detail?.report?.byAccount) ? detail.report.byAccount : [];
+  const rates = rows
+    .map((row) => ({ account: row.account, rate: Number(row.mentionRate) }))
+    .filter((row) => Number.isFinite(row.rate));
+  if (rates.length < 2) return { gap: null, highest: null, lowest: null };
+  const sorted = [...rates].sort((a, b) => b.rate - a.rate);
+  return { gap: sorted[0].rate - sorted.at(-1).rate, highest: sorted[0], lowest: sorted.at(-1) };
+}
+
+function priority(level, title, evidence, direction, metric) {
+  return { level, title, evidence, direction, metric };
+}
+
+function buildRecommendations(metrics) {
+  const items = [];
+
+  if (metrics.dataQualityScore < 80) {
+    items.push(
+      priority(
+        "P0",
+        "先提升数据可信度，再放大战略结论",
+        `数据质量评分 ${metrics.dataQualityScore}/100；有效样本率 ${(metrics.validRate * 100).toFixed(1)}%。`,
+        "优先处理失败 Run、未确认新会话和引用解析不完整；对无效样本补跑，不把失败样本混入业务结论。",
+        "目标：数据质量评分 ≥ 85，有效样本率 ≥ 90%",
+      ),
+    );
+  }
+
+  if (metrics.promptCoverage != null && metrics.promptCoverage < 0.4) {
+    items.push(
+      priority(
+        "P1",
+        "提高非品牌问题下的自然可见度",
+        `PROMPT 级提及覆盖仅 ${(metrics.promptCoverage * 100).toFixed(1)}%。`,
+        "围绕低覆盖意图建立可直接回答的问题页/知识块：结论先行、数据可核验、标题与用户问题一致，并优先补齐最弱问题分类。",
+        "目标：下一批 PROMPT 覆盖提升 10–15 个百分点",
+      ),
+    );
+  }
+
+  if (metrics.trackedRate != null && metrics.trackedRate < 0.25) {
+    items.push(
+      priority(
+        "P1",
+        "提升自有/目标文章进入最终引用层的概率",
+        `目标文章被引用率 ${(metrics.trackedRate * 100).toFixed(1)}%。`,
+        "对已进入主题覆盖但未被引用的内容，测试更强的答案密度、明确数据出处、可独立引用段落、FAQ/表格和更新时间标识；用后续批次验证，不把这些建议视为平台官方权重。",
+        "目标：目标文章引用率提升至当前基线的 1.5×",
+      ),
+    );
+  }
+
+  if (metrics.source.topDomainShare != null && metrics.source.topDomainShare >= 0.5) {
+    items.push(
+      priority(
+        "P1",
+        "降低单一来源依赖，提升来源结构韧性",
+        `头部域名占全部引用 ${(metrics.source.topDomainShare * 100).toFixed(1)}%，来源结构${metrics.source.concentrationLabel}。`,
+        "增加多类型权威来源覆盖：官方资料、行业媒体、知识型页面与高质量第三方评测；同时观察豆包是否长期依赖单一生态来源。",
+        "目标：Top1 域名占比 < 40%，有效来源数持续上升",
+      ),
+    );
+  }
+
+  if (metrics.category.gap != null && metrics.category.gap >= 0.3) {
+    items.push(
+      priority(
+        "P1",
+        "优先补齐最弱问题意图",
+        `最佳分类与最弱分类提及率相差 ${(metrics.category.gap * 100).toFixed(1)} 个百分点；最弱为「${metrics.category.weakest.category}」。`,
+        `把下一轮内容与 Prompt 扩充集中到「${metrics.category.weakest.category}」，同时保留强分类作为对照组，避免平均值掩盖结构性短板。`,
+        "目标：分类差距压缩到 20 个百分点以内",
+      ),
+    );
+  }
+
+  if (metrics.account.gap != null && metrics.account.gap >= 0.2) {
+    items.push(
+      priority(
+        "P2",
+        "验证账号/个性化差异后再下总体结论",
+        `不同账号提及率最大差距 ${(metrics.account.gap * 100).toFixed(1)} 个百分点。`,
+        "增加账号数与重复次数，保持相同 Prompt/时间窗，分离账号个性化、随机性与内容本身影响。",
+        "目标：扩大重复样本并报告账号间方差",
+      ),
+    );
+  }
+
+  if (metrics.citationDensity < 1) {
+    items.push(
+      priority(
+        "P2",
+        "提高可引用信息密度与可验证性",
+        `平均每个有效 Run 仅 ${metrics.citationDensity.toFixed(2)} 条可见引用。`,
+        "针对会触发联网检索的问题，提供带时间、数据来源、定义边界和明确实体名的内容块；优先观察引用数量与来源多样性是否同步改善。",
+        "目标：引用密度提高，同时不牺牲来源多样性",
+      ),
+    );
+  }
+
+  if (!items.length) {
+    items.push(
+      priority(
+        "P2",
+        "进入稳定扩样与对照实验阶段",
+        "当前数据质量、可见度与来源结构未出现明显短板。",
+        "保持固定 Prompt 池与种子，做时间序列重复；每次只改变一个内容变量，观察提及率、引用率和来源结构是否稳定变化。",
+        "目标：建立跨批次趋势与显著性判断，而不是只看单批次快照",
+      ),
+    );
+  }
+
+  return items.slice(0, 6);
+}
+
+export function evaluateBatchDetail(detail) {
+  const report = detail?.report ?? {};
+  const runs = report.runs ?? {};
+  const prompts = report.prompts ?? {};
+  const citations = report.citations ?? {};
+  const tracked = report.tracked ?? {};
+
+  const assignments = toNumber(runs.assignmentsRun);
+  const valid = toNumber(runs.valid);
+  const failed = toNumber(runs.failed);
+  const partial = toNumber(runs.partial);
+  const validRate = assignments > 0 ? valid / assignments : 0;
+  const failureRate = assignments > 0 ? failed / assignments : 0;
+  const partialRate = assignments > 0 ? partial / assignments : 0;
+  const runMentionRate = Number.isFinite(Number(runs.mentionRate))
+    ? Number(runs.mentionRate)
+    : ratio(runs.mentioned, valid);
+  const promptCoverage = Number.isFinite(Number(prompts.mentionCoverage))
+    ? Number(prompts.mentionCoverage)
+    : ratio(prompts.mentioned, prompts.total);
+  const trackedRate = Number.isFinite(Number(tracked.citationRate))
+    ? Number(tracked.citationRate)
+    : ratio(tracked.cited, tracked.total);
+  const citationDensity = valid > 0 ? toNumber(citations.total) / valid : 0;
+
+  const completeness = citationCompleteness(detail);
+  const completenessForScore = completeness.rate == null ? 1 : completeness.rate;
+  const dataQualityScore = score100(
+    0.6 * validRate + 0.25 * completenessForScore + 0.15 * clamp(1 - failureRate),
+  );
+
+  const visibilityParts = [];
+  if (promptCoverage != null) visibilityParts.push({ value: promptCoverage, weight: 0.55 });
+  if (runMentionRate != null) visibilityParts.push({ value: runMentionRate, weight: 0.35 });
+  if (trackedRate != null && toNumber(tracked.total) > 0) visibilityParts.push({ value: trackedRate, weight: 0.1 });
+  const weightSum = visibilityParts.reduce((sum, item) => sum + item.weight, 0);
+  const visibilityIndex = score100(
+    weightSum
+      ? visibilityParts.reduce((sum, item) => sum + item.value * item.weight, 0) / weightSum
+      : 0,
+  );
+
+  const source = sourceMetrics(detail);
+  const category = categoryMetrics(detail);
+  const account = accountMetrics(detail);
+  const sampleConfidence =
+    valid >= 100 ? "高" : valid >= 50 ? "中高" : valid >= 25 ? "中" : valid >= 10 ? "偏低" : "低";
+
+  const ownedScore = trackedRate == null ? null : score100(trackedRate);
+  const geoParts = [
+    { value: dataQualityScore, weight: 0.25 },
+    { value: visibilityIndex, weight: 0.4 },
+    { value: source.diversityScore, weight: 0.2 },
+  ];
+  if (ownedScore != null) geoParts.push({ value: ownedScore, weight: 0.15 });
+  const geoWeight = geoParts.reduce((sum, item) => sum + item.weight, 0);
+  const readinessIndex = Math.round(
+    geoParts.reduce((sum, item) => sum + item.value * item.weight, 0) / geoWeight,
+  );
+
+  const metrics = {
+    assignments,
+    valid,
+    failed,
+    partial,
+    validRate,
+    failureRate,
+    partialRate,
+    runMentionRate,
+    promptCoverage,
+    trackedRate,
+    citationDensity,
+    citationCompleteness: completeness,
+    dataQualityScore,
+    dataQualityGrade: grade(dataQualityScore),
+    dataQualityTone: tone(dataQualityScore),
+    visibilityIndex,
+    visibilityGrade: grade(visibilityIndex),
+    source,
+    category,
+    account,
+    sampleConfidence,
+    readinessIndex,
+    readinessGrade: grade(readinessIndex),
+  };
+
+  return {
+    version: 1,
+    metrics,
+    recommendations: buildRecommendations(metrics),
+    caveats: [
+      "OneGl 评分是基于当前观测数据的内部评估框架，不是豆包官方评分或隐藏排序权重。",
+      "提及、引用和来源分布是相关性证据，不能单独证明某个页面特征导致了引用结果。",
+      valid < 50
+        ? `当前仅 ${valid} 个有效 Run，样本量较小，适合发现方向，不适合宣称稳定规律。`
+        : "当前样本量可用于稳定性观察，但跨时间、跨账号重复仍然重要。",
+      "页面/产品行为可能变化，报告应同时保留批次种子、时间、账号和失败样本口径。",
+    ],
+  };
+}
+
+export function evaluationBrowserBundle() {
+  return [
+    toNumber,
+    ratio,
+    clamp,
+    score100,
+    average,
+    grade,
+    tone,
+    normalizeSourceDistribution,
+    sourceMetrics,
+    citationCompleteness,
+    categoryMetrics,
+    accountMetrics,
+    priority,
+    buildRecommendations,
+    evaluateBatchDetail,
+  ]
+    .map((fn) => fn.toString())
+    .join("\n");
+}
