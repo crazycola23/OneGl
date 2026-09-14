@@ -91,3 +91,36 @@ test("collector keeps only structured evidence and strips endpoint query strings
   assert.equal(evidence.responses[0].endpoint, "https://www.doubao.com/api/chat/stream");
   assert.equal(listeners.has("response"), false);
 });
+
+test("collector parses search evidence nested inside stringified event_data", async () => {
+  const listeners = new Map();
+  const page = {
+    on(event, fn) {
+      listeners.set(event, fn);
+    },
+    off(event, fn) {
+      if (listeners.get(event) === fn) listeners.delete(event);
+    },
+  };
+
+  const collector = createNetworkEvidenceCollector(page, { bodyTimeoutMs: 100 });
+  const nested = {
+    event_data: JSON.stringify({
+      block_type: 10025,
+      block_content: JSON.stringify({
+        queries: ["nested q"],
+        results: [{ url: "https://example.org/source", title: "Nested" }],
+      }),
+    }),
+  };
+  listeners.get("response")({
+    url: () => "https://www.doubao.com/api/chat/stream",
+    status: () => 200,
+    headers: () => ({ "content-type": "text/event-stream" }),
+    body: async () => Buffer.from(`data: ${JSON.stringify(nested)}\n\n`),
+  });
+
+  const evidence = await collector.stop();
+  assert.deepEqual(evidence.queries, ["nested q"]);
+  assert.equal(evidence.retrievedSources[0].canonicalUrl, "https://example.org/source");
+});
