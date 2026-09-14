@@ -21,16 +21,22 @@ function parseBatchId(argv) {
 async function buildReport(batchId) {
   const [summary] = (
     await pool.query(
-      `SELECT
-         count(DISTINCT r.id) FILTER (WHERE r.network_evidence_state = 'found') AS runs_with_network_evidence,
-         count(rs.id) AS retrieved_sources,
-         count(rs.id) FILTER (WHERE rs.visible_citation_id IS NOT NULL) AS exact_citation_matches,
-         count(DISTINCT rs.article_id) AS unique_retrieved_articles,
-         count(DISTINCT rs.article_id) FILTER (WHERE rs.visible_citation_id IS NOT NULL) AS unique_matched_articles,
-         COALESCE(sum(r.search_query_count), 0) AS search_queries
-       FROM runs r
-       LEFT JOIN retrieved_sources rs ON rs.run_id = r.id
-      WHERE r.sampling_batch_id = $1`,
+      `WITH batch_runs AS (
+         SELECT id, network_evidence_state, search_query_count
+           FROM runs
+          WHERE sampling_batch_id = $1
+       ), retrieval AS (
+         SELECT rs.*
+           FROM retrieved_sources rs
+           JOIN batch_runs br ON br.id = rs.run_id
+       )
+       SELECT
+         (SELECT count(*) FROM batch_runs WHERE network_evidence_state = 'found') AS runs_with_network_evidence,
+         (SELECT COALESCE(sum(search_query_count), 0) FROM batch_runs) AS search_queries,
+         (SELECT count(*) FROM retrieval) AS retrieved_sources,
+         (SELECT count(*) FROM retrieval WHERE visible_citation_id IS NOT NULL) AS exact_citation_matches,
+         (SELECT count(DISTINCT article_id) FROM retrieval) AS unique_retrieved_articles,
+         (SELECT count(DISTINCT article_id) FROM retrieval WHERE visible_citation_id IS NOT NULL) AS unique_matched_articles`,
       [batchId],
     )
   ).rows;
@@ -60,15 +66,15 @@ async function buildReport(batchId) {
               r.network_evidence_state,
               r.search_query_count,
               r.retrieved_source_count,
-              count(rs.id) FILTER (WHERE rs.visible_citation_id IS NOT NULL) AS cited_candidates,
-              array_agg(q.query_text ORDER BY q.query_position)
-                FILTER (WHERE q.id IS NOT NULL) AS queries
+              (SELECT count(*)
+                 FROM retrieved_sources rs
+                WHERE rs.run_id = r.id AND rs.visible_citation_id IS NOT NULL) AS cited_candidates,
+              (SELECT array_agg(q.query_text ORDER BY q.query_position)
+                 FROM run_search_queries q
+                WHERE q.run_id = r.id) AS queries
          FROM runs r
          JOIN prompts p ON p.id = r.prompt_id
-         LEFT JOIN retrieved_sources rs ON rs.run_id = r.id
-         LEFT JOIN run_search_queries q ON q.run_id = r.id
         WHERE r.sampling_batch_id = $1
-        GROUP BY r.id, p.prompt
         ORDER BY r.started_at`,
       [batchId],
     )
