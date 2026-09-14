@@ -67,7 +67,7 @@ test("collector keeps only structured evidence and strips endpoint query strings
     },
   };
 
-  const collector = createNetworkEvidenceCollector(page, { bodyTimeoutMs: 100 });
+  const collector = createNetworkEvidenceCollector(page, { bodyTimeoutMs: 100, evidenceEndpoints: [/.*/] });
   const response = {
     url: () => "https://www.doubao.com/api/chat/stream?conversation_id=secret",
     status: () => 200,
@@ -103,7 +103,7 @@ test("collector parses search evidence nested inside stringified event_data", as
     },
   };
 
-  const collector = createNetworkEvidenceCollector(page, { bodyTimeoutMs: 100 });
+  const collector = createNetworkEvidenceCollector(page, { bodyTimeoutMs: 100, evidenceEndpoints: [/.*/] });
   const nested = {
     event_data: JSON.stringify({
       block_type: 10025,
@@ -134,7 +134,7 @@ test("collector drops identifiers and log sentences that are not real queries", 
       if (listeners.get(event) === fn) listeners.delete(event);
     },
   };
-  const collector = createNetworkEvidenceCollector(page, { bodyTimeoutMs: 100 });
+  const collector = createNetworkEvidenceCollector(page, { bodyTimeoutMs: 100, evidenceEndpoints: [/.*/] });
   const response = {
     url: () => "https://www.doubao.com/im/conversation/batch_get",
     status: () => 200,
@@ -159,4 +159,38 @@ test("collector drops identifiers and log sentences that are not real queries", 
 
   assert.deepEqual(evidence.queries, ["绍兴中医馆推荐"]);
   assert.ok(evidence.rejectedQueryCount >= 2);
+});
+test("collector ignores responses that are not this turn's retrieval endpoint", async () => {
+  const listeners = new Map();
+  const page = {
+    on(event, fn) {
+      listeners.set(event, fn);
+    },
+    off(event, fn) {
+      if (listeners.get(event) === fn) listeners.delete(event);
+    },
+  };
+  // Default endpoint policy: only the completion stream counts.
+  const collector = createNetworkEvidenceCollector(page, { bodyTimeoutMs: 100 });
+  const historyResponse = {
+    url: () => "https://www.doubao.com/im/conversation/batch_get",
+    status: () => 200,
+    headers: () => ({ "content-type": "application/json" }),
+    body: async () =>
+      Buffer.from(
+        JSON.stringify({
+          block_type: 10025,
+          queries: ["历史轮次的问题"],
+          results: [{ title: "旧候选", url: "https://example.com/old" }],
+        }),
+      ),
+  };
+
+  listeners.get("response")(historyResponse);
+  const evidence = await collector.stop();
+
+  assert.equal(evidence.state, "none");
+  assert.deepEqual(evidence.queries, []);
+  assert.equal(evidence.retrievedSources.length, 0);
+  assert.equal(evidence.responses.length, 0);
 });

@@ -8,6 +8,16 @@ const ELIGIBLE_CONTENT_TYPE = /(json|event-stream|text\/plain|octet-stream)/i;
 const SEARCH_SIGNAL = /(10025|search_query_result|search_result_block|search_queries)/i;
 const INTERNAL_RESPONSE_HOST = /(doubao\.com|zijieapi|bytedance|byteimg|feiliao)/i;
 
+/**
+ * Endpoints whose payload is *this turn's* retrieval.
+ *
+ * `im/conversation/batch_get` deliberately replays the whole conversation, so mining it
+ * yields hundreds of candidates belonging to earlier, unrelated questions - the collector
+ * previously treated that as a successful capture. Only the completion stream carries the
+ * search blocks for the turn currently being run.
+ */
+const DEFAULT_EVIDENCE_ENDPOINTS = [/\/chat\/completion/i];
+
 function compactText(value, max = 1_000) {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
   return text ? text.slice(0, max) : null;
@@ -306,6 +316,9 @@ export function createNetworkEvidenceCollector(page, options = {}) {
   // in one go. Without this gate a single run "discovers" hundreds of candidates from
   // earlier, unrelated questions, and the retrieval layer becomes unusable.
   const getTurnId = typeof options.getTurnId === "function" ? options.getTurnId : null;
+  const evidenceEndpoints = Array.isArray(options.evidenceEndpoints) && options.evidenceEndpoints.length
+    ? options.evidenceEndpoints
+    : DEFAULT_EVIDENCE_ENDPOINTS;
   const pending = new Set();
   const responseEvidence = [];
   const querySet = new Set();
@@ -356,8 +369,14 @@ export function createNetworkEvidenceCollector(page, options = {}) {
     return Boolean(evidence.queries.length || evidence.retrievedSources.length);
   };
 
+  const isEvidenceEndpoint = (rawUrl) => evidenceEndpoints.some((pattern) => pattern.test(rawUrl));
+
   const captureResponse = async (response) => {
     if (!eligibleResponse(response)) return;
+    // Everything else on the page (settings, banners, conversation history, monitoring) is
+    // noise. Not reading it keeps the artifact small and, more importantly, keeps other
+    // turns' retrieval out of this turn's data.
+    if (!isEvidenceEndpoint(response.url())) return;
 
     const headers = response.headers();
     const contentLength = Number(headers["content-length"] || 0);
@@ -411,7 +430,7 @@ export function createNetworkEvidenceCollector(page, options = {}) {
     // One row per captured response, capped so a long-lived page cannot grow the artifact
     // without bound. `matched` records whether this response actually carried search
     // evidence, which is what makes an empty retrieval layer explainable.
-    if (responseEvidence.length < 50) {
+    if (responseEvidence.length < 200) {
       responseEvidence.push({
         endpoint,
         status: response.status(),

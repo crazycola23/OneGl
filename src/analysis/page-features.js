@@ -172,6 +172,31 @@ export function decodeHtmlBytes(bytes, contentType = "") {
   }
 }
 
+/**
+ * Fake-IP ranges used by transparent proxies (Clash/Surge-style).
+ *
+ * On such a network every hostname resolves into 198.18.0.0/15 and the proxy performs the
+ * real resolution at connect time, so a public site looks like a reserved address. Blocking
+ * it is a false positive: the request never goes to 198.18.0.x.
+ *
+ * This is off by default and enabled explicitly via ONEGL_TRUST_PROXY_FAKE_IP, because
+ * allowing it does remove a layer of SSRF defence: on an ordinary network a 198.18 address
+ * would be reachable. Genuine private/loopback/ULA ranges stay blocked either way.
+ */
+const FAKE_IP_RANGES = [
+  [198, 18, 15],
+];
+
+function inFakeIpRange(address) {
+  if (!net.isIPv4(address)) return false;
+  const [a, b, c] = address.split(".").map(Number);
+  return FAKE_IP_RANGES.some(([ra, rb, rc]) => a === ra && b === rb && c >= 0 && c <= rc);
+}
+
+function trustProxyFakeIp() {
+  return /^(1|true|yes|on)$/i.test(String(process.env.ONEGL_TRUST_PROXY_FAKE_IP ?? "").trim());
+}
+
 function isPrivateIp(address) {
   if (!net.isIP(address)) return true;
   if (net.isIPv4(address)) {
@@ -205,7 +230,10 @@ export async function assertPublicHttpUrl(value) {
     throw Object.assign(new Error("localhost is not allowed"), { code: "PAGE_URL_PRIVATE" });
   }
   const records = net.isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: true });
-  if (!records.length || records.some((record) => isPrivateIp(record.address))) {
+  const usable = records.filter(
+    (record) => !isPrivateIp(record.address) || (trustProxyFakeIp() && inFakeIpRange(record.address)),
+  );
+  if (!records.length || !usable.length) {
     throw Object.assign(new Error("private/reserved destination is not allowed"), { code: "PAGE_URL_PRIVATE" });
   }
   return url;
