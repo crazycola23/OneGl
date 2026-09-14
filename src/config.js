@@ -73,6 +73,17 @@ export function loadConfig(overrides = {}) {
     conversationSettleMs:
       overrides.conversationSettleMs ??
       intEnv("DOUBAO_CONVERSATION_SETTLE_MS", 15_000, 0),
+    // Passive network/SSE evidence is opt-in until a real-account validation run proves
+    // the current Doubao stream shape. It never changes visible-citation truth semantics.
+    networkEvidenceEnabled:
+      overrides.networkEvidenceEnabled ??
+      boolEnv(process.env.ONEGL_NETWORK_EVIDENCE, false),
+    networkEvidenceMaxBodyBytes:
+      overrides.networkEvidenceMaxBodyBytes ??
+      intEnv("ONEGL_NETWORK_MAX_BODY_BYTES", 4 * 1024 * 1024, 1_024),
+    networkEvidenceBodyTimeoutMs:
+      overrides.networkEvidenceBodyTimeoutMs ??
+      intEnv("ONEGL_NETWORK_BODY_TIMEOUT_MS", 8_000, 100),
     port: overrides.port ?? intEnv("ONEGL_PORT", 3_100, 1),
   };
 }
