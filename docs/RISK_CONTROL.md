@@ -57,6 +57,29 @@ These are **OneGl safety defaults**, not official Doubao limits and not a claim 
 platform detection thresholds. Users remain responsible for applicable terms, permissions and any
 published limits.
 
+### Dashboard risk controls
+
+The operator console now uses the same shared risk model as `npm run risk:audit`.
+
+On the homepage and Accounts page it shows:
+
+- overall local operational risk (`low` / `medium` / `high`);
+- per-account risk and explicit reasons;
+- today’s account usage versus the daily ceiling;
+- recent one-hour usage versus the rolling hourly ceiling, calculated from OneGl’s existing Runs
+  data without making another provider request;
+- the next time an account is expected to be eligible to run again when the reason is a cooldown,
+  minimum inter-run gap, daily ceiling, or rolling hourly ceiling;
+- current active batch count.
+
+The left sidebar also exposes a compact risk lamp on every page.
+
+The **一键暂停当前全部采集** button reuses the existing batch stop operation for every currently
+queued/running batch. Waiting jobs are cancelled; a browser task that is already executing is
+allowed to finish safely. The control does not clear or overwrite account states such as
+`rate_limited`, `verification_required`, or `access_restricted`, and it does not solve or bypass
+platform controls.
+
 ### Verification / restriction handling
 
 These states remain fail-closed and require manual handling:
@@ -104,7 +127,7 @@ low result is not an assurance that automation is permitted.
 
 For a new account/session or after a UI change:
 
-1. run `npm run risk:audit`;
+1. run `npm run risk:audit` and check the Dashboard risk panel;
 2. keep the browser visible;
 3. run a very small fixed validation set first;
 4. stop immediately if verification, access restriction or repeated rate-limit signals appear;
