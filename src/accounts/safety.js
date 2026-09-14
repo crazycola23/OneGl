@@ -4,7 +4,7 @@
  * 目标不是绕过平台风控，而是避免自动化脚本在账号异常时持续撞击平台：
  * 达到条件就停下来等人工处理，而不是无限重试。
  *
- * 这里不做任何验证码识别或限制规避。
+ * 这里不做任何验证码识别、行为伪装或限制规避。
  */
 
 function intEnv(name, fallback, min = 1) {
@@ -18,28 +18,34 @@ function intEnv(name, fallback, min = 1) {
 }
 
 export function safetyConfig() {
-  const minDelayMs = intEnv("ONEGL_MIN_DELAY_MS", 4_000, 0);
-  const maxDelayMs = intEnv("ONEGL_MAX_DELAY_MS", 9_000, 0);
+  // Conservative defaults: the collector is account-bound browser automation, so prefer
+  // a slower, bounded cadence over maximum throughput. These are OneGl defaults, not
+  // claims about any unpublished platform threshold.
+  const minDelayMs = intEnv("ONEGL_MIN_DELAY_MS", 15_000, 0);
+  const maxDelayMs = intEnv("ONEGL_MAX_DELAY_MS", 30_000, 0);
   if (maxDelayMs < minDelayMs) {
     throw new Error("ONEGL_MAX_DELAY_MS 不能小于 ONEGL_MIN_DELAY_MS");
   }
   return {
     minDelayMs,
     maxDelayMs,
+    minInterRunMs: intEnv("ONEGL_MIN_INTER_RUN_SECONDS", 15, 0) * 1_000,
+    accountHourlyLimit: intEnv("ONEGL_ACCOUNT_HOURLY_LIMIT", 20, 1),
     accountDailyLimit: intEnv("ONEGL_ACCOUNT_DAILY_LIMIT", 60),
     maxConsecutiveFailures: intEnv("ONEGL_MAX_CONSECUTIVE_FAILURES", 3),
-    cooldownMinutes: intEnv("ONEGL_ACCOUNT_COOLDOWN_MINUTES", 30, 1),
+    cooldownMinutes: intEnv("ONEGL_ACCOUNT_COOLDOWN_MINUTES", 60, 1),
+    rateLimitCooldownMinutes: intEnv("ONEGL_RATE_LIMIT_COOLDOWN_MINUTES", 120, 1),
     accountParallelism: intEnv("ONEGL_ACCOUNT_PARALLELISM", 1),
   };
 }
 
-/** 两次提问之间在配置区间内随机等待，降低机械化请求与服务端突发负载。 */
+/** 两次提问之间在配置区间内随机等待，降低机械化突发负载。 */
 export function randomDelayMs({ minDelayMs, maxDelayMs }) {
   if (maxDelayMs <= minDelayMs) return minDelayMs;
   return minDelayMs + Math.floor(Math.random() * (maxDelayMs - minDelayMs + 1));
 }
 
-/** 需要停下来等人工处理的错误：绝不自动重试。 */
+/** 需要停下来等人工处理或长冷却的错误：绝不立即自动重试。 */
 export const ACCOUNT_BLOCKING_CODES = {
   DOUBAO_LOGIN_REQUIRED: {
     status: "login_required",
@@ -64,7 +70,7 @@ export const ACCOUNT_BLOCKING_CODES = {
   RATE_LIMITED: {
     status: "rate_limited",
     manual: false,
-    message: "触发频率限制，进入冷却",
+    message: "触发频率限制，进入长冷却",
   },
 };
 
@@ -72,7 +78,6 @@ export const ACCOUNT_BLOCKING_CODES = {
 export const RETRYABLE_CODES = new Set([
   "DOUBAO_TIMEOUT",
   "NETWORK_ERROR",
-  // Playwright 自身的瞬时超时（元素被重渲染等）也走这里，重试上限同样是 2 次
   "UNKNOWN_ERROR",
   // 会话没能确认是干净的新会话：属于页面状态问题，重试可能就好，但绝不带着旧上下文提问。
   "DOUBAO_CONVERSATION_RESET_FAILED",
@@ -88,10 +93,6 @@ export function isBlocking(code) {
 
 // ---------------------------------------------------------------------------
 // 自然日与时区
-//
-// 「每日提问上限」必须按账号所在的自然日算。OneGl 当前只面向中国豆包账号，
-// 用 UTC 自然日会让北京时间 08:00 之前的提问算到前一天，限额实际是错位的。
-// 因此这里显式使用账号时区，不依赖服务器本地时区。
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_ACCOUNT_TIME_ZONE = "Asia/Shanghai";
@@ -111,7 +112,6 @@ export function accountTimeZone() {
 
 /** 某个瞬间在账号时区里属于哪一天，返回 YYYY-MM-DD。 */
 export function accountDayKey(now = new Date(), timeZone = accountTimeZone()) {
-  // en-CA 的短日期格式就是 YYYY-MM-DD
   return new Intl.DateTimeFormat("en-CA", {
     timeZone,
     year: "numeric",
@@ -166,7 +166,6 @@ export function nextAccountDayStart(now = new Date(), timeZone = accountTimeZone
 export function dateKeyOf(value) {
   if (value == null) return null;
   if (value instanceof Date) {
-    // node-postgres 把 date 解析成本地零点的 Date，因此读本地分量。
     const year = value.getFullYear();
     const month = String(value.getMonth() + 1).padStart(2, "0");
     const day = String(value.getDate()).padStart(2, "0");
@@ -182,10 +181,7 @@ export function dateKeyOf(value) {
 
 export const AVAILABILITY = Object.freeze({
   AVAILABLE: "available",
-  // 临时：冷却、频率限制、当日额度用完。任务应当延迟到 retryAt 再跑，不能丢掉。
   TEMPORARY: "temporary",
-  // 永久/人工：禁用、登录失效、需要验证码、被限制访问、人工暂停。
-  // 这类要停止继续撞账号，等人工处理。
   PERMANENT: "permanent",
 });
 
@@ -223,6 +219,31 @@ export function classifyAccountState(state, { config = safetyConfig(), now = new
     };
   }
 
+  const minInterRunMs = Number(config.minInterRunMs ?? 0);
+  const lastRunAt = state.last_run_at ? new Date(state.last_run_at) : null;
+  if (lastRunAt && minInterRunMs > 0) {
+    const retryAt = new Date(lastRunAt.getTime() + minInterRunMs);
+    if (retryAt > now) {
+      return {
+        kind: AVAILABILITY.TEMPORARY,
+        reason: `距离上次运行过近，至少间隔 ${Math.ceil(minInterRunMs / 1000)} 秒`,
+        retryAt,
+      };
+    }
+  }
+
+  const hourlyLimit = Number(config.accountHourlyLimit ?? Number.POSITIVE_INFINITY);
+  const runsLastHour = Number(state.runs_last_hour ?? 0);
+  if (Number.isFinite(hourlyLimit) && runsLastHour >= hourlyLimit) {
+    const oldest = state.hour_window_oldest ? new Date(state.hour_window_oldest) : now;
+    const retryAt = new Date(oldest.getTime() + 60 * 60_000 + 1_000);
+    return {
+      kind: AVAILABILITY.TEMPORARY,
+      reason: `已达每小时上限 ${hourlyLimit} 次`,
+      retryAt: retryAt > now ? retryAt : new Date(now.getTime() + 60_000),
+    };
+  }
+
   return { kind: AVAILABILITY.AVAILABLE, reason: null, retryAt: null };
 }
 
@@ -239,10 +260,26 @@ export async function ensureAccountRow(pool, accountKey, provider = "doubao") {
 
 export async function getAccountState(pool, accountKey, provider = "doubao") {
   const { rows } = await pool.query(
-    `SELECT account_key, provider, enabled, status, last_run_at, runs_today, runs_today_date,
-            consecutive_failures, cooldown_until, paused_at, pause_reason, last_error_code,
-            last_health_status, last_health_checked_at, storage_state_present
-       FROM accounts WHERE provider = $2 AND account_key = $1`,
+    `SELECT a.account_key, a.provider, a.enabled, a.status, a.last_run_at,
+            a.runs_today, a.runs_today_date, a.consecutive_failures, a.cooldown_until,
+            a.paused_at, a.pause_reason, a.last_error_code, a.last_health_status,
+            a.last_health_checked_at, a.storage_state_present,
+            COALESCE((
+              SELECT count(*)::integer
+                FROM runs r
+               WHERE r.account_key = a.account_key
+                 AND r.provider = a.provider
+                 AND r.started_at >= now() - interval '1 hour'
+            ), 0) AS runs_last_hour,
+            (
+              SELECT min(r.started_at)
+                FROM runs r
+               WHERE r.account_key = a.account_key
+                 AND r.provider = a.provider
+                 AND r.started_at >= now() - interval '1 hour'
+            ) AS hour_window_oldest
+       FROM accounts a
+      WHERE a.provider = $2 AND a.account_key = $1`,
     [accountKey, provider],
   );
   return rows[0] ?? null;
@@ -250,11 +287,7 @@ export async function getAccountState(pool, accountKey, provider = "doubao") {
 
 /**
  * 是否可以继续给这个账号派活。
- *
- * kind 决定调用方的动作：
- *   available -> 正常执行
- *   temporary -> 延迟到 retryAt 再跑，不能把任务丢掉
- *   permanent -> 跳过并停止继续撞击该账号，等人工处理
+ * kind 决定调用方的动作：available -> 执行；temporary -> 延迟；permanent -> 人工处理。
  */
 export async function accountAvailability(pool, accountKey, config = safetyConfig()) {
   const state = await getAccountState(pool, accountKey);
@@ -305,10 +338,7 @@ export async function recordAccountSuccess(pool, accountKey, provider = "doubao"
   );
 }
 
-/**
- * 记录失败。命中阻塞类错误时直接暂停/冷却；普通失败累计到阈值后进入冷却。
- * 返回一个说明对象，供调用方决定是否跳过该账号的后续任务。
- */
+/** 记录失败；阻塞类错误直接暂停/冷却，普通失败累计到阈值后进入冷却。 */
 export async function recordAccountFailure(
   pool,
   { accountKey, errorCode, provider = "doubao", config = safetyConfig() },
@@ -316,9 +346,17 @@ export async function recordAccountFailure(
   const blocking = ACCOUNT_BLOCKING_CODES[errorCode];
 
   if (blocking) {
+    const cooldownMinutes =
+      errorCode === "RATE_LIMITED"
+        ? Number(config.rateLimitCooldownMinutes ?? config.cooldownMinutes)
+        : config.cooldownMinutes;
     const cooldownUntil = blocking.manual
       ? null
-      : new Date(Date.now() + config.cooldownMinutes * 60_000).toISOString();
+      : new Date(Date.now() + cooldownMinutes * 60_000).toISOString();
+    const message =
+      errorCode === "RATE_LIMITED"
+        ? `${blocking.message} ${cooldownMinutes} 分钟`
+        : blocking.message;
     await pool.query(
       `UPDATE accounts
           SET status = $3,
@@ -330,9 +368,9 @@ export async function recordAccountFailure(
               cooldown_until = $6,
               updated_at = now()
         WHERE provider = $2 AND account_key = $1`,
-      [accountKey, provider, blocking.status, blocking.message, errorCode, cooldownUntil],
+      [accountKey, provider, blocking.status, message, errorCode, cooldownUntil],
     );
-    return { blocked: true, status: blocking.status, message: blocking.message, manual: blocking.manual };
+    return { blocked: true, status: blocking.status, message, manual: blocking.manual };
   }
 
   const { rows } = await pool.query(
