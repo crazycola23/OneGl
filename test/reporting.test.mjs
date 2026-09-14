@@ -63,8 +63,8 @@ function fixture(overrides = {}) {
 test("专业评估同时考虑数据质量、品牌可见度和来源集中度", () => {
   const evaluation = evaluateBatchDetail(fixture());
   assert.ok(evaluation.metrics.dataQualityScore >= 70);
-  assert.equal(evaluation.metrics.visibilityIndex, 45);
-  assert.equal(evaluation.metrics.source.concentrationLabel, "中度集中");
+  assert.equal(evaluation.metrics.visibilityIndex, 42);
+  assert.equal(evaluation.metrics.source.concentrationLabel, "高度集中");
   assert.ok(evaluation.recommendations.some((item) => /目标文章/.test(item.title)));
   assert.ok(evaluation.recommendations.some((item) => /来源依赖/.test(item.title)));
 });
