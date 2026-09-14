@@ -56,13 +56,16 @@ export function twoProportionPValue(successA, totalA, successB, totalB) {
 
 export function benjaminiHochberg(values) {
   const rows = values
-    .map((value, index) => ({ index, value: Number(value) }))
+    .map((value, index) => ({ index, raw: value }))
+    .filter((row) => row.raw != null && row.raw !== "")
+    .map((row) => ({ ...row, value: Number(row.raw) }))
     .filter((row) => Number.isFinite(row.value) && row.value >= 0 && row.value <= 1)
     .sort((a, b) => a.value - b.value);
   const out = Array(values.length).fill(null);
   let running = 1;
+  const tested = rows.length;
   for (let i = rows.length - 1; i >= 0; i -= 1) {
-    const adjusted = Math.min(1, (rows[i].value * rows.length) / (i + 1));
+    const adjusted = Math.min(1, (rows[i].value * tested) / (i + 1));
     running = Math.min(running, adjusted);
     out[rows[i].index] = running;
   }
