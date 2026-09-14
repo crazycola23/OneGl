@@ -28,6 +28,7 @@
     "batch:start": "node src/cli.js batch-start",
     "batch:stop": "node src/cli.js batch-stop",
     "worker": "node src/worker.js",
+    "risk:audit": "node tools/risk-audit.js",
     "report": "node src/cli.js report",
     "report:retrieval": "node tools/retrieval-report.js",
     "report:factors": "node tools/citation-factor-report.js",
