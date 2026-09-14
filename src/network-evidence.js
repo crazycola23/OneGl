@@ -1,3 +1,4 @@
+import { StringDecoder } from "node:string_decoder";
 import { canonicalizeUrl, domainFromUrl, isExternalSourceUrl } from "./url.js";
 
 const SEARCH_BLOCK_TYPE = "10025";
@@ -396,6 +397,13 @@ export function createNetworkEvidenceCollector(page, options = {}) {
     // The stream is scanned as it arrives, and the same buffer is scanned once more at the
     // end: a search block can straddle a chunk boundary, and the final parse is what catches
     // it once more bytes have landed.
+    // Decode with a stateful decoder.
+    //
+    // Calling chunk.toString("utf8") per chunk corrupts any multi-byte character that
+    // straddles a chunk boundary: the decoder sees an incomplete sequence and emits a
+    // replacement character, and the information is gone. StringDecoder holds the partial
+    // bytes until the rest arrives, which is what makes Chinese titles survive the split.
+    const decoder = new StringDecoder("utf8");
     let buffered = "";
     let sawEvidence = false;
     const record = () => {
@@ -406,11 +414,12 @@ export function createNetworkEvidenceCollector(page, options = {}) {
       if (sawEvidence) buffered = "";
     };
 
+
     const read = await readStreamIncrementally(body, {
       maxBytes: maxBodyBytes,
       stopSignal,
       onChunk: (chunk) => {
-        buffered += chunk.toString("utf8");
+        buffered += decoder.write(chunk);
         // Bound the working buffer: a stream can be far larger than one response.
         if (buffered.length > 4 * maxBodyBytes) buffered = buffered.slice(-2 * maxBodyBytes);
         // Parse whenever a plausible block terminator has arrived, plus periodically so a
@@ -418,6 +427,7 @@ export function createNetworkEvidenceCollector(page, options = {}) {
         if (blockCount(buffered) || buffered.length > 16_384) record();
       },
     });
+    buffered += decoder.end();
     record();
 
     const endpoint = endpointIdentity(response.url()) || "unknown";
