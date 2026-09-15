@@ -132,9 +132,9 @@ test("未配置目标文章时保持 N/A，不把 0/0 解释成 0% 或压低准�
   assert.ok(!evaluation.recommendations.some((item) => /目标文章/.test(item.title)));
 
   const html = buildHtmlReportWithFactors(detail, evaluation, { generatedAt: "2026-09-14T07:00:00Z" });
-  assert.match(html, /目标文章引用率<\/label><strong>N\/A<\/strong><small>未配置目标文章/);
+  assert.match(html, /自有内容引用<\/label><strong>N\/A<\/strong><small>未配置目标文章/);
   assert.match(html, /未配置目标文章，不计为 0%/);
-  assert.doesNotMatch(html, /目标文章引用率<\/label><strong>0\.0%/);
+  assert.doesNotMatch(html, /(?:目标文章引用率|自有内容引用)<\/label><strong>0\.0%/);
 });
 
 test("调优摘要优先展示瓶颈、最弱意图、证据可行动性和下一轮动作", () => {
