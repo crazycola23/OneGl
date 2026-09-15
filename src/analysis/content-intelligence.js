@@ -59,12 +59,20 @@ function classifyContentProfile({ titleText, outline, tableCount, listCount, faq
   const text = `${title} ${headings}`;
   const lowerSchemas = new Set((schemaTypes ?? []).map((value) => String(value).toLowerCase()));
 
+  // Strong title-level intent beats generic wording deeper in the page. For example,
+  // “机构推荐” should remain recommendation_list even when an H1 also says “怎么选”.
+  const titleRecommendation = /推荐|排行|排名|榜单|盘点|哪家|哪里好|去哪/.test(title);
+  const titleComparison = /对比|比较|区别|差异|\bvs\b|哪个好/.test(title);
+
   let type = "informational";
   if (lowerSchemas.has("newsarticle") || /新闻|消息|发布|宣布|通报|快讯/.test(title)) type = "news";
+  else if (titleRecommendation) type = "recommendation_list";
+  else if (titleComparison) type = "comparison";
+  else if (/评测|测评|体验|怎么样|靠谱吗|值得吗/.test(title)) type = "review";
+  else if (/推荐|排行|排名|榜单|盘点|哪家|哪里好|去哪/.test(text)) type = "recommendation_list";
   else if (/对比|比较|区别|差异|\bvs\b|哪个好|怎么选/.test(text)) type = "comparison";
   else if (/评测|测评|体验|怎么样|靠谱吗|值得吗/.test(text)) type = "review";
   else if (/如何|怎么|步骤|教程|指南|方法|操作/.test(text)) type = "how_to";
-  else if (/推荐|排行|排名|榜单|盘点|哪家|哪里好|去哪/.test(text)) type = "recommendation_list";
   else if (faqHeadingCount >= 2 || lowerSchemas.has("faqpage")) type = "faq";
 
   const structure = [];
