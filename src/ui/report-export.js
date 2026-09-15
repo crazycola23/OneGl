@@ -55,7 +55,7 @@ function browserBootstrapSource() {
   function promptOpportunityTable(detail){
     const opportunity = buildPromptOpportunities(detail, { maxRows: 20 });
     if (!opportunity.rows.length) {
-      return '<div style="margin:14px;padding:14px;border:1px solid var(--border-solid);border-radius:10px"><b>Prompt 优化机会</b><div class="hint" style="margin-top:5px">当前批次没有可聚合的 Prompt Run 数据。</div></div>';
+      return '<div style="margin:14px;padding:14px;border:1px solid var(--border-solid);border-radius:10px"><b>二级 Prompt 调优机会</b><div class="hint" style="margin-top:5px">当前批次没有可聚合的 Prompt Run 数据。</div></div>';
     }
     const rows = opportunity.rows.map(function(row){
       const mention = row.mentionRate == null ? 'N/A' : reportPct(row.mentionRate);
@@ -76,9 +76,9 @@ function browserBootstrapSource() {
     }).join('');
     const truncation = opportunity.truncated
       ? '<div class="hint" style="margin:8px 0;color:var(--warn)">批次共有 ' + safeText(opportunity.assignmentCount) + ' 个分配 Run，但 API 当前只返回 ' + safeText(opportunity.observedRuns) + ' 个 Run；下表仅作局部诊断，不代表完整问题池。</div>'
-      : '<div class="hint" style="margin:8px 0">按真实 Run 聚合；不建立未经验证的 Query → Source 归因。0 提及优先于“总引用很多”进入调优队列。</div>';
+      : '<div class="hint" style="margin:8px 0">按真实 Run 聚合；不建立未经验证的 Query → Source 因果归因。这里是主情报视图之后的调优辅助层。</div>';
     return '<div style="margin:14px;border:1px solid var(--border-solid);border-radius:10px;overflow:hidden">' +
-      '<div style="padding:12px 14px;border-bottom:1px solid var(--border-solid)"><b>Prompt 优化机会</b><div class="hint">直接回答“先优化哪些问题”。状态来自有效 Run 的品牌提及稳定性，不是隐藏排名分。</div>' + truncation + '</div>' +
+      '<div style="padding:12px 14px;border-bottom:1px solid var(--border-solid)"><b>二级 Prompt 调优机会</b><div class="hint">先看上方“搜索问题 → 品牌 → 引用链接 → 引用内容”，再用这里给补跑/调优排序。</div>' + truncation + '</div>' +
       '<div style="overflow:auto"><table><thead><tr><th>优先级</th><th>Prompt / 分类</th><th>有效 / 总 Run</th><th>提及率</th><th>平均可见引用</th><th>状态 / 下一步</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       '</div>';
   }
@@ -89,6 +89,8 @@ function browserBootstrapSource() {
     const summary = optimizationSummaryData(detail, evaluation);
     const existing = document.getElementById('batch-professional-evaluation');
     if (existing) existing.remove();
+    const existingIntel = document.getElementById('brand-source-intelligence');
+    if (existingIntel) existingIntel.remove();
 
     const section = document.createElement('section');
     section.className = 'card';
@@ -127,7 +129,7 @@ function browserBootstrapSource() {
         '</div>'
       : '<div class="hint" style="padding:14px">保持固定 Prompt 池、种子和时间窗继续扩样，先建立可重复基线。</div>';
 
-    section.innerHTML = '<div class="card-head"><strong>GEO 调优摘要</strong><span>先看瓶颈和可行动性，综合分只做趋势参考</span></div>' +
+    section.innerHTML = '<div class="card-head"><strong>二级 GEO 调优诊断</strong><span>主视图先看品牌与引用情报；这里负责瓶颈、证据和实验建议</span></div>' +
       '<div class="card-body">' +
       '<div style="margin:14px;padding:14px 16px;border:1px solid var(--border-solid);border-left:4px solid var(--accent);border-radius:10px">' +
         '<div class="hint">当前首要瓶颈</div>' +
@@ -166,11 +168,24 @@ function browserBootstrapSource() {
         '</div>' +
       '</details>' +
       '<div style="border-top:1px solid var(--border-solid)">' + recommendations + '</div>' +
-      '<div class="hint" style="padding:12px 14px;margin:0">解释顺序固定为 Outcome → Diagnostic → Evidence → Action。不要把总引用数、综合准备度或单批次相关性直接当成页面改版依据。</div>' +
+      '<div class="hint" style="padding:12px 14px;margin:0">主分析对象是搜索问题、AI 品牌提及、可见引用 URL、引用页内容与品牌证据；这里的综合分与因子分析仅作为后续实验辅助。</div>' +
       '</div>';
 
     const head = document.querySelector('.page-head');
-    if (head && head.parentNode) head.insertAdjacentElement('afterend', section);
+    if (head && head.parentNode) {
+      let anchor = head;
+      const intelligenceMarkup = brandSourceIntelligenceHtml(detail, { dashboard: true });
+      if (intelligenceMarkup) {
+        const holder = document.createElement('div');
+        holder.innerHTML = intelligenceMarkup;
+        const intelligenceSection = holder.firstElementChild;
+        if (intelligenceSection) {
+          head.insertAdjacentElement('afterend', intelligenceSection);
+          anchor = intelligenceSection;
+        }
+      }
+      anchor.insertAdjacentElement('afterend', section);
+    }
     return evaluation;
   }
 
@@ -239,7 +254,7 @@ function browserBootstrapSource() {
 
   ensureActions();
   loadDetail().then(renderEvaluation).catch(function(error){
-    console.warn('[OneGl] optimization evaluation unavailable', error);
+    console.warn('[OneGl] brand/source intelligence unavailable', error);
   });
 })();`;
 }
