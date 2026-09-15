@@ -1,8 +1,9 @@
 import { evaluationBrowserBundle } from "../report/evaluation.js";
 import { htmlReportWithFactorsBrowserBundle } from "../report/html-report-factors.js";
+import { promptOpportunityBrowserBundle } from "../report/prompt-opportunities.js";
 
 function browserBootstrapSource() {
-  return `${evaluationBrowserBundle()}\n${htmlReportWithFactorsBrowserBundle()}\n
+  return `${evaluationBrowserBundle()}\n${htmlReportWithFactorsBrowserBundle()}\n${promptOpportunityBrowserBundle()}\n
 (function(){
   const match = window.location.pathname.match(/^\\/batches\\/(\\d+)$/);
   if (!match) return;
@@ -47,6 +48,37 @@ function browserBootstrapSource() {
 
   function pctOrNA(value){
     return value == null ? 'N/A' : reportPct(value);
+  }
+
+  function promptOpportunityTable(detail){
+    const opportunity = buildPromptOpportunities(detail, { maxRows: 20 });
+    if (!opportunity.rows.length) {
+      return '<div style="margin:14px;padding:14px;border:1px solid var(--border-solid);border-radius:10px"><b>Prompt 优化机会</b><div class="hint" style="margin-top:5px">当前批次没有可聚合的 Prompt Run 数据。</div></div>';
+    }
+    const rows = opportunity.rows.map(function(row){
+      const mention = row.mentionRate == null ? 'N/A' : reportPct(row.mentionRate);
+      const citations = row.citationDensity == null ? 'N/A' : Number(row.citationDensity).toFixed(2);
+      const stateTone = row.key === 'DATA_GAP' || row.key === 'NO_MENTION'
+        ? 'var(--bad)'
+        : row.key === 'WEAK_MENTION' || row.key === 'UNSTABLE_MENTION'
+          ? 'var(--warn)'
+          : 'var(--ok)';
+      return '<tr>' +
+        '<td><span style="font-weight:700;color:' + stateTone + '">' + safeText(row.priority) + '</span></td>' +
+        '<td><div style="font-weight:650">' + safeText(row.prompt) + '</div><div class="hint">' + safeText(row.category) + '</div></td>' +
+        '<td>' + safeText(row.validRuns) + ' / ' + safeText(row.totalRuns) + '</td>' +
+        '<td>' + safeText(mention) + '</td>' +
+        '<td>' + safeText(citations) + '</td>' +
+        '<td><b>' + safeText(row.label) + '</b><div class="hint" style="margin-top:3px">' + safeText(row.action) + '</div></td>' +
+      '</tr>';
+    }).join('');
+    const truncation = opportunity.truncated
+      ? '<div class="hint" style="margin:8px 0;color:var(--warn)">批次共有 ' + safeText(opportunity.assignmentCount) + ' 个分配 Run，但 API 当前只返回 ' + safeText(opportunity.observedRuns) + ' 个 Run；下表仅作局部诊断，不代表完整问题池。</div>'
+      : '<div class="hint" style="margin:8px 0">按真实 Run 聚合；不建立未经验证的 Query → Source 归因。0 提及优先于“总引用很多”进入调优队列。</div>';
+    return '<div style="margin:14px;border:1px solid var(--border-solid);border-radius:10px;overflow:hidden">' +
+      '<div style="padding:12px 14px;border-bottom:1px solid var(--border-solid)"><b>Prompt 优化机会</b><div class="hint">直接回答“先优化哪些问题”。状态来自有效 Run 的品牌提及稳定性，不是隐藏排名分。</div>' + truncation + '</div>' +
+      '<div style="overflow:auto"><table><thead><tr><th>优先级</th><th>Prompt / 分类</th><th>有效 / 总 Run</th><th>提及率</th><th>平均可见引用</th><th>状态 / 下一步</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '</div>';
   }
 
   function renderEvaluation(detail){
@@ -123,6 +155,7 @@ function browserBootstrapSource() {
       '</div>' +
 
       actionBlock +
+      promptOpportunityTable(detail) +
       '<details style="margin:14px"><summary style="cursor:pointer;font-weight:650">内部趋势评分（辅助）</summary>' +
         '<div class="stats" style="margin-top:10px">' +
           scoreCard('品牌可见度', metrics.visibilityIndex, '用于同项目批次趋势') +
