@@ -24,6 +24,14 @@ export function accountQueueName(accountKey) {
   return `${queuePrefix()}-run-${accountKey}`;
 }
 
+/**
+ * 引用页内容分析使用独立队列，不能占用账号采集队列。
+ * 这里不按账号拆分：抓第三方公开网页与豆包登录会话是两条完全独立的资源链。
+ */
+export function sourceIntelligenceQueueName() {
+  return `${queuePrefix()}-source-intelligence`;
+}
+
 let sharedConnection = null;
 
 export function getRedis() {
