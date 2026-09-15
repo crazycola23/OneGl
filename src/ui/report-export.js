@@ -13,12 +13,22 @@ function browserBootstrapSource() {
   if (!Number.isFinite(batchId)) return;
 
   let detailPromise = null;
-  function loadDetail(){
+  let intelligencePollTimer = null;
+  let intelligencePollCount = 0;
+  const INTELLIGENCE_POLL_MS = 5000;
+  const MAX_INTELLIGENCE_POLLS = 120;
+
+  function loadDetail(force){
+    if (force) detailPromise = null;
     if (!detailPromise) {
       detailPromise = fetch('/api/batches/' + batchId, { cache: 'no-store' })
         .then(function(response){
           if (!response.ok) throw new Error('读取批次报告数据失败：HTTP ' + response.status);
           return response.json();
+        })
+        .catch(function(error){
+          detailPromise = null;
+          throw error;
         });
     }
     return detailPromise;
@@ -189,6 +199,30 @@ function browserBootstrapSource() {
     return evaluation;
   }
 
+  function shouldPollIntelligence(detail){
+    const job = detail && detail.intelligence && detail.intelligence.job;
+    if (!job) return false;
+    return job.stale === true || job.status === 'queued' || job.status === 'running';
+  }
+
+  function scheduleIntelligencePoll(detail){
+    if (intelligencePollTimer) {
+      clearTimeout(intelligencePollTimer);
+      intelligencePollTimer = null;
+    }
+    if (!shouldPollIntelligence(detail) || intelligencePollCount >= MAX_INTELLIGENCE_POLLS) return;
+    intelligencePollTimer = setTimeout(function(){
+      intelligencePollCount += 1;
+      loadDetail(true).then(function(fresh){
+        renderEvaluation(fresh);
+        scheduleIntelligencePoll(fresh);
+      }).catch(function(error){
+        console.warn('[OneGl] source intelligence refresh failed', error);
+        scheduleIntelligencePoll(detail);
+      });
+    }, INTELLIGENCE_POLL_MS);
+  }
+
   function downloadHtml(detail){
     const evaluation = evaluateBatchDetail(detail);
     const html = buildOptimizationHtmlReport(detail, evaluation, { generatedAt: new Date().toISOString() });
@@ -229,7 +263,7 @@ function browserBootstrapSource() {
       button.addEventListener('click', function(){
         button.disabled = true;
         button.textContent = '正在生成…';
-        loadDetail().then(downloadHtml).catch(function(error){
+        loadDetail(true).then(downloadHtml).catch(function(error){
           window.alert(error && error.message ? error.message : String(error));
         }).finally(function(){
           button.disabled = false;
@@ -243,7 +277,7 @@ function browserBootstrapSource() {
       preview.className = 'ghost';
       preview.textContent = '预览报告';
       preview.addEventListener('click', function(){
-        loadDetail().then(previewHtml).catch(function(error){
+        loadDetail(true).then(previewHtml).catch(function(error){
           window.alert(error && error.message ? error.message : String(error));
         });
       });
@@ -253,7 +287,10 @@ function browserBootstrapSource() {
   }
 
   ensureActions();
-  loadDetail().then(renderEvaluation).catch(function(error){
+  loadDetail().then(function(detail){
+    renderEvaluation(detail);
+    scheduleIntelligencePoll(detail);
+  }).catch(function(error){
     console.warn('[OneGl] brand/source intelligence unavailable', error);
   });
 })();`;
