@@ -23,12 +23,21 @@ function sortedCounts(map) {
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "zh-CN"));
 }
 
+function pageHasAnalysis(page) {
+  return Boolean(
+    page?.fetchState === "success" &&
+      page?.contentProfile &&
+      typeof page.contentProfile === "object" &&
+      Object.keys(page.contentProfile).length > 0,
+  );
+}
+
 function pageHasCurrentBrandEvidence(page) {
-  return page?.fetchState === "success" && page?.brandMentioned === true;
+  return pageHasAnalysis(page) && page?.brandMentioned === true;
 }
 
 function structureSummary(sources) {
-  const observed = sources.filter((row) => row.page?.fetchState === "success");
+  const observed = sources.filter((row) => pageHasAnalysis(row.page));
   const profileTypes = new Map();
   const structures = new Map();
   let withH2 = 0;
@@ -99,7 +108,7 @@ function buildSourceRows(runs) {
       row.runs.add(run.localRunId || run.id);
       row.prompts.add(run.prompt);
       if (citation.sourcePosition != null) row.positions.push(Number(citation.sourcePosition));
-      if ((!row.page || row.page.fetchState !== "success") && citation.page?.fetchState === "success") row.page = citation.page;
+      if (!pageHasAnalysis(row.page) && pageHasAnalysis(citation.page)) row.page = citation.page;
       map.set(key, row);
     }
   }
@@ -199,74 +208,98 @@ function buildQueryRows(runs) {
  * the provider exposes sentence/source provenance.
  */
 export async function buildBrandSourceIntelligence(pool, batchId) {
-  const { rows } = await pool.query(
-    `SELECT r.id,
-            r.local_run_id,
-            pr.prompt,
-            COALESCE(sbp.category, pr.category, 'uncategorized') AS category,
-            r.brand_mentioned,
-            r.mention_count,
-            left(r.answer, 1400) AS answer_excerpt,
-            COALESCE(
-              jsonb_agg(
-                jsonb_build_object(
-                  'sourcePosition', c.source_position,
-                  'canonicalUrl', a.canonical_url,
-                  'originalUrl', a.original_url,
-                  'finalUrl', apo.final_url,
-                  'title', COALESCE(apo.title_text, a.title),
-                  'domain', a.normalized_domain,
-                  'sourceType', c.source_type,
-                  'relationStatus', c.relation_status,
-                  'page', jsonb_build_object(
-                    'fetchState', apo.fetch_state,
-                    'contentExcerpt', apo.content_excerpt,
-                    'contentProfile', apo.content_profile,
-                    'outline', apo.heading_outline,
-                    'paragraphCount', apo.paragraph_count,
-                    'textLength', apo.text_length,
-                    'h1Count', apo.h1_count,
-                    'h2Count', apo.h2_count,
-                    'h3Count', apo.h3_count,
-                    'tableCount', apo.table_count,
-                    'listCount', apo.list_count,
-                    'faqHeadingCount', apo.faq_heading_count,
-                    'authorPresent', apo.author_present,
-                    'publishedAtRaw', apo.published_at_raw,
-                    'modifiedAtRaw', apo.modified_at_raw,
-                    'brandMentioned', apo.brand_mentioned,
-                    'brandMentionCount', apo.brand_mention_count,
-                    'brandFirstMentionPosition', apo.brand_first_mention_position,
-                    'brandMatchedTerms', apo.brand_matched_terms,
-                    'brandContexts', apo.brand_contexts,
-                    'brandLocations', apo.brand_locations,
-                    'brandDetectionVersion', apo.brand_detection_version
-                  )
-                ) ORDER BY c.source_position NULLS LAST, c.id
-              ) FILTER (WHERE c.id IS NOT NULL),
-              '[]'::jsonb
-            ) AS citations
-       FROM runs r
-       JOIN prompts pr ON pr.id = r.prompt_id
-       LEFT JOIN LATERAL (
-         SELECT category
-           FROM sampling_batch_prompts sbp
-          WHERE sbp.batch_id = r.sampling_batch_id
-            AND sbp.prompt_id = r.prompt_id
-            AND sbp.account_key IS NOT DISTINCT FROM r.account_key
-          ORDER BY sbp.selection_index
-          LIMIT 1
-       ) sbp ON true
-       LEFT JOIN citations c ON c.run_id = r.id AND c.visible_to_user IS NOT FALSE
-       LEFT JOIN articles a ON a.id = c.article_id
-       LEFT JOIN article_page_observations apo
-         ON apo.batch_id = r.sampling_batch_id AND apo.article_id = a.id
-      WHERE r.sampling_batch_id = $1 AND ${VALID_RUN_SQL}
-      GROUP BY r.id, pr.prompt, pr.category, sbp.category
-      ORDER BY r.id`,
-    [batchId],
-  );
+  const [jobResult, runResult] = await Promise.all([
+    pool.query(
+      `SELECT status AS batch_status,
+              finished_at AS batch_finished_at,
+              source_intelligence_generation AS generation,
+              source_intelligence_status AS status,
+              source_intelligence_queued_at AS queued_at,
+              source_intelligence_started_at AS started_at,
+              source_intelligence_finished_at AS finished_at,
+              source_intelligence_error AS error,
+              CASE
+                WHEN status IN ('completed', 'partial')
+                 AND finished_at IS NOT NULL
+                 AND (
+                   source_intelligence_finished_at IS NULL
+                   OR source_intelligence_finished_at < finished_at
+                 )
+                THEN true ELSE false
+              END AS stale
+         FROM sampling_batches WHERE id = $1`,
+      [batchId],
+    ),
+    pool.query(
+      `SELECT r.id,
+              r.local_run_id,
+              pr.prompt,
+              COALESCE(sbp.category, pr.category, 'uncategorized') AS category,
+              r.brand_mentioned,
+              r.mention_count,
+              left(r.answer, 1400) AS answer_excerpt,
+              COALESCE(
+                jsonb_agg(
+                  jsonb_build_object(
+                    'sourcePosition', c.source_position,
+                    'canonicalUrl', a.canonical_url,
+                    'originalUrl', a.original_url,
+                    'finalUrl', apo.final_url,
+                    'title', COALESCE(apo.title_text, a.title),
+                    'domain', a.normalized_domain,
+                    'sourceType', c.source_type,
+                    'relationStatus', c.relation_status,
+                    'page', jsonb_build_object(
+                      'fetchState', apo.fetch_state,
+                      'contentExcerpt', apo.content_excerpt,
+                      'contentProfile', apo.content_profile,
+                      'outline', apo.heading_outline,
+                      'paragraphCount', apo.paragraph_count,
+                      'textLength', apo.text_length,
+                      'h1Count', apo.h1_count,
+                      'h2Count', apo.h2_count,
+                      'h3Count', apo.h3_count,
+                      'tableCount', apo.table_count,
+                      'listCount', apo.list_count,
+                      'faqHeadingCount', apo.faq_heading_count,
+                      'authorPresent', apo.author_present,
+                      'publishedAtRaw', apo.published_at_raw,
+                      'modifiedAtRaw', apo.modified_at_raw,
+                      'brandMentioned', apo.brand_mentioned,
+                      'brandMentionCount', apo.brand_mention_count,
+                      'brandFirstMentionPosition', apo.brand_first_mention_position,
+                      'brandMatchedTerms', apo.brand_matched_terms,
+                      'brandContexts', apo.brand_contexts,
+                      'brandLocations', apo.brand_locations,
+                      'brandDetectionVersion', apo.brand_detection_version
+                    )
+                  ) ORDER BY c.source_position NULLS LAST, c.id
+                ) FILTER (WHERE c.id IS NOT NULL),
+                '[]'::jsonb
+              ) AS citations
+         FROM runs r
+         JOIN prompts pr ON pr.id = r.prompt_id
+         LEFT JOIN LATERAL (
+           SELECT category
+             FROM sampling_batch_prompts sbp
+            WHERE sbp.batch_id = r.sampling_batch_id
+              AND sbp.prompt_id = r.prompt_id
+              AND sbp.account_key IS NOT DISTINCT FROM r.account_key
+            ORDER BY sbp.selection_index
+            LIMIT 1
+         ) sbp ON true
+         LEFT JOIN citations c ON c.run_id = r.id AND c.visible_to_user IS NOT FALSE
+         LEFT JOIN articles a ON a.id = c.article_id
+         LEFT JOIN article_page_observations apo
+           ON apo.batch_id = r.sampling_batch_id AND apo.article_id = a.id
+        WHERE r.sampling_batch_id = $1 AND ${VALID_RUN_SQL}
+        GROUP BY r.id, pr.prompt, pr.category, sbp.category
+        ORDER BY r.id`,
+      [batchId],
+    ),
+  ]);
 
+  const rows = runResult.rows;
   const runs = rows.map((row) => ({
     id: Number(row.id),
     localRunId: row.local_run_id,
@@ -279,10 +312,12 @@ export async function buildBrandSourceIntelligence(pool, batchId) {
   }));
   const sources = buildSourceRows(runs);
   const brandEvidenceSources = sources.filter((row) => pageHasCurrentBrandEvidence(row.page));
-  const analyzed = sources.filter((row) => row.page?.fetchState === "success").length;
+  const analyzed = sources.filter((row) => pageHasAnalysis(row.page)).length;
+  const job = jobResult.rows[0] ?? null;
 
   return {
     version: 1,
+    job,
     runs,
     queries: buildQueryRows(runs),
     sources,
