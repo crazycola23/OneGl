@@ -489,11 +489,23 @@ function runSourceIntelligenceChild(batchId) {
 async function handleSourceIntelligenceJob(job) {
   const batchId = Number(job.data?.batchId);
   const generation = Number(job.data?.generation);
-  if (!Number.isInteger(batchId) || batchId <= 0 || !Number.isInteger(generation)) {
-    throw new UnrecoverableError("引用页分析任务缺少有效 batchId / generation");
+  const batchFinishedAt = job.data?.batchFinishedAt ? String(job.data.batchFinishedAt) : null;
+  if (
+    !Number.isInteger(batchId) ||
+    batchId <= 0 ||
+    !Number.isInteger(generation) ||
+    !batchFinishedAt ||
+    !Number.isFinite(Date.parse(batchFinishedAt))
+  ) {
+    throw new UnrecoverableError("引用页分析任务缺少有效 batchId / generation / batchFinishedAt");
   }
 
-  const accepted = await markSourceIntelligenceRunning(pool, batchId, generation);
+  const accepted = await markSourceIntelligenceRunning(
+    pool,
+    batchId,
+    generation,
+    batchFinishedAt,
+  );
   if (!accepted) {
     log({
       event: "source-intelligence-superseded",
@@ -517,7 +529,11 @@ async function handleSourceIntelligenceJob(job) {
     error = `${coverage.unresolvedSources} 个用户可见引用页未完成分析`;
   }
 
-  const saved = await finishSourceIntelligence(pool, batchId, generation, { status, error });
+  const saved = await finishSourceIntelligence(pool, batchId, generation, {
+    status,
+    error,
+    batchFinishedAt,
+  });
   if (!saved) return { superseded: true, coverage };
 
   log({
@@ -557,6 +573,7 @@ async function startSourceIntelligenceWorker() {
       await finishSourceIntelligence(pool, Number(job.data.batchId), Number(job.data.generation), {
         status: "failed",
         error: error?.message ?? "引用页分析任务失败",
+        batchFinishedAt: job.data?.batchFinishedAt ? String(job.data.batchFinishedAt) : null,
       }).catch(() => undefined);
     }
   });
