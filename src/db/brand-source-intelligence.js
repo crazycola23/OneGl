@@ -23,6 +23,10 @@ function sortedCounts(map) {
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "zh-CN"));
 }
 
+function pageHasCurrentBrandEvidence(page) {
+  return page?.fetchState === "success" && page?.brandMentioned === true;
+}
+
 function structureSummary(sources) {
   const observed = sources.filter((row) => row.page?.fetchState === "success");
   const profileTypes = new Map();
@@ -123,7 +127,7 @@ function buildDomainRows(sources) {
     row.citations += source.citationCount;
     row.sources += 1;
     for (const prompt of source.prompts) row.prompts.add(prompt);
-    if (source.page?.brandMentioned === true) row.brandEvidenceSources += 1;
+    if (pageHasCurrentBrandEvidence(source.page)) row.brandEvidenceSources += 1;
     map.set(domain, row);
   }
   return [...map.values()]
@@ -145,9 +149,13 @@ function buildQueryRows(runs) {
       sources: new Map(),
       brandEvidenceSources: new Set(),
       exampleAnswer: null,
+      brandAnswerExample: null,
     };
     row.validRuns += 1;
-    if (run.aiBrandMentioned) row.aiBrandMentionedRuns += 1;
+    if (run.aiBrandMentioned) {
+      row.aiBrandMentionedRuns += 1;
+      if (!row.brandAnswerExample && run.answerExcerpt) row.brandAnswerExample = run.answerExcerpt;
+    }
     row.aiBrandMentionCount += num(run.aiBrandMentionCount);
     row.citations += run.citations.length;
     if (!row.exampleAnswer && run.answerExcerpt) row.exampleAnswer = run.answerExcerpt;
@@ -156,7 +164,7 @@ function buildQueryRows(runs) {
       const current = row.sources.get(key2) ?? { url: citation.canonicalUrl || citation.finalUrl || citation.originalUrl, title: citation.title, domain: citation.domain, citations: 0 };
       current.citations += 1;
       row.sources.set(key2, current);
-      if (citation.page?.brandMentioned === true) row.brandEvidenceSources.add(key2);
+      if (pageHasCurrentBrandEvidence(citation.page)) row.brandEvidenceSources.add(key2);
     }
     map.set(key, row);
   }
@@ -175,7 +183,8 @@ function buildQueryRows(runs) {
       topSources: [...row.sources.values()]
         .sort((a, b) => b.citations - a.citations || String(a.url ?? "").localeCompare(String(b.url ?? "")))
         .slice(0, 5),
-      exampleAnswer: row.exampleAnswer,
+      exampleAnswer: row.brandAnswerExample || row.exampleAnswer,
+      exampleAnswerContainsBrand: Boolean(row.brandAnswerExample),
     }))
     .sort((a, b) =>
       (a.aiBrandMentionRate ?? 2) - (b.aiBrandMentionRate ?? 2) ||
@@ -269,7 +278,7 @@ export async function buildBrandSourceIntelligence(pool, batchId) {
     citations: array(row.citations),
   }));
   const sources = buildSourceRows(runs);
-  const brandEvidenceSources = sources.filter((row) => row.page?.brandMentioned === true);
+  const brandEvidenceSources = sources.filter((row) => pageHasCurrentBrandEvidence(row.page));
   const analyzed = sources.filter((row) => row.page?.fetchState === "success").length;
 
   return {
