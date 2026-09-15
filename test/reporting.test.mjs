@@ -168,12 +168,19 @@ test("HTML 报告是自包含暖色专业报告、包含因子证据并转义外
   assert.doesNotMatch(html, /cdn|fonts\.googleapis/i);
 });
 
-test("批次页面脚本提供一键因子增强 HTML 导出与预览，不在其它页面注入", () => {
+test("批次页面脚本采用 Outcome → Diagnostic → Evidence → Action 的调优层级", () => {
   const script = reportExportBootstrap("batches");
   assert.match(script, /生成 HTML 报告/);
   assert.match(script, /预览报告/);
   assert.match(script, /buildHtmlReportWithFactors/);
-  assert.match(script, /因子证据质量/);
+  assert.match(script, /GEO 调优摘要/);
+  assert.match(script, /Outcome · 实际结果/);
+  assert.match(script, /Diagnostic · 损失定位/);
+  assert.match(script, /Evidence · 能不能据此改内容/);
+  assert.match(script, /当前首要瓶颈/);
+  assert.match(script, /下一轮优先/);
+  assert.match(script, /未配置目标文章，不计为 0%/);
+  assert.match(script, /内部趋势评分（辅助）/);
   assert.match(script, /onegl-batch-/);
   assert.equal(reportExportBootstrap("runs"), "");
 });
