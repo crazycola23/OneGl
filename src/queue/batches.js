@@ -112,7 +112,13 @@ export async function enqueueBatch(pool, batchId, { log = console.log } = {}) {
   await pool.query(
     `UPDATE sampling_batches
         SET status = 'queued', queued_at = now(), aborted_at = NULL,
-            requested_jobs = $2, skipped_jobs = 0, finished_at = NULL
+            requested_jobs = $2, skipped_jobs = 0, finished_at = NULL,
+            source_intelligence_generation = source_intelligence_generation + 1,
+            source_intelligence_status = 'idle',
+            source_intelligence_queued_at = NULL,
+            source_intelligence_started_at = NULL,
+            source_intelligence_finished_at = NULL,
+            source_intelligence_error = NULL
       WHERE id = $1`,
     [batchId, assignments.length],
   );
