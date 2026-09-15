@@ -35,6 +35,7 @@ function fixture(overrides = {}) {
         batchId: 7,
         cohort: { runs: 80, candidates: 320, cited: 64, baselineRate: 0.2 },
         pageEvidence: { totalArticles: 120, successfulArticles: 102, successRate: 0.85, states: { success: 102 } },
+        evidenceGate: { status: "pass", label: "可进入复验", allowOptimizationAdvice: true, blockers: [], warnings: [] },
         strongestSignals: [
           {
             factor: "page_table_present",
@@ -108,6 +109,7 @@ test("因子证据质量独立于业务准备度，并只把 FDR 支持信号提
   assert.equal(withEvidence.metrics.readinessIndex, withoutEvidence.metrics.readinessIndex);
   assert.ok(withEvidence.metrics.factorEvidence.evidenceScore > 0);
   assert.equal(withEvidence.metrics.factorEvidence.positiveSignals.length, 2);
+  assert.equal(withEvidence.metrics.factorEvidence.gate.allowOptimizationAdvice, true);
   assert.ok(withEvidence.recommendations.some((item) => /受控验证实验/.test(item.title)));
 });
 
@@ -119,6 +121,35 @@ test("小样本会明确降低结论置信表达，而不是伪装成稳定规�
   const evaluation = evaluateBatchDetail(detail);
   assert.equal(evaluation.metrics.sampleConfidence, "低");
   assert.ok(evaluation.caveats.some((item) => /样本量较小/.test(item)));
+});
+
+test("未配置目标文章时保持 N/A，不把 0/0 解释成 0% 或压低准备度", () => {
+  const detail = fixture();
+  detail.report.tracked = { total: 0, cited: 0, citationRate: null, articles: [] };
+  const evaluation = evaluateBatchDetail(detail);
+  assert.equal(evaluation.metrics.trackedConfigured, false);
+  assert.equal(evaluation.metrics.trackedRate, null);
+  assert.ok(!evaluation.recommendations.some((item) => /目标文章/.test(item.title)));
+
+  const html = buildHtmlReportWithFactors(detail, evaluation, { generatedAt: "2026-09-14T07:00:00Z" });
+  assert.match(html, /目标文章引用率<\/label><strong>N\/A<\/strong><small>未配置目标文章/);
+  assert.match(html, /未配置目标文章，不计为 0%/);
+  assert.doesNotMatch(html, /目标文章引用率<\/label><strong>0\.0%/);
+});
+
+test("调优摘要优先展示瓶颈、最弱意图、证据可行动性和下一轮动作", () => {
+  const detail = fixture();
+  const evaluation = evaluateBatchDetail(detail);
+  const html = buildHtmlReportWithFactors(detail, evaluation, { generatedAt: "2026-09-14T07:00:00Z" });
+  assert.match(html, /调优摘要/);
+  assert.match(html, /当前首要瓶颈/);
+  assert.match(html, /意图覆盖：科普/);
+  assert.match(html, /最弱问题意图/);
+  assert.match(html, /证据可行动性/);
+  assert.match(html, /可做受控实验/);
+  assert.match(html, /下一轮优先动作/);
+  assert.match(html, /内部趋势评分（辅助）/);
+  assert.match(html, /调优观测指标/);
 });
 
 test("HTML 报告是自包含暖色专业报告、包含因子证据并转义外部数据", () => {
