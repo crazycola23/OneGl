@@ -108,11 +108,11 @@ export async function enqueueSourceIntelligence(pool, batchId, { log = console.l
     };
   }
 
-  const batchFinishedAt = Date.parse(batch.finished_at);
+  const batchFinishedAtMs = Date.parse(batch.finished_at);
   const intelFinishedAt = batch.source_intelligence_finished_at
     ? Date.parse(batch.source_intelligence_finished_at)
     : Number.NaN;
-  if (Number.isFinite(intelFinishedAt) && intelFinishedAt >= batchFinishedAt) {
+  if (Number.isFinite(intelFinishedAt) && intelFinishedAt >= batchFinishedAtMs) {
     return {
       scheduled: false,
       reason: "引用页分析已覆盖当前批次结果",
@@ -137,7 +137,7 @@ export async function enqueueSourceIntelligence(pool, batchId, { log = console.l
           source_intelligence_finished_at IS NULL
           OR source_intelligence_finished_at < finished_at
         )
-      RETURNING source_intelligence_generation AS generation`,
+      RETURNING source_intelligence_generation AS generation, finished_at AS batch_finished_at`,
     [batchId],
   );
   if (!claimed.rowCount) {
@@ -145,6 +145,7 @@ export async function enqueueSourceIntelligence(pool, batchId, { log = console.l
   }
 
   const generation = Number(claimed.rows[0].generation);
+  const batchFinishedAt = new Date(claimed.rows[0].batch_finished_at).toISOString();
   const queue = new Queue(sourceIntelligenceQueueName(), { connection: getRedis() });
   const jobId = sourceIntelligenceJobId(batchId, generation);
   try {
@@ -154,13 +155,13 @@ export async function enqueueSourceIntelligence(pool, batchId, { log = console.l
       if (TERMINAL_JOB_STATES.has(state)) await existing.remove().catch(() => undefined);
       else {
         log(`引用页分析任务已存在：batch=${batchId} generation=${generation} state=${state}`);
-        return { scheduled: true, alreadyScheduled: true, jobId, generation };
+        return { scheduled: true, alreadyScheduled: true, jobId, generation, batchFinishedAt };
       }
     }
 
     await queue.add(
       "analyze-cited-sources",
-      { batchId: Number(batchId), generation },
+      { batchId: Number(batchId), generation, batchFinishedAt },
       {
         jobId,
         attempts: 2,
@@ -170,7 +171,7 @@ export async function enqueueSourceIntelligence(pool, batchId, { log = console.l
       },
     );
     log(`引用页分析已入队：batch=${batchId} generation=${generation}`);
-    return { scheduled: true, jobId, generation };
+    return { scheduled: true, jobId, generation, batchFinishedAt };
   } catch (error) {
     await pool.query(
       `UPDATE sampling_batches
@@ -204,7 +205,7 @@ export async function reconcileSourceIntelligence(pool, { limit = 20, log = cons
   return results;
 }
 
-export async function markSourceIntelligenceRunning(pool, batchId, generation) {
+export async function markSourceIntelligenceRunning(pool, batchId, generation, batchFinishedAt = null) {
   const { rowCount } = await pool.query(
     `UPDATE sampling_batches
         SET source_intelligence_status = 'running',
@@ -213,13 +214,20 @@ export async function markSourceIntelligenceRunning(pool, batchId, generation) {
             source_intelligence_error = NULL
       WHERE id = $1
         AND source_intelligence_generation = $2
-        AND source_intelligence_status IN ('queued', 'running')`,
-    [batchId, generation],
+        AND source_intelligence_status IN ('queued', 'running')
+        AND status IN ('completed', 'partial')
+        AND ($3::timestamptz IS NULL OR finished_at = $3::timestamptz)`,
+    [batchId, generation, batchFinishedAt],
   );
   return rowCount > 0;
 }
 
-export async function finishSourceIntelligence(pool, batchId, generation, { status, error = null }) {
+export async function finishSourceIntelligence(
+  pool,
+  batchId,
+  generation,
+  { status, error = null, batchFinishedAt = null },
+) {
   if (!["completed", "partial", "failed"].includes(status)) {
     throw new Error(`Invalid source intelligence terminal status: ${status}`);
   }
@@ -228,8 +236,11 @@ export async function finishSourceIntelligence(pool, batchId, generation, { stat
         SET source_intelligence_status = $3,
             source_intelligence_finished_at = now(),
             source_intelligence_error = $4
-      WHERE id = $1 AND source_intelligence_generation = $2`,
-    [batchId, generation, status, error],
+      WHERE id = $1
+        AND source_intelligence_generation = $2
+        AND status IN ('completed', 'partial')
+        AND ($5::timestamptz IS NULL OR finished_at = $5::timestamptz)`,
+    [batchId, generation, status, error, batchFinishedAt],
   );
   return rowCount > 0;
 }
