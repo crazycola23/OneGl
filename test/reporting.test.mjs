@@ -205,18 +205,20 @@ test("HTML 报告是自包含暖色专业报告、包含因子证据并转义外
   assert.doesNotMatch(html, /cdn|fonts\.googleapis/i);
 });
 
-test("批次页面脚本采用 Outcome → Diagnostic → Evidence → Action 的调优层级", () => {
+test("批次页面以品牌/引用情报为主视图，GEO 调优诊断降为二级", () => {
   const script = reportExportBootstrap("batches");
   assert.match(script, /生成 HTML 报告/);
   assert.match(script, /预览报告/);
-  assert.match(script, /buildHtmlReportWithFactors/);
-  assert.match(script, /GEO 调优摘要/);
+  assert.match(script, /buildOptimizationHtmlReport/);
+  assert.match(script, /AI 搜索品牌与引用情报/);
+  assert.match(script, /搜索问题 → AI 是否出现目标品牌/);
+  assert.match(script, /AI 引用最多的是哪些链接/);
+  assert.match(script, /被引用文章大部分是什么结构/);
+  assert.match(script, /哪些被引用文章本身提到了目标品牌/);
+  assert.match(script, /二级 GEO 调优诊断/);
   assert.match(script, /Outcome · 实际结果/);
   assert.match(script, /Diagnostic · 损失定位/);
   assert.match(script, /Evidence · 能不能据此改内容/);
-  assert.match(script, /当前首要瓶颈/);
-  assert.match(script, /下一轮优先/);
-  assert.match(script, /未配置目标文章，不计为 0%/);
   assert.match(script, /内部趋势评分（辅助）/);
   assert.match(script, /onegl-batch-/);
   assert.equal(reportExportBootstrap("runs"), "");
