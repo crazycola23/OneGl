@@ -1,3 +1,4 @@
+import { buildBrandSourceIntelligence } from "./brand-source-intelligence.js";
 import { buildBatchReport } from "./report.js";
 
 /**
@@ -363,8 +364,11 @@ export async function setProjectBrand(
 }
 
 export async function batchDetail(pool, batchId) {
-  const report = await buildBatchReport(pool, batchId);
-  const runs = await listRuns(pool, { batchId, limit: 500 });
-  const sources = await sourceAggregates(pool, { batchId, limit: 15 });
-  return { report, runs, sources };
+  const [report, runs, sources, intelligence] = await Promise.all([
+    buildBatchReport(pool, batchId),
+    listRuns(pool, { batchId, limit: 500 }),
+    sourceAggregates(pool, { batchId, limit: 15 }),
+    buildBrandSourceIntelligence(pool, batchId),
+  ]);
+  return { report, runs, sources, intelligence };
 }
