@@ -119,7 +119,7 @@ test("主情报视图回答 Query、品牌、域名/链接、文章内容结构�
   assert.match(html, /AI 的引用主要来自哪些域名与链接/);
   assert.match(html, /被引用文章大部分是什么结构/);
   assert.match(html, /哪些被引用文章本身提到了目标品牌/);
-  assert.match(html, /引用页内容分析完成/);
+  assert.match(html, /引用页内容分析：引用页分析完成/);
   assert.match(html, /2 \/ 2 个唯一引用页已形成内容画像/);
   assert.match(html, /长沙腰痛调理去哪好/);
   assert.match(html, /含品牌的 AI 回答片段/);
