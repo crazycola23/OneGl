@@ -25,9 +25,12 @@ function intelUrl(url) {
   return `<a href="${intelEsc(value)}" target="_blank" rel="noreferrer">${intelEsc(label)}</a>`;
 }
 
-function topSourceText(rows) {
+function topSourcesHtml(rows) {
   if (!Array.isArray(rows) || !rows.length) return "无可见引用";
-  return rows.slice(0, 3).map((row) => `${row.domain || "未知域"} ×${Number(row.citations || 0)}`).join("；");
+  return `<ol class="intel-source-list">${rows.slice(0, 5).map((row) => {
+    const label = row.title || row.domain || row.url || "未知来源";
+    return `<li><b>${intelEsc(label)}</b> <span class="intel-sub">×${Number(row.citations || 0)}</span><div>${intelUrl(row.url)}</div></li>`;
+  }).join("")}</ol>`;
 }
 
 function profileLabel(profile) {
@@ -50,6 +53,11 @@ function outlineText(page) {
   return rows.slice(0, 16).map((row) => `${"　".repeat(Math.max(0, Number(row.level || 1) - 1))}H${row.level} ${row.text}`).join("\n");
 }
 
+function promptListHtml(prompts) {
+  if (!Array.isArray(prompts) || !prompts.length) return "";
+  return `<details><summary>${prompts.length} 个涉及问题</summary><ul class="intel-prompt-list">${prompts.slice(0, 12).map((prompt) => `<li>${intelEsc(prompt)}</li>`).join("")}</ul></details>`;
+}
+
 function queryRowsHtml(intelligence) {
   return (intelligence?.queries ?? []).map((row) => {
     const mentioned = Number(row.aiBrandMentionedRuns || 0);
@@ -63,7 +71,7 @@ function queryRowsHtml(intelligence) {
       <td>${intelEsc(brandLabel)}</td>
       <td>${intelEsc(row.uniqueSourceCount)}</td>
       <td>${intelEsc(row.brandEvidenceSourceCount)}</td>
-      <td>${intelEsc(topSourceText(row.topSources))}</td>
+      <td>${topSourcesHtml(row.topSources)}</td>
     </tr>`;
   }).join("");
 }
@@ -92,7 +100,7 @@ function sourceRowsHtml(intelligence) {
       <td><b>${intelEsc(row.title || "(无标题)")}</b><div class="intel-sub">${intelUrl(row.canonicalUrl || row.finalUrl || row.originalUrl)}</div>${excerpt}${outline}</td>
       <td>${intelEsc(row.domain || "-")}</td>
       <td>${intelEsc(row.citationCount)}</td>
-      <td>${intelEsc(row.promptCount)}</td>
+      <td>${intelEsc(row.promptCount)}${promptListHtml(row.prompts)}</td>
       <td>${intelEsc(brand)}</td>
       <td>${intelEsc(analyzed)}</td>
     </tr>`;
@@ -108,7 +116,7 @@ function brandEvidenceRowsHtml(intelligence) {
     return `<tr>
       <td><b>${intelEsc(row.title || "(无标题)")}</b><div class="intel-sub">${intelUrl(row.canonicalUrl || row.finalUrl || row.originalUrl)}</div></td>
       <td>${intelEsc(row.citationCount)}</td>
-      <td>${intelEsc(row.promptCount)}</td>
+      <td>${intelEsc(row.promptCount)}${promptListHtml(row.prompts)}</td>
       <td>${intelEsc(Number(page.brandMentionCount || 0))}</td>
       <td>${intelEsc(locations)}</td>
       <td><div class="intel-excerpt">${intelEsc(brandContextText(page))}</div></td>
@@ -142,6 +150,7 @@ function intelStyles() {
     .intel-table-wrap{overflow:auto;border:1px solid rgba(120,90,70,.15);border-radius:10px}.intel-table{width:100%;border-collapse:collapse;min-width:760px}
     .intel-table th,.intel-table td{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid rgba(120,90,70,.12);font-size:13px;line-height:1.45}.intel-table th{font-size:12px;opacity:.75;background:rgba(184,109,74,.05)}
     .intel-excerpt{max-width:720px;font-size:12px;line-height:1.6;opacity:.86;margin-top:6px}.intel-outline{white-space:pre-wrap;max-width:720px;font-size:12px;line-height:1.6;background:rgba(120,90,70,.05);padding:8px;border-radius:6px}.intel-empty{padding:14px;border:1px dashed rgba(120,90,70,.25);border-radius:10px;opacity:.75}
+    .intel-source-list,.intel-prompt-list{margin:5px 0;padding-left:18px}.intel-source-list li,.intel-prompt-list li{margin:4px 0}.intel-source-list a{font-size:12px}
   </style>`;
 }
 
@@ -157,13 +166,13 @@ export function brandSourceIntelligenceHtml(detail, { dashboard = false } = {}) 
   const body = `${intelStyles()}
     <div class="brand-source-intel">
       <h2>AI 搜索品牌与引用情报</h2>
-      <div class="intel-note"><b>先回答四个问题：</b>当前搜索问题里 AI 有没有目标品牌？AI 引用了哪些链接？这些引用页大多是什么内容/结构？哪些引用页本身提到了目标品牌？</div>
+      <div class="intel-note"><b>先回答四个问题：</b>当前搜索问题里 AI 有没有目标品牌？这个问题具体引用了哪些 URL？这些引用页大多是什么内容/结构？哪些引用页本身提到了目标品牌？</div>
 
-      <h3>1. 搜索问题 → AI 是否出现目标品牌</h3>
-      ${queryRows ? `<div class="intel-table-wrap"><table class="intel-table"><thead><tr><th>搜索问题 / AI 回答</th><th>AI 品牌提及</th><th>唯一引用页</th><th>含品牌引用页</th><th>主要引用来源</th></tr></thead><tbody>${queryRows}</tbody></table></div>` : `<div class="intel-empty">暂无有效搜索问题数据。</div>`}
+      <h3>1. 搜索问题 → AI 是否出现目标品牌 → 具体引用 URL</h3>
+      ${queryRows ? `<div class="intel-table-wrap"><table class="intel-table"><thead><tr><th>搜索问题 / AI 回答</th><th>AI 品牌提及</th><th>唯一引用页</th><th>含品牌引用页</th><th>该问题的主要引用 URL</th></tr></thead><tbody>${queryRows}</tbody></table></div>` : `<div class="intel-empty">暂无有效搜索问题数据。</div>`}
 
       <h3>2. AI 的引用主要来自哪些域名与链接</h3>
-      <div class="intel-note">共 ${intelEsc(coverage.citedSources || 0)} 个唯一引用页；已完成页面内容分析 ${intelEsc(coverage.analyzedSources || 0)} 个（${intelPct(coverage.analysisRate)}）。域名表回答“资料主要来自哪里”，链接表回答“具体是哪篇文章”。</div>
+      <div class="intel-note">共 ${intelEsc(coverage.citedSources || 0)} 个唯一引用页；已完成页面内容分析 ${intelEsc(coverage.analyzedSources || 0)} 个（${intelPct(coverage.analysisRate)}）。域名表回答“资料主要来自哪里”，链接表回答“具体是哪篇文章、哪些问题引用了它”。</div>
       ${domainRows ? `<div class="intel-table-wrap" style="margin-bottom:12px"><table class="intel-table"><thead><tr><th>#</th><th>域名</th><th>引用次数</th><th>唯一文章</th><th>涉及问题</th><th>含品牌文章</th></tr></thead><tbody>${domainRows}</tbody></table></div>` : ""}
       ${sourceRows ? `<div class="intel-table-wrap"><table class="intel-table"><thead><tr><th>文章 / URL / 内容</th><th>域名</th><th>引用次数</th><th>涉及问题</th><th>页面提品牌</th><th>内容结构</th></tr></thead><tbody>${sourceRows}</tbody></table></div>` : `<div class="intel-empty">暂无可见引用链接。</div>`}
 
@@ -189,10 +198,11 @@ export function brandSourceIntelligenceBrowserBundle() {
     intelPct,
     intelNum,
     intelUrl,
-    topSourceText,
+    topSourcesHtml,
     profileLabel,
     brandContextText,
     outlineText,
+    promptListHtml,
     queryRowsHtml,
     domainRowsHtml,
     sourceRowsHtml,
