@@ -141,8 +141,13 @@ export function buildPageContentIntelligence(html, {
       .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, " "),
   );
   const outline = headingOutline(primaryHtml);
+  // A cited article can carry the brand in the browser title/meta even when the body does
+  // not repeat it. Page-level evidence therefore evaluates title + meta + body together.
+  const pageText = [String(titleText ?? "").trim(), String(metaDescription ?? "").trim(), bodyText]
+    .filter(Boolean)
+    .join("\n");
   const detection = brandRules?.terms?.length
-    ? detectBrandMention(bodyText, brandRules)
+    ? detectBrandMention(pageText, brandRules)
     : {
         version: null,
         mentioned: false,
@@ -168,7 +173,7 @@ export function buildPageContentIntelligence(html, {
     brandMentionCount: detection.mentionCount,
     brandFirstMentionPosition: detection.firstMentionPosition,
     brandMatchedTerms: detection.matchedTerms,
-    brandContexts: brandContexts(bodyText, detection),
+    brandContexts: brandContexts(pageText, detection),
     brandLocations: brandLocationFlags({
       titleText,
       metaDescription,
