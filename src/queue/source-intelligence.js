@@ -33,11 +33,9 @@ export async function sourceIntelligenceCoverage(pool, batchId) {
                 AND apo.brand_mentioned IS TRUE
             ) AS brand_evidence_sources,
             count(*) FILTER (
-              WHERE apo.article_id IS NOT NULL
-                AND NOT (
-                  apo.fetch_state = 'success'
-                  AND COALESCE(apo.content_profile, '{}'::jsonb) <> '{}'::jsonb
-                )
+              WHERE apo.article_id IS NULL
+                 OR apo.fetch_state <> 'success'
+                 OR COALESCE(apo.content_profile, '{}'::jsonb) = '{}'::jsonb
             ) AS unresolved_sources
        FROM cited
        LEFT JOIN article_page_observations apo
@@ -54,35 +52,54 @@ export async function sourceIntelligenceCoverage(pool, batchId) {
 }
 
 /**
- * Queue the cited-page analysis exactly once for the current batch generation.
- * The DB state claim happens before BullMQ add; on queue failure it is rolled back to idle.
+ * Find batches whose user-visible citation set is newer than the last intelligence pass.
+ * This is what makes the scheduler self-healing: old completed batches are backfilled, and
+ * re-running the same batch id automatically creates a new intelligence generation.
  */
-export async function enqueueSourceIntelligence(
-  pool,
-  batchId,
-  { generation = null, log = console.log } = {},
-) {
+export async function listSourceIntelligenceBacklog(pool, { limit = 20 } = {}) {
+  return (
+    await pool.query(
+      `SELECT id
+         FROM sampling_batches
+        WHERE status IN ('completed', 'partial')
+          AND finished_at IS NOT NULL
+          AND source_intelligence_status NOT IN ('queued', 'running')
+          AND (
+            source_intelligence_finished_at IS NULL
+            OR source_intelligence_finished_at < finished_at
+          )
+        ORDER BY finished_at DESC, id DESC
+        LIMIT $1`,
+      [limit],
+    )
+  ).rows.map((row) => Number(row.id));
+}
+
+/**
+ * Queue one fresh cited-page analysis generation when the sampling batch is stale.
+ * The claim is atomic: concurrent reconcilers can race safely and only one increments the
+ * generation. Queue failures roll the claim back to idle so a later reconciliation retries.
+ */
+export async function enqueueSourceIntelligence(pool, batchId, { log = console.log } = {}) {
   if (!isQueueConfigured()) {
     return { scheduled: false, reason: "REDIS_URL 未配置" };
   }
 
   const { rows } = await pool.query(
-    `SELECT id, status, source_intelligence_generation, source_intelligence_status
+    `SELECT id, status, finished_at,
+            source_intelligence_generation,
+            source_intelligence_status,
+            source_intelligence_finished_at
        FROM sampling_batches
       WHERE id = $1`,
     [batchId],
   );
   const batch = rows[0];
   if (!batch) return { scheduled: false, reason: "批次不存在" };
-  if (!BATCHES_WITH_ANALYZABLE_RESULTS.has(batch.status)) {
+  if (!BATCHES_WITH_ANALYZABLE_RESULTS.has(batch.status) || !batch.finished_at) {
     return { scheduled: false, reason: `批次状态 ${batch.status} 尚不进入引用页分析` };
   }
-
-  const currentGeneration = Number(batch.source_intelligence_generation ?? 0);
-  if (generation != null && Number(generation) !== currentGeneration) {
-    return { scheduled: false, reason: "批次代次已变化", superseded: true };
-  }
-  if (batch.source_intelligence_status !== "idle") {
+  if (["queued", "running"].includes(batch.source_intelligence_status)) {
     return {
       scheduled: false,
       reason: `引用页分析状态已是 ${batch.source_intelligence_status}`,
@@ -91,39 +108,59 @@ export async function enqueueSourceIntelligence(
     };
   }
 
+  const batchFinishedAt = Date.parse(batch.finished_at);
+  const intelFinishedAt = batch.source_intelligence_finished_at
+    ? Date.parse(batch.source_intelligence_finished_at)
+    : Number.NaN;
+  if (Number.isFinite(intelFinishedAt) && intelFinishedAt >= batchFinishedAt) {
+    return {
+      scheduled: false,
+      reason: "引用页分析已覆盖当前批次结果",
+      fresh: true,
+      status: batch.source_intelligence_status,
+    };
+  }
+
   const claimed = await pool.query(
     `UPDATE sampling_batches
-        SET source_intelligence_status = 'queued',
+        SET source_intelligence_generation = source_intelligence_generation + 1,
+            source_intelligence_status = 'queued',
             source_intelligence_queued_at = now(),
             source_intelligence_started_at = NULL,
             source_intelligence_finished_at = NULL,
             source_intelligence_error = NULL
       WHERE id = $1
-        AND source_intelligence_generation = $2
-        AND source_intelligence_status = 'idle'
-      RETURNING id`,
-    [batchId, currentGeneration],
+        AND status IN ('completed', 'partial')
+        AND finished_at IS NOT NULL
+        AND source_intelligence_status NOT IN ('queued', 'running')
+        AND (
+          source_intelligence_finished_at IS NULL
+          OR source_intelligence_finished_at < finished_at
+        )
+      RETURNING source_intelligence_generation AS generation`,
+    [batchId],
   );
   if (!claimed.rowCount) {
     return { scheduled: false, reason: "引用页分析已被其他进程调度", alreadyScheduled: true };
   }
 
+  const generation = Number(claimed.rows[0].generation);
   const queue = new Queue(sourceIntelligenceQueueName(), { connection: getRedis() });
-  const jobId = sourceIntelligenceJobId(batchId, currentGeneration);
+  const jobId = sourceIntelligenceJobId(batchId, generation);
   try {
     const existing = await queue.getJob(jobId);
     if (existing) {
       const state = await existing.getState();
       if (TERMINAL_JOB_STATES.has(state)) await existing.remove().catch(() => undefined);
       else {
-        log(`引用页分析任务已存在：batch=${batchId} generation=${currentGeneration} state=${state}`);
-        return { scheduled: true, alreadyScheduled: true, jobId, generation: currentGeneration };
+        log(`引用页分析任务已存在：batch=${batchId} generation=${generation} state=${state}`);
+        return { scheduled: true, alreadyScheduled: true, jobId, generation };
       }
     }
 
     await queue.add(
       "analyze-cited-sources",
-      { batchId: Number(batchId), generation: currentGeneration },
+      { batchId: Number(batchId), generation },
       {
         jobId,
         attempts: 2,
@@ -132,8 +169,8 @@ export async function enqueueSourceIntelligence(
         removeOnFail: false,
       },
     );
-    log(`引用页分析已入队：batch=${batchId} generation=${currentGeneration}`);
-    return { scheduled: true, jobId, generation: currentGeneration };
+    log(`引用页分析已入队：batch=${batchId} generation=${generation}`);
+    return { scheduled: true, jobId, generation };
   } catch (error) {
     await pool.query(
       `UPDATE sampling_batches
@@ -142,12 +179,29 @@ export async function enqueueSourceIntelligence(
         WHERE id = $1
           AND source_intelligence_generation = $2
           AND source_intelligence_status = 'queued'`,
-      [batchId, currentGeneration, error instanceof Error ? error.message : String(error)],
+      [batchId, generation, error instanceof Error ? error.message : String(error)],
     );
     throw error;
   } finally {
     await queue.close().catch(() => undefined);
   }
+}
+
+export async function reconcileSourceIntelligence(pool, { limit = 20, log = console.log } = {}) {
+  const batchIds = await listSourceIntelligenceBacklog(pool, { limit });
+  const results = [];
+  for (const batchId of batchIds) {
+    try {
+      results.push({ batchId, ...(await enqueueSourceIntelligence(pool, batchId, { log })) });
+    } catch (error) {
+      results.push({
+        batchId,
+        scheduled: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return results;
 }
 
 export async function markSourceIntelligenceRunning(pool, batchId, generation) {
@@ -182,12 +236,23 @@ export async function finishSourceIntelligence(pool, batchId, generation, { stat
 
 export async function sourceIntelligenceState(pool, batchId) {
   const { rows } = await pool.query(
-    `SELECT source_intelligence_generation AS generation,
+    `SELECT status AS batch_status,
+            finished_at AS batch_finished_at,
+            source_intelligence_generation AS generation,
             source_intelligence_status AS status,
             source_intelligence_queued_at AS queued_at,
             source_intelligence_started_at AS started_at,
             source_intelligence_finished_at AS finished_at,
-            source_intelligence_error AS error
+            source_intelligence_error AS error,
+            CASE
+              WHEN status IN ('completed', 'partial')
+               AND finished_at IS NOT NULL
+               AND (
+                 source_intelligence_finished_at IS NULL
+                 OR source_intelligence_finished_at < finished_at
+               )
+              THEN true ELSE false
+            END AS stale
        FROM sampling_batches WHERE id = $1`,
     [batchId],
   );
