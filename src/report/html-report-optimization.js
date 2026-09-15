@@ -3,6 +3,10 @@ import {
   htmlReportWithFactorsBrowserBundle,
 } from "./html-report-factors.js";
 import {
+  brandSourceIntelligenceBrowserBundle,
+  brandSourceIntelligenceHtml,
+} from "./brand-source-intelligence.js";
+import {
   buildPromptOpportunities,
   promptOpportunityBrowserBundle,
 } from "./prompt-opportunities.js";
@@ -50,7 +54,7 @@ function promptOpportunitySection(detail) {
 
   return `<section class="section prompt-opportunities">
     <h2>Prompt 优化机会矩阵</h2>
-    <p class="lead">直接回答“下一轮先优化哪些问题”。P0 是数据缺口；P1 是从未/低频提及；P2 是提及不稳定；WATCH 作为稳定对照。这里不把引用总量高误判成品牌表现好。</p>
+    <p class="lead">作为二级调优视图：P0 是数据缺口；P1 是从未/低频提及；P2 是提及不稳定；WATCH 作为稳定对照。主分析先看上方“搜索问题 → 品牌 → 引用链接 → 引用内容”。</p>
     ${warning}
     <div class="panel"><div class="panel-body">
       <div class="table-wrap"><table>
@@ -72,20 +76,32 @@ function injectPromptOpportunitySection(html, detail) {
     : html.replace("</body>", `${section}</body>`);
 }
 
+function injectBrandSourceSection(html, detail) {
+  const section = brandSourceIntelligenceHtml(detail);
+  if (!section) return html;
+  const promptMarker = '<section class="section prompt-opportunities">';
+  if (html.includes(promptMarker)) return html.replace(promptMarker, `${section}\n\n${promptMarker}`);
+  const visibilityMarker = '<section class="section">\n  <h2>品牌可见度拆解</h2>';
+  if (html.includes(visibilityMarker)) return html.replace(visibilityMarker, `${section}\n\n${visibilityMarker}`);
+  return html.replace("</body>", `${section}</body>`);
+}
+
 export function buildOptimizationHtmlReport(detail, evaluation, options = {}) {
-  return injectPromptOpportunitySection(
+  const withPrompt = injectPromptOpportunitySection(
     buildHtmlReportWithFactors(detail, evaluation, options),
     detail,
   );
+  return injectBrandSourceSection(withPrompt, detail);
 }
 
 export function optimizationHtmlReportBrowserBundle() {
-  return `${htmlReportWithFactorsBrowserBundle()}\n${promptOpportunityBrowserBundle()}\n${[
+  return `${htmlReportWithFactorsBrowserBundle()}\n${brandSourceIntelligenceBrowserBundle()}\n${promptOpportunityBrowserBundle()}\n${[
     opportunityEsc,
     opportunityPct,
     opportunityTone,
     promptOpportunitySection,
     injectPromptOpportunitySection,
+    injectBrandSourceSection,
     buildOptimizationHtmlReport,
   ].map((fn) => fn.toString()).join("\n")}`;
 }
