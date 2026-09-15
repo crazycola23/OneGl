@@ -3,12 +3,29 @@ import test from "node:test";
 
 import { buildBrandSourceIntelligence } from "../src/db/brand-source-intelligence.js";
 
-function fakePool(rows) {
+function fakePool(runRows) {
   return {
     async query(sql, params) {
-      assert.match(sql, /c\.visible_to_user IS NOT FALSE/);
       assert.deepEqual(params, [9]);
-      return { rows };
+      if (/FROM sampling_batches WHERE id = \$1/.test(sql)) {
+        return {
+          rows: [
+            {
+              batch_status: "completed",
+              batch_finished_at: "2026-09-15T04:00:00Z",
+              generation: 1,
+              status: "completed",
+              queued_at: "2026-09-15T04:00:01Z",
+              started_at: "2026-09-15T04:00:02Z",
+              finished_at: "2026-09-15T04:00:03Z",
+              error: null,
+              stale: false,
+            },
+          ],
+        };
+      }
+      assert.match(sql, /c\.visible_to_user IS NOT FALSE/);
+      return { rows: runRows };
     },
   };
 }
@@ -49,6 +66,7 @@ test("同一 Prompt 多次 Run 时，示例回答优先选择真正含品牌的�
   assert.equal(result.queries[0].exampleAnswerContainsBrand, true);
   assert.equal(result.queries[0].exampleAnswer, "第二次回答明确推荐了测试品牌。");
   assert.equal(result.queries[0].topSources[0].url, "https://a.example/1");
+  assert.equal(result.job.status, "completed");
 });
 
 test("页面当前抓取失败时，不沿用旧 brand_mentioned 作为品牌证据", async () => {
