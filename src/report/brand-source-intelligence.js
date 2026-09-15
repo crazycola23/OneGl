@@ -44,19 +44,39 @@ function brandContextText(page) {
   return rows.slice(0, 2).map((row) => row.snippet).join(" / ");
 }
 
+function outlineText(page) {
+  const rows = Array.isArray(page?.outline) ? page.outline : [];
+  if (!rows.length) return "暂无标题层级";
+  return rows.slice(0, 16).map((row) => `${"　".repeat(Math.max(0, Number(row.level || 1) - 1))}H${row.level} ${row.text}`).join("\n");
+}
+
 function queryRowsHtml(intelligence) {
   return (intelligence?.queries ?? []).map((row) => {
     const mentioned = Number(row.aiBrandMentionedRuns || 0);
     const valid = Number(row.validRuns || 0);
     const brandLabel = valid ? `${mentioned}/${valid} · ${intelPct(row.aiBrandMentionRate)}` : "N/A";
+    const answer = row.exampleAnswer
+      ? `<details><summary>AI 回答片段</summary><div class="intel-excerpt">${intelEsc(row.exampleAnswer)}</div></details>`
+      : "";
     return `<tr>
-      <td><b>${intelEsc(row.prompt)}</b><div class="intel-sub">${intelEsc(row.category)}</div></td>
+      <td><b>${intelEsc(row.prompt)}</b><div class="intel-sub">${intelEsc(row.category)}</div>${answer}</td>
       <td>${intelEsc(brandLabel)}</td>
       <td>${intelEsc(row.uniqueSourceCount)}</td>
       <td>${intelEsc(row.brandEvidenceSourceCount)}</td>
       <td>${intelEsc(topSourceText(row.topSources))}</td>
     </tr>`;
   }).join("");
+}
+
+function domainRowsHtml(intelligence) {
+  return (intelligence?.domains ?? []).slice(0, 20).map((row, index) => `<tr>
+    <td>${index + 1}</td>
+    <td><b>${intelEsc(row.domain)}</b></td>
+    <td>${intelEsc(row.citations)}</td>
+    <td>${intelEsc(row.sources)}</td>
+    <td>${intelEsc(row.promptCount)}</td>
+    <td>${intelEsc(row.brandEvidenceSources)}</td>
+  </tr>`).join("");
 }
 
 function sourceRowsHtml(intelligence) {
@@ -66,9 +86,10 @@ function sourceRowsHtml(intelligence) {
       ? `是 · ${Number(page.brandMentionCount || 0)} 次`
       : page.fetchState === "success" ? "否" : "N/A";
     const analyzed = page.fetchState === "success" ? profileLabel(page.contentProfile) : `页面证据：${page.fetchState || "未采集"}`;
-    const excerpt = page.contentExcerpt ? `<details><summary>内容摘要</summary><div class="intel-excerpt">${intelEsc(page.contentExcerpt)}</div></details>` : "";
+    const excerpt = page.contentExcerpt ? `<details><summary>文章内容摘要</summary><div class="intel-excerpt">${intelEsc(page.contentExcerpt)}</div></details>` : "";
+    const outline = page.fetchState === "success" ? `<details><summary>文章标题结构</summary><pre class="intel-outline">${intelEsc(outlineText(page))}</pre></details>` : "";
     return `<tr>
-      <td><b>${intelEsc(row.title || "(无标题)")}</b><div class="intel-sub">${intelUrl(row.canonicalUrl || row.finalUrl || row.originalUrl)}</div>${excerpt}</td>
+      <td><b>${intelEsc(row.title || "(无标题)")}</b><div class="intel-sub">${intelUrl(row.canonicalUrl || row.finalUrl || row.originalUrl)}</div>${excerpt}${outline}</td>
       <td>${intelEsc(row.domain || "-")}</td>
       <td>${intelEsc(row.citationCount)}</td>
       <td>${intelEsc(row.promptCount)}</td>
@@ -120,7 +141,7 @@ function intelStyles() {
     .intel-note{padding:9px 12px;margin:8px 0;border-left:3px solid #b86d4a;background:rgba(184,109,74,.06);font-size:13px;line-height:1.55}
     .intel-table-wrap{overflow:auto;border:1px solid rgba(120,90,70,.15);border-radius:10px}.intel-table{width:100%;border-collapse:collapse;min-width:760px}
     .intel-table th,.intel-table td{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid rgba(120,90,70,.12);font-size:13px;line-height:1.45}.intel-table th{font-size:12px;opacity:.75;background:rgba(184,109,74,.05)}
-    .intel-excerpt{max-width:660px;font-size:12px;line-height:1.6;opacity:.86;margin-top:6px}.intel-empty{padding:14px;border:1px dashed rgba(120,90,70,.25);border-radius:10px;opacity:.75}
+    .intel-excerpt{max-width:720px;font-size:12px;line-height:1.6;opacity:.86;margin-top:6px}.intel-outline{white-space:pre-wrap;max-width:720px;font-size:12px;line-height:1.6;background:rgba(120,90,70,.05);padding:8px;border-radius:6px}.intel-empty{padding:14px;border:1px dashed rgba(120,90,70,.25);border-radius:10px;opacity:.75}
   </style>`;
 }
 
@@ -129,6 +150,7 @@ export function brandSourceIntelligenceHtml(detail, { dashboard = false } = {}) 
   const intelligence = detail?.intelligence;
   if (!intelligence) return "";
   const queryRows = queryRowsHtml(intelligence);
+  const domainRows = domainRowsHtml(intelligence);
   const sourceRows = sourceRowsHtml(intelligence);
   const brandRows = brandEvidenceRowsHtml(intelligence);
   const coverage = intelligence.coverage ?? {};
@@ -138,11 +160,12 @@ export function brandSourceIntelligenceHtml(detail, { dashboard = false } = {}) 
       <div class="intel-note"><b>先回答四个问题：</b>当前搜索问题里 AI 有没有目标品牌？AI 引用了哪些链接？这些引用页大多是什么内容/结构？哪些引用页本身提到了目标品牌？</div>
 
       <h3>1. 搜索问题 → AI 是否出现目标品牌</h3>
-      ${queryRows ? `<div class="intel-table-wrap"><table class="intel-table"><thead><tr><th>搜索问题</th><th>AI 品牌提及</th><th>唯一引用页</th><th>含品牌引用页</th><th>主要引用来源</th></tr></thead><tbody>${queryRows}</tbody></table></div>` : `<div class="intel-empty">暂无有效搜索问题数据。</div>`}
+      ${queryRows ? `<div class="intel-table-wrap"><table class="intel-table"><thead><tr><th>搜索问题 / AI 回答</th><th>AI 品牌提及</th><th>唯一引用页</th><th>含品牌引用页</th><th>主要引用来源</th></tr></thead><tbody>${queryRows}</tbody></table></div>` : `<div class="intel-empty">暂无有效搜索问题数据。</div>`}
 
-      <h3>2. AI 引用最多的是哪些链接</h3>
-      <div class="intel-note">共 ${intelEsc(coverage.citedSources || 0)} 个唯一引用页；已完成页面内容分析 ${intelEsc(coverage.analyzedSources || 0)} 个（${intelPct(coverage.analysisRate)}）。</div>
-      ${sourceRows ? `<div class="intel-table-wrap"><table class="intel-table"><thead><tr><th>文章 / URL</th><th>域名</th><th>引用次数</th><th>涉及问题</th><th>页面提品牌</th><th>内容结构</th></tr></thead><tbody>${sourceRows}</tbody></table></div>` : `<div class="intel-empty">暂无可见引用链接。</div>`}
+      <h3>2. AI 的引用主要来自哪些域名与链接</h3>
+      <div class="intel-note">共 ${intelEsc(coverage.citedSources || 0)} 个唯一引用页；已完成页面内容分析 ${intelEsc(coverage.analyzedSources || 0)} 个（${intelPct(coverage.analysisRate)}）。域名表回答“资料主要来自哪里”，链接表回答“具体是哪篇文章”。</div>
+      ${domainRows ? `<div class="intel-table-wrap" style="margin-bottom:12px"><table class="intel-table"><thead><tr><th>#</th><th>域名</th><th>引用次数</th><th>唯一文章</th><th>涉及问题</th><th>含品牌文章</th></tr></thead><tbody>${domainRows}</tbody></table></div>` : ""}
+      ${sourceRows ? `<div class="intel-table-wrap"><table class="intel-table"><thead><tr><th>文章 / URL / 内容</th><th>域名</th><th>引用次数</th><th>涉及问题</th><th>页面提品牌</th><th>内容结构</th></tr></thead><tbody>${sourceRows}</tbody></table></div>` : `<div class="intel-empty">暂无可见引用链接。</div>`}
 
       <h3>3. 被引用文章大部分是什么结构</h3>
       ${structureCardsHtml(intelligence)}
@@ -169,7 +192,9 @@ export function brandSourceIntelligenceBrowserBundle() {
     topSourceText,
     profileLabel,
     brandContextText,
+    outlineText,
     queryRowsHtml,
+    domainRowsHtml,
     sourceRowsHtml,
     brandEvidenceRowsHtml,
     structureCardsHtml,
