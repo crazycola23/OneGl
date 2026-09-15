@@ -148,8 +148,45 @@ test("调优摘要优先展示瓶颈、最弱意图、证据可行动性和下�
   assert.match(html, /证据可行动性/);
   assert.match(html, /可做受控实验/);
   assert.match(html, /下一轮优先动作/);
+  assert.match(html, /P1 · 优先补齐最弱问题意图/);
   assert.match(html, /内部趋势评分（辅助）/);
-  assert.match(html, /调优观测指标/);
+});
+
+test("调优观测指标强制拆成 Outcome、Diagnostic、Evidence 三层", () => {
+  const detail = fixture();
+  const evaluation = evaluateBatchDetail(detail);
+  const html = buildHtmlReportWithFactors(detail, evaluation, { generatedAt: "2026-09-14T07:00:00Z" });
+  assert.match(html, /Outcome · 实际结果/);
+  assert.match(html, /Diagnostic · 损失定位/);
+  assert.match(html, /Evidence · 可行动性/);
+  assert.match(html, /平均引用密度/);
+  assert.match(html, /不是质量分/);
+  assert.match(html, /缺失数据不按 0 分处理/);
+});
+
+test("Evidence Gate 未过时，证据修复优先于业务内容改版", () => {
+  const detail = fixture();
+  detail.report.citationFactors.evidenceGate = {
+    status: "blocked",
+    label: "页面证据不足",
+    allowOptimizationAdvice: false,
+    blockers: [{ code: "PAGE_COVERAGE", message: "页面证据覆盖不足" }],
+    warnings: [],
+  };
+  detail.report.citationFactors.pageEvidence = {
+    totalArticles: 120,
+    successfulArticles: 60,
+    successRate: 0.5,
+    states: { success: 60 },
+  };
+  detail.report.citationFactors.strongestSignals = [];
+  const evaluation = evaluateBatchDetail(detail);
+  const html = buildHtmlReportWithFactors(detail, evaluation, { generatedAt: "2026-09-14T07:00:00Z" });
+  assert.match(html, /当前首要瓶颈/);
+  assert.match(html, /证据可用性/);
+  assert.match(html, /仅诊断/);
+  assert.match(html, /P0 · 先提高候选页面证据覆盖/);
+  assert.doesNotMatch(html, /P1 · 优先补齐最弱问题意图<\/b>/);
 });
 
 test("HTML 报告是自包含暖色专业报告、包含因子证据并转义外部数据", () => {
