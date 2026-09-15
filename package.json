@@ -30,6 +30,7 @@
     "worker": "node src/worker.js",
     "risk:audit": "node tools/risk-audit.js",
     "page:capture": "node tools/page-evidence-capture.js",
+    "source:intelligence": "node tools/source-intelligence-capture.js",
     "report": "node src/cli.js report",
     "report:retrieval": "node tools/retrieval-report.js",
     "report:factors": "node tools/citation-factor-report.js",
