@@ -108,23 +108,39 @@ async function waitForDomain(url) {
 }
 
 async function fetchRobots(url, timeoutMs) {
-  const base = new URL(url);
+  const base = await assertPublicHttpUrl(url);
   const key = base.hostname.toLowerCase();
   if (robotsCache.has(key)) return robotsCache.get(key);
-  const robotsUrl = new URL("/robots.txt", base);
+
+  let current = await assertPublicHttpUrl(new URL("/robots.txt", base).href);
   let result = { status: "unavailable", text: null };
   try {
-    const response = await fetch(robotsUrl, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(Math.min(timeoutMs, 5000)),
-      headers: { "user-agent": USER_AGENT, accept: "text/plain,*/*;q=0.1" },
-    });
-    if (response.status >= 400 && response.status < 500) result = { status: "missing", text: null };
-    else if (response.ok) {
-      const text = await response.text();
-      result = text && text.length <= 512 * 1024
-        ? { status: "found", text }
-        : { status: "missing", text: null };
+    for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
+      const response = await fetch(current, {
+        redirect: "manual",
+        signal: AbortSignal.timeout(Math.min(timeoutMs, 5000)),
+        headers: { "user-agent": USER_AGENT, accept: "text/plain,*/*;q=0.1" },
+      });
+
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get("location");
+        if (!location || redirectCount >= 3) {
+          result = { status: "unavailable", text: null };
+          break;
+        }
+        current = await assertPublicHttpUrl(new URL(location, current).href);
+        continue;
+      }
+
+      if (response.status >= 400 && response.status < 500) {
+        result = { status: "missing", text: null };
+      } else if (response.ok) {
+        const text = await response.text();
+        result = text && text.length <= 512 * 1024
+          ? { status: "found", text }
+          : { status: "missing", text: null };
+      }
+      break;
     }
   } catch {
     result = { status: "unavailable", text: null };
