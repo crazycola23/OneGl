@@ -46,7 +46,7 @@ function factorEvidenceSection(detail, evaluation) {
         <b>证据门槛：${factorEsc(gate.label)}（${factorEsc(gate.status)}）</b>
         ${gate.blockers?.length ? `<ul>${gate.blockers.map((item) => `<li>${factorEsc(item.message)}</li>`).join("")}</ul>` : ""}
         ${gate.warnings?.length ? `<ul>${gate.warnings.map((item) => `<li>${factorEsc(item.message)}</li>`).join("")}</ul>` : ""}
-        ${gate.allowOptimizationAdvice ? "" : "<p><b>本批次不输出优化建议。</b>下表仅作诊断，不得作为改版依据。</p>"}
+        ${gate.allowOptimizationAdvice ? "" : "<p><b>本批次不输出页面因素优化建议。</b>下表仅作诊断，不得把弱关联直接当成改版依据。</p>"}
       </div>`
     : "";
 
@@ -74,7 +74,7 @@ function factorEvidenceSection(detail, evaluation) {
       <td>${factorEsc(row.evidenceLevel ?? "探索性")}</td>
     </tr>`).join("")}</tbody></table></div>`
     : `<div class="empty">${gate?.allowOptimizationAdvice === false
-        ? "证据门槛未通过：本批次不输出可执行因素清单，仅保留诊断数据。"
+        ? "证据门槛未通过：本批次不输出可执行页面因素清单，仅保留诊断数据。"
         : "当前没有同时达到样本门槛与 q≤0.10 的页面/检索因素。保留原始因子统计，但不把弱信号提升为优化建议。"}</div>`;
 
   const pageRate = factor?.pageEvidence?.successRate;
@@ -116,27 +116,40 @@ function optimizationSummaryData(detail, evaluation) {
   let bottleneck = "进入扩样验证阶段";
   let bottleneckEvidence = "当前没有单一指标足以定义明确短板，优先保持固定 Prompt 池做跨批次复测。";
   let bottleneckTone = "good";
+  let actionKeywords = [];
 
   if (Number(metrics.dataQualityScore) < 80) {
     bottleneck = "数据可信度";
     bottleneckEvidence = `数据质量 ${factorEsc(metrics.dataQualityScore)}/100；先修失败 Run、引用解析或页面证据，再解释业务结果。`;
     bottleneckTone = "bad";
+    actionKeywords = ["数据可信度", "数据质量"];
+  } else if (gate?.allowOptimizationAdvice === false) {
+    bottleneck = "证据可用性";
+    bottleneckEvidence = gate.label
+      ? `页面因素证据门槛为「${factorEsc(gate.label)}」；先补齐候选匹配/页面证据，再用因子关联指导改版。`
+      : "页面因素证据门槛未通过；先补齐候选匹配或页面证据，再用因子关联指导改版。";
+    bottleneckTone = "warn";
+    actionKeywords = ["页面证据", "数据可信度"];
   } else if (weakest && Number.isFinite(categoryGap) && categoryGap >= 0.3 && Number(weakest.mentionRate) < 0.4) {
     bottleneck = `意图覆盖：${weakest.category}`;
     bottleneckEvidence = `该分类提及率仅 ${factorPct(weakest.mentionRate)}，与最佳分类相差 ${factorPct(categoryGap)}。`;
     bottleneckTone = "bad";
+    actionKeywords = ["最弱问题意图", "问题池"];
   } else if (promptCoverage != null && Number.isFinite(promptCoverage) && promptCoverage < 0.4) {
     bottleneck = "问题覆盖率";
     bottleneckEvidence = `品牌仅覆盖 ${factorPct(promptCoverage)} 的去重 Prompt；应先找出低覆盖问题簇，而不是继续看总引用数。`;
     bottleneckTone = "bad";
+    actionKeywords = ["问题池", "自然可见度"];
   } else if (trackedConfigured && trackedRate != null && Number.isFinite(trackedRate) && trackedRate < 0.25) {
     bottleneck = "自有内容进入引用层";
     bottleneckEvidence = `已配置目标文章，但最终引用率仅 ${factorPct(trackedRate)}。`;
     bottleneckTone = "warn";
+    actionKeywords = ["目标文章", "自有"];
   } else if (topShare != null && Number.isFinite(topShare) && topShare >= 0.5) {
     bottleneck = "来源结构过度集中";
     bottleneckEvidence = `Top1 来源占全部可见引用 ${factorPct(topShare)}，需要判断是否长期依赖单一来源生态。`;
     bottleneckTone = "warn";
+    actionKeywords = ["来源依赖", "来源结构"];
   }
 
   let actionability = "待扩样";
@@ -162,8 +175,15 @@ function optimizationSummaryData(detail, evaluation) {
     actionabilityHint = "样本仍小，先用来发现问题，不做稳定规律声明。";
   }
 
+  const p0Action = recommendations.find((item) => item.level === "P0") ?? null;
+  const alignedAction = actionKeywords.length
+    ? recommendations.find(
+        (item) => item.level === "P1" && actionKeywords.some((keyword) => String(item.title ?? "").includes(keyword)),
+      ) ?? null
+    : null;
   const primaryAction =
-    recommendations.find((item) => item.level === "P0") ??
+    p0Action ??
+    alignedAction ??
     recommendations.find((item) => item.level === "P1") ??
     recommendations[0] ??
     null;
@@ -228,6 +248,67 @@ function optimizationSummarySection(detail, evaluation) {
   </section>`;
 }
 
+function optimizationMetricsSection(detail, evaluation) {
+  const report = detail?.report ?? {};
+  const metrics = evaluation?.metrics ?? {};
+  const citations = report.citations ?? {};
+  const prompts = report.prompts ?? {};
+  const tracked = report.tracked ?? {};
+  const summary = optimizationSummaryData(detail, evaluation);
+  const weakest = summary.weakest;
+  const categoryGap = metrics?.category?.gap;
+  const factor = metrics?.factorEvidence ?? {};
+  const gate = factor?.gate ?? report?.citationFactors?.evidenceGate ?? null;
+  const trackedValue = summary.trackedConfigured ? factorPct(summary.trackedRate) : "N/A";
+  const trackedHint = summary.trackedConfigured
+    ? `${factorEsc(summary.trackedCited)} / ${factorEsc(summary.trackedTotal)} 篇目标文章`
+    : "未配置目标文章";
+  const sourceLabel = metrics?.source?.concentrationLabel ?? "暂无引用数据";
+  const topShare = metrics?.source?.topDomainShare;
+  const factorAction = gate?.allowOptimizationAdvice === true
+    ? "可做受控实验"
+    : gate?.allowOptimizationAdvice === false
+      ? "仅诊断"
+      : factor.available
+        ? "方向性诊断"
+        : "N/A";
+
+  return `<section class="section optimization-metrics">
+    <h2>调优观测指标</h2>
+    <p class="lead">把“结果、诊断、证据”分层阅读。Outcome 告诉你发生了什么；Diagnostic 定位损失；Evidence 决定这些现象是否足以指导改版。</p>
+
+    <div class="metric-group">
+      <div class="metric-group-head"><b>Outcome · 实际结果</b><span>描述当前表现，不单独解释原因</span></div>
+      <div class="grid">
+        <div class="kpi"><label>PROMPT 提及覆盖</label><strong>${factorPct(metrics.promptCoverage)}</strong><small>${factorEsc(prompts.mentioned ?? 0)} / ${factorEsc(prompts.total ?? 0)} 个去重问题</small></div>
+        <div class="kpi"><label>RUN 提及率</label><strong>${factorPct(metrics.runMentionRate)}</strong><small>${factorEsc(report?.runs?.mentioned ?? 0)} / ${factorEsc(report?.runs?.valid ?? metrics.valid ?? 0)} 有效 Run</small></div>
+        <div class="kpi"><label>自有内容引用</label><strong>${trackedValue}</strong><small>${trackedHint}</small></div>
+        <div class="kpi"><label>可见引用</label><strong>${factorEsc(citations.total ?? 0)}</strong><small>${factorEsc(citations.articles ?? 0)} 篇文章 · ${factorEsc(citations.domains ?? 0)} 个域名</small></div>
+      </div>
+    </div>
+
+    <div class="metric-group">
+      <div class="metric-group-head"><b>Diagnostic · 损失定位</b><span>用于决定下一轮优先查哪一层</span></div>
+      <div class="grid">
+        <div class="kpi"><label>最弱问题意图</label><strong class="text-value">${weakest ? factorEsc(weakest.category) : "暂无分类"}</strong><small>${weakest ? `提及率 ${factorPct(weakest.mentionRate)}` : "需要配置问题分类"}</small></div>
+        <div class="kpi"><label>意图差距</label><strong>${categoryGap == null ? "—" : factorPct(categoryGap)}</strong><small>最佳分类与最弱分类的提及率差</small></div>
+        <div class="kpi"><label>来源集中度</label><strong class="text-value">${factorEsc(sourceLabel)}</strong><small>Top1 ${topShare == null ? "—" : factorPct(topShare)}</small></div>
+        <div class="kpi"><label>平均引用密度</label><strong>${Number.isFinite(Number(metrics.citationDensity)) ? Number(metrics.citationDensity).toFixed(2) : "—"}</strong><small>每个有效 Run 的可见引用数；不是质量分</small></div>
+      </div>
+    </div>
+
+    <div class="metric-group">
+      <div class="metric-group-head"><b>Evidence · 可行动性</b><span>缺失数据不按 0 分处理</span></div>
+      <div class="grid">
+        <div class="kpi"><label>有效样本率</label><strong>${factorPct(metrics.validRate)}</strong><small>${factorEsc(metrics.valid ?? 0)} / ${factorEsc(metrics.assignments ?? 0)} Run</small></div>
+        <div class="kpi"><label>引用解析完整度</label><strong>${factorPct(metrics?.citationCompleteness?.rate)}</strong><small>${factorEsc(metrics?.citationCompleteness?.comparableRuns ?? 0)} 个可比较 Run</small></div>
+        <div class="kpi"><label>页面证据覆盖</label><strong>${factorPct(factor.pageEvidenceRate)}</strong><small>${factor.available ? `${factorEsc(factor.pageEvidenceSuccessful ?? 0)} / ${factorEsc(factor.pageEvidenceArticles ?? 0)} 篇候选文章` : "暂无页面因子证据"}</small></div>
+        <div class="kpi ${factorEsc(summary.actionabilityTone)}"><label>当前可行动性</label><strong class="text-value">${factorEsc(factorAction)}</strong><small>${factorEsc(summary.actionabilityHint)}</small></div>
+      </div>
+    </div>
+  </section>`;
+}
+
 function replaceSectionByHeading(html, heading, replacement) {
   const marker = `<section class="section">\n  <h2>${heading}</h2>`;
   const start = html.indexOf(marker);
@@ -253,6 +334,8 @@ function enhanceOptimizationSummary(base, detail, evaluation) {
     )
     .replace("<h2>核心数据统计</h2>", "<h2>调优观测指标</h2>");
 
+  html = replaceSectionByHeading(html, "调优观测指标", optimizationMetricsSection(detail, evaluation));
+
   const report = detail?.report ?? {};
   const tracked = report.tracked ?? {};
   const metrics = evaluation?.metrics ?? {};
@@ -269,6 +352,9 @@ function enhanceOptimizationSummary(base, detail, evaluation) {
 .optimization-focus.warn{border-left-color:var(--amber)}.optimization-focus.bad{border-left-color:var(--red)}
 .optimization-focus span{display:block;color:var(--soft);font-size:12px}.optimization-focus strong{display:block;margin-top:3px;font-size:24px}.optimization-focus p{margin:7px 0 0;color:var(--soft)}
 .kpi .text-value{font-size:20px;line-height:1.35}.kpi.good strong{color:var(--green)}.kpi.warn strong{color:var(--amber)}.kpi.bad strong{color:var(--red)}
+.metric-group{margin-top:14px;padding:16px;border:1px solid var(--line);border-radius:16px;background:var(--paper)}
+.metric-group-head{display:flex;justify-content:space-between;gap:16px;align-items:baseline;margin-bottom:12px}.metric-group-head b{font-size:14px}.metric-group-head span{color:var(--soft);font-size:12px;text-align:right}
+@media(max-width:820px){.metric-group-head{display:block}.metric-group-head span{display:block;margin-top:3px;text-align:left}}
 `;
   if (!html.includes(".optimization-focus{")) html = html.replace("</style>", `${summaryCss}</style>`);
   return html;
@@ -291,6 +377,7 @@ export function htmlReportWithFactorsBrowserBundle() {
     factorEvidenceSection,
     optimizationSummaryData,
     optimizationSummarySection,
+    optimizationMetricsSection,
     replaceSectionByHeading,
     enhanceOptimizationSummary,
     buildHtmlReportWithFactors,
