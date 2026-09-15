@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 
 import { evaluateBatchDetail } from "../src/report/evaluation.js";
-import { buildHtmlReportWithFactors } from "../src/report/html-report-factors.js";
+import { buildOptimizationHtmlReport } from "../src/report/html-report-optimization.js";
 
 /**
  * 把 tools/export-batch.js 导出的批次快照渲染成自包含 HTML 报告。
@@ -39,7 +39,7 @@ const detail = {
 };
 
 const evaluation = evaluateBatchDetail(detail);
-const html = buildHtmlReportWithFactors(detail, evaluation, {
+const html = buildOptimizationHtmlReport(detail, evaluation, {
   generatedAt: new Date().toISOString(),
   title: profile.title ?? null,
   subtitle: profile.subtitle ?? null,
