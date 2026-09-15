@@ -16,7 +16,12 @@ function detail() {
           uniqueSourceCount: 2,
           brandEvidenceSourceCount: 1,
           topSources: [{ domain: "example.com", citations: 2 }],
+          exampleAnswer: "可以结合资质、适用范围和距离选择，本次回答提到了测试品牌。",
         },
+      ],
+      domains: [
+        { domain: "example.com", citations: 2, sources: 1, promptCount: 1, brandEvidenceSources: 1 },
+        { domain: "hospital.example", citations: 1, sources: 1, promptCount: 1, brandEvidenceSources: 0 },
       ],
       sources: [
         {
@@ -29,6 +34,7 @@ function detail() {
             fetchState: "success",
             contentExcerpt: "文章介绍了本地调理机构，其中包含测试品牌的公开信息。",
             contentProfile: { type: "recommendation_list", structure: ["H1", "H2", "LIST"] },
+            outline: [{ level: 1, text: "长沙腰痛调理机构参考" }, { level: 2, text: "本地机构怎么选" }],
             brandMentioned: true,
             brandMentionCount: 2,
             brandLocations: ["body"],
@@ -45,6 +51,7 @@ function detail() {
             fetchState: "success",
             contentExcerpt: "介绍腰痛常见原因和就医建议。",
             contentProfile: { type: "informational", structure: ["H1", "H2"] },
+            outline: [{ level: 1, text: "腰痛科普指南" }],
             brandMentioned: false,
             brandMentionCount: 0,
           },
@@ -90,14 +97,19 @@ function detail() {
   };
 }
 
-test("主情报视图回答 Query、品牌、引用链接、文章结构和品牌证据", () => {
+test("主情报视图回答 Query、品牌、域名/链接、文章内容结构和品牌证据", () => {
   const html = brandSourceIntelligenceHtml(detail());
   assert.match(html, /搜索问题 → AI 是否出现目标品牌/);
-  assert.match(html, /AI 引用最多的是哪些链接/);
+  assert.match(html, /AI 的引用主要来自哪些域名与链接/);
   assert.match(html, /被引用文章大部分是什么结构/);
   assert.match(html, /哪些被引用文章本身提到了目标品牌/);
   assert.match(html, /长沙腰痛调理去哪好/);
+  assert.match(html, /AI 回答片段/);
+  assert.match(html, /本次回答提到了测试品牌/);
+  assert.match(html, /example\.com/);
   assert.match(html, /https:\/\/example\.com\/article-a/);
+  assert.match(html, /文章内容摘要/);
+  assert.match(html, /文章标题结构/);
   assert.match(html, /recommendation_list/);
   assert.match(html, /测试品牌的公开信息/);
   assert.match(html, /不等于证明该 URL 是 AI 提及品牌的唯一原因/);
