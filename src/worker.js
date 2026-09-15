@@ -1,5 +1,7 @@
 import "dotenv/config";
 import os from "node:os";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { DelayedError, UnrecoverableError, Worker } from "bullmq";
 import {
   ACCOUNT_BLOCKING_CODES,
@@ -18,9 +20,21 @@ import { loadConfig } from "./config.js";
 import { createPool } from "./db/pool.js";
 import { openDoubao } from "./doubao.js";
 import { loadBrandRules } from "./project/init.js";
-import { accountQueueName, closeRedis, getRedis, isQueueConfigured } from "./queue/connection.js";
+import {
+  accountQueueName,
+  closeRedis,
+  getRedis,
+  isQueueConfigured,
+  sourceIntelligenceQueueName,
+} from "./queue/connection.js";
 import { refreshBatchProgress, runIdFor, runTokenFor } from "./queue/batches.js";
 import { planUnavailableJob } from "./queue/job-plan.js";
+import {
+  finishSourceIntelligence,
+  markSourceIntelligenceRunning,
+  reconcileSourceIntelligence,
+  sourceIntelligenceCoverage,
+} from "./queue/source-intelligence.js";
 import {
   WORKER_HEARTBEAT_INTERVAL_MS,
   WORKER_HEARTBEAT_TTL_SECONDS,
@@ -36,6 +50,9 @@ import { RunStore } from "./store.js";
  *
  * 采集逻辑直接复用 src/collect/runner.js（与命令行同一份内核），
  * 没有第二套登录判断、提问、回答与引用提取实现。
+ *
+ * 引用页内容情报走另一条 BullMQ 队列，并在独立 Node 子进程里执行，
+ * 不占账号采集队列、不读取登录态，也不会把第三方页面失败改写成批次失败。
  */
 
 if (!isQueueConfigured()) {
@@ -49,6 +66,11 @@ const pool = createPool();
 const safety = safetyConfig();
 const prefix = process.env.ONEGL_QUEUE_PREFIX ?? "onegl";
 const WORKER_CONCURRENCY_PER_ACCOUNT = 1;
+const SOURCE_INTELLIGENCE_CONCURRENCY = 1;
+const SOURCE_INTELLIGENCE_RECONCILE_MS = 15_000;
+const SOURCE_INTELLIGENCE_SCRIPT = fileURLToPath(
+  new URL("../tools/source-intelligence-capture.js", import.meta.url),
+);
 // 一个临时冷却的任务最多被推迟几次。冷却本身不消耗重试次数，所以需要一个上限，
 // 否则账号长期不可用（例如连续失败一直续冷却）时任务会无限期地挂着。
 const MAX_COOLDOWN_WAITS = 3;
@@ -56,6 +78,7 @@ const MAX_COOLDOWN_WAITS = 3;
 const sessions = new Map();
 const brandRulesCache = new Map();
 const workers = new Map();
+let sourceIntelligenceWorker = null;
 let shuttingDown = false;
 
 function log(fields) {
@@ -90,6 +113,11 @@ async function publishHeartbeat() {
       accountCount: listeningAccounts.length,
       concurrencyPerAccount: WORKER_CONCURRENCY_PER_ACCOUNT,
       accountParallelism: safety.accountParallelism,
+      sourceIntelligence: {
+        queue: sourceIntelligenceQueueName(),
+        concurrency: SOURCE_INTELLIGENCE_CONCURRENCY,
+        online: sourceIntelligenceWorker !== null,
+      },
     };
     await getRedis().set(
       workerHeartbeatKey(),
@@ -429,6 +457,127 @@ async function startWorkerFor(accountKey) {
   log({ event: "worker-started", queue: name, account_key: accountKey });
 }
 
+function runSourceIntelligenceChild(batchId) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [SOURCE_INTELLIGENCE_SCRIPT, "--batch", String(batchId), "--refresh"],
+      {
+        cwd: process.cwd(),
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stderrTail = "";
+    child.stdout.on("data", (chunk) => {
+      process.stdout.write(`[source-intelligence] ${chunk}`);
+    });
+    child.stderr.on("data", (chunk) => {
+      const text = String(chunk);
+      stderrTail = `${stderrTail}${text}`.slice(-12_000);
+      process.stderr.write(`[source-intelligence] ${text}`);
+    });
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      if (code === 0) return resolve({ code: 0, signal: signal ?? null });
+      const suffix = stderrTail.trim() ? `：${stderrTail.trim().slice(-2000)}` : "";
+      reject(new Error(`引用页分析子进程退出 code=${code} signal=${signal ?? "none"}${suffix}`));
+    });
+  });
+}
+
+async function handleSourceIntelligenceJob(job) {
+  const batchId = Number(job.data?.batchId);
+  const generation = Number(job.data?.generation);
+  if (!Number.isInteger(batchId) || batchId <= 0 || !Number.isInteger(generation)) {
+    throw new UnrecoverableError("引用页分析任务缺少有效 batchId / generation");
+  }
+
+  const accepted = await markSourceIntelligenceRunning(pool, batchId, generation);
+  if (!accepted) {
+    log({
+      event: "source-intelligence-superseded",
+      batch_id: batchId,
+      generation,
+    });
+    return { superseded: true };
+  }
+
+  log({ event: "source-intelligence-start", batch_id: batchId, generation });
+  await runSourceIntelligenceChild(batchId);
+
+  const coverage = await sourceIntelligenceCoverage(pool, batchId);
+  let status = "completed";
+  let error = null;
+  if (coverage.citedSources > 0 && coverage.analyzedSources === 0) {
+    status = "failed";
+    error = `0/${coverage.citedSources} 个用户可见引用页完成内容分析`;
+  } else if (coverage.analyzedSources < coverage.citedSources) {
+    status = "partial";
+    error = `${coverage.unresolvedSources} 个用户可见引用页未完成分析`;
+  }
+
+  const saved = await finishSourceIntelligence(pool, batchId, generation, { status, error });
+  if (!saved) return { superseded: true, coverage };
+
+  log({
+    event: "source-intelligence-done",
+    batch_id: batchId,
+    generation,
+    status,
+    cited_sources: coverage.citedSources,
+    analyzed_sources: coverage.analyzedSources,
+    brand_evidence_sources: coverage.brandEvidenceSources,
+  });
+  return { status, coverage };
+}
+
+async function startSourceIntelligenceWorker() {
+  if (sourceIntelligenceWorker || shuttingDown) return sourceIntelligenceWorker;
+  const name = sourceIntelligenceQueueName();
+  const worker = new Worker(name, handleSourceIntelligenceJob, {
+    connection: getRedis(),
+    concurrency: SOURCE_INTELLIGENCE_CONCURRENCY,
+    lockDuration: 30 * 60 * 1000,
+    stalledInterval: 60 * 1000,
+  });
+
+  worker.on("failed", async (job, error) => {
+    log({
+      event: "source-intelligence-error",
+      queue: name,
+      job_id: job?.id,
+      batch_id: job?.data?.batchId,
+      generation: job?.data?.generation,
+      attempts: job?.attemptsMade,
+      error: error?.message,
+    });
+    const attempts = Number(job?.opts?.attempts ?? 1);
+    if (job && Number(job.attemptsMade ?? 0) >= attempts) {
+      await finishSourceIntelligence(pool, Number(job.data.batchId), Number(job.data.generation), {
+        status: "failed",
+        error: error?.message ?? "引用页分析任务失败",
+      }).catch(() => undefined);
+    }
+  });
+
+  worker.on("error", (error) => {
+    console.error(`[worker] 引用页分析队列错误 ${name}：${error.message}`);
+  });
+
+  sourceIntelligenceWorker = worker;
+  log({ event: "worker-started", queue: name, concurrency: SOURCE_INTELLIGENCE_CONCURRENCY });
+  return worker;
+}
+
+async function reconcileIntelligence() {
+  if (shuttingDown) return [];
+  return reconcileSourceIntelligence(pool, {
+    limit: 20,
+    log: (message) => log({ event: "source-intelligence-schedule", message }),
+  });
+}
+
 async function discoverAccounts() {
   const { rows } = await pool.query(
     `SELECT account_key FROM accounts WHERE enabled = true ORDER BY account_key`,
@@ -447,6 +596,11 @@ async function shutdown(signal) {
 
   await Promise.all([...workers.values()].map((worker) => worker.close().catch(() => undefined)));
   workers.clear();
+  if (sourceIntelligenceWorker) {
+    const worker = sourceIntelligenceWorker;
+    sourceIntelligenceWorker = null;
+    await worker.close().catch(() => undefined);
+  }
   await Promise.all([...sessions.keys()].map((accountKey) => closeSession(accountKey)));
   await pool.end().catch(() => undefined);
   // 主动删掉心跳，界面立刻就能反映「Worker 已停止」，不用等 TTL 过期。
@@ -461,12 +615,14 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 async function main() {
+  await startSourceIntelligenceWorker();
   const accounts = await discoverAccounts();
   console.log("OneGl 后台采集 Worker 已启动");
   console.log(`  队列前缀      : ${prefix}`);
   console.log(`  监听账号队列  : ${accounts.join(", ") || "（暂无账号）"}`);
   console.log(`  单账号并发    : ${WORKER_CONCURRENCY_PER_ACCOUNT}`);
   console.log(`  账号并行度    : ${safety.accountParallelism}`);
+  console.log(`  引用页分析    : ${sourceIntelligenceQueueName()}（并发 ${SOURCE_INTELLIGENCE_CONCURRENCY}）`);
   console.log(
     `  请求间隔      : ${safety.minDelayMs}–${safety.maxDelayMs} ms（随机）`,
   );
@@ -475,11 +631,22 @@ async function main() {
   );
   console.log(`  心跳          : ${workerHeartbeatKey()}（每 ${WORKER_HEARTBEAT_INTERVAL_MS / 1000} 秒）`);
 
+  // Worker 启动后先补历史/刚完成的批次，再进入周期对账。
+  await reconcileIntelligence().catch((error) => {
+    console.error(`[worker] 引用页分析初始对账失败：${error.message}`);
+  });
+
   // Web 端靠心跳判断 Worker 是否在线；Redis 在线不代表 Worker 在线。
   await publishHeartbeat();
   setInterval(() => {
     publishHeartbeat().catch(() => undefined);
   }, WORKER_HEARTBEAT_INTERVAL_MS).unref();
+
+  setInterval(() => {
+    reconcileIntelligence().catch((error) =>
+      console.error(`[worker] 引用页分析对账失败：${error.message}`),
+    );
+  }, SOURCE_INTELLIGENCE_RECONCILE_MS).unref();
 
   // 新账号在批量入队时才创建，定期扫描以便自动接入
   setInterval(() => {
