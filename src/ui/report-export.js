@@ -1,9 +1,11 @@
 import { evaluationBrowserBundle } from "../report/evaluation.js";
-import { htmlReportWithFactorsBrowserBundle } from "../report/html-report-factors.js";
-import { promptOpportunityBrowserBundle } from "../report/prompt-opportunities.js";
+import {
+  buildOptimizationHtmlReport,
+  optimizationHtmlReportBrowserBundle,
+} from "../report/html-report-optimization.js";
 
 function browserBootstrapSource() {
-  return `${evaluationBrowserBundle()}\n${htmlReportWithFactorsBrowserBundle()}\n${promptOpportunityBrowserBundle()}\n
+  return `${evaluationBrowserBundle()}\n${optimizationHtmlReportBrowserBundle()}\n
 (function(){
   const match = window.location.pathname.match(/^\\/batches\\/(\\d+)$/);
   if (!match) return;
@@ -174,7 +176,7 @@ function browserBootstrapSource() {
 
   function downloadHtml(detail){
     const evaluation = evaluateBatchDetail(detail);
-    const html = buildHtmlReportWithFactors(detail, evaluation, { generatedAt: new Date().toISOString() });
+    const html = buildOptimizationHtmlReport(detail, evaluation, { generatedAt: new Date().toISOString() });
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -188,7 +190,7 @@ function browserBootstrapSource() {
 
   function previewHtml(detail){
     const evaluation = evaluateBatchDetail(detail);
-    const html = buildHtmlReportWithFactors(detail, evaluation, { generatedAt: new Date().toISOString() });
+    const html = buildOptimizationHtmlReport(detail, evaluation, { generatedAt: new Date().toISOString() });
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     window.open(url, '_blank', 'noopener,noreferrer');
