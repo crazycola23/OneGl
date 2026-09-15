@@ -89,6 +89,7 @@ async function loadCitedArticles(batchId, { refresh, limit }) {
          LEFT JOIN article_page_observations apo
            ON apo.batch_id = r.sampling_batch_id AND apo.article_id = a.id
         WHERE r.sampling_batch_id = $1
+          AND c.visible_to_user IS NOT FALSE
           ${refresh ? "" : "AND COALESCE(apo.content_profile, '{}'::jsonb) = '{}'::jsonb"}
         GROUP BY a.id
         ORDER BY citation_count DESC, a.id${limitSql}`,
@@ -250,7 +251,7 @@ async function persist(batchId, article, fetched, brandRules) {
        brand_first_mention_position, brand_matched_terms, brand_contexts, brand_locations, brand_detection_version,
        brand_terms_used
      ) VALUES (
-       $1,$2,$3,$4,'success',$5,$6,$7,$8,now(),$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb,$26,$27,$28,$29,$30,$31,$32,$33,$34::jsonb,$35,$36,$37::jsonb,$38::jsonb,$39,$40,$41,$42::jsonb,$43::jsonb,$44::jsonb,$45,$46::jsonb
+       $1,$2,$3,$4,'success',$5,$6,$7,$8,now(),$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb,$26,$27,$28,$29,$30,$31,$32,$33::jsonb,$34,$35,$36::jsonb,$37::jsonb,$38,$39,$40,$41::jsonb,$42::jsonb,$43::jsonb,$44,$45::jsonb
      )
      ON CONFLICT (batch_id, article_id) DO UPDATE SET
        requested_url=EXCLUDED.requested_url, final_url=EXCLUDED.final_url, fetch_state='success', http_status=EXCLUDED.http_status,
