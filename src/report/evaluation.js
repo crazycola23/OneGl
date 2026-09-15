@@ -9,6 +9,14 @@ function ratio(numerator, denominator) {
   return toNumber(numerator) / bottom;
 }
 
+function optionalRate(value, numerator, denominator) {
+  if (value != null && value !== "") {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return ratio(numerator, denominator);
+}
+
 function clamp(value, min = 0, max = 1) {
   return Math.max(min, Math.min(max, value));
 }
@@ -109,9 +117,7 @@ function categoryMetrics(detail) {
       category: row.category ?? "uncategorized",
       validRuns: toNumber(row.validRuns),
       mentioned: toNumber(row.mentioned),
-      mentionRate: Number.isFinite(Number(row.mentionRate))
-        ? Number(row.mentionRate)
-        : ratio(row.mentioned, row.validRuns),
+      mentionRate: optionalRate(row.mentionRate, row.mentioned, row.validRuns),
     }))
     .filter((row) => row.validRuns > 0 && row.mentionRate != null);
   if (!normalized.length) return { rows: [], best: null, weakest: null, gap: null };
@@ -127,8 +133,8 @@ function categoryMetrics(detail) {
 function accountMetrics(detail) {
   const rows = Array.isArray(detail?.report?.byAccount) ? detail.report.byAccount : [];
   const rates = rows
-    .map((row) => ({ account: row.account, rate: Number(row.mentionRate) }))
-    .filter((row) => Number.isFinite(row.rate));
+    .map((row) => ({ account: row.account, rate: optionalRate(row.mentionRate, row.mentioned, row.validRuns) }))
+    .filter((row) => row.rate != null && Number.isFinite(row.rate));
   if (rates.length < 2) return { gap: null, highest: null, lowest: null };
   const sorted = [...rates].sort((a, b) => b.rate - a.rate);
   return { gap: sorted[0].rate - sorted.at(-1).rate, highest: sorted[0], lowest: sorted.at(-1) };
@@ -149,17 +155,19 @@ function factorEvidenceMetrics(detail) {
       negativeSignals: [],
       evidenceScore: 0,
       evidenceLabel: "未就绪",
+      gate: factor?.evidenceGate ?? null,
+      matchCoverage: factor?.matchCoverage ?? null,
     };
   }
 
   const candidates = toNumber(factor?.cohort?.candidates);
   const cited = toNumber(factor?.cohort?.cited);
-  const baselineRate = Number.isFinite(Number(factor?.cohort?.baselineRate))
-    ? Number(factor.cohort.baselineRate)
-    : ratio(cited, candidates);
-  const pageEvidenceRate = Number.isFinite(Number(factor?.pageEvidence?.successRate))
-    ? Number(factor.pageEvidence.successRate)
-    : null;
+  const baselineRate = optionalRate(factor?.cohort?.baselineRate, cited, candidates);
+  const pageEvidenceRate = optionalRate(
+    factor?.pageEvidence?.successRate,
+    factor?.pageEvidence?.successfulArticles,
+    factor?.pageEvidence?.totalArticles,
+  );
   const signals = Array.isArray(factor?.strongestSignals) ? factor.strongestSignals : [];
   const supportedSignals = signals.filter(
     (row) => row.bucket !== "missing" && Number.isFinite(Number(row.qValue)) && Number(row.qValue) <= 0.1 && toNumber(row.candidates) >= 30,
@@ -186,6 +194,8 @@ function factorEvidenceMetrics(detail) {
     negativeSignals,
     evidenceScore,
     evidenceLabel,
+    gate: factor?.evidenceGate ?? null,
+    matchCoverage: factor?.matchCoverage ?? null,
   };
 }
 
@@ -231,7 +241,7 @@ function buildRecommendations(metrics) {
     items.push(
       priority(
         "P1",
-        "提高非品牌问题下的自然可见度",
+        "提高问题池中的自然可见度",
         `PROMPT 级提及覆盖仅 ${(metrics.promptCoverage * 100).toFixed(1)}%。`,
         "围绕低覆盖意图建立可直接回答的问题页/知识块：结论先行、数据可核验、标题与用户问题一致，并优先补齐最弱问题分类。",
         "目标：下一批 PROMPT 覆盖提升 10–15 个百分点",
@@ -252,7 +262,7 @@ function buildRecommendations(metrics) {
     );
   }
 
-  if (metrics.trackedRate != null && metrics.trackedRate < 0.25) {
+  if (metrics.trackedConfigured && metrics.trackedRate != null && metrics.trackedRate < 0.25) {
     items.push(
       priority(
         "P1",
@@ -341,15 +351,12 @@ export function evaluateBatchDetail(detail) {
   const validRate = assignments > 0 ? valid / assignments : 0;
   const failureRate = assignments > 0 ? failed / assignments : 0;
   const partialRate = assignments > 0 ? partial / assignments : 0;
-  const runMentionRate = Number.isFinite(Number(runs.mentionRate))
-    ? Number(runs.mentionRate)
-    : ratio(runs.mentioned, valid);
-  const promptCoverage = Number.isFinite(Number(prompts.mentionCoverage))
-    ? Number(prompts.mentionCoverage)
-    : ratio(prompts.mentioned, prompts.total);
-  const trackedRate = Number.isFinite(Number(tracked.citationRate))
-    ? Number(tracked.citationRate)
-    : ratio(tracked.cited, tracked.total);
+  const runMentionRate = optionalRate(runs.mentionRate, runs.mentioned, valid);
+  const promptCoverage = optionalRate(prompts.mentionCoverage, prompts.mentioned, prompts.total);
+  const trackedConfigured = toNumber(tracked.total) > 0;
+  const trackedRate = trackedConfigured
+    ? optionalRate(tracked.citationRate, tracked.cited, tracked.total)
+    : null;
   const citationDensity = valid > 0 ? toNumber(citations.total) / valid : 0;
 
   const completeness = citationCompleteness(detail);
@@ -361,7 +368,7 @@ export function evaluateBatchDetail(detail) {
   const visibilityParts = [];
   if (promptCoverage != null) visibilityParts.push({ value: promptCoverage, weight: 0.55 });
   if (runMentionRate != null) visibilityParts.push({ value: runMentionRate, weight: 0.35 });
-  if (trackedRate != null && toNumber(tracked.total) > 0) visibilityParts.push({ value: trackedRate, weight: 0.1 });
+  if (trackedConfigured && trackedRate != null) visibilityParts.push({ value: trackedRate, weight: 0.1 });
   const weightSum = visibilityParts.reduce((sum, item) => sum + item.weight, 0);
   const visibilityIndex = score100(
     weightSum
@@ -376,7 +383,7 @@ export function evaluateBatchDetail(detail) {
   const sampleConfidence =
     valid >= 100 ? "高" : valid >= 50 ? "中高" : valid >= 25 ? "中" : valid >= 10 ? "偏低" : "低";
 
-  const ownedScore = trackedRate == null ? null : score100(trackedRate);
+  const ownedScore = trackedConfigured && trackedRate != null ? score100(trackedRate) : null;
   const geoParts = [
     { value: dataQualityScore, weight: 0.25 },
     { value: visibilityIndex, weight: 0.4 },
@@ -398,6 +405,7 @@ export function evaluateBatchDetail(detail) {
     partialRate,
     runMentionRate,
     promptCoverage,
+    trackedConfigured,
     trackedRate,
     citationDensity,
     citationCompleteness: completeness,
@@ -430,7 +438,7 @@ export function evaluateBatchDetail(detail) {
   }
 
   return {
-    version: 2,
+    version: 3,
     metrics,
     recommendations: buildRecommendations(metrics),
     caveats,
@@ -441,6 +449,7 @@ export function evaluationBrowserBundle() {
   return [
     toNumber,
     ratio,
+    optionalRate,
     clamp,
     score100,
     average,
