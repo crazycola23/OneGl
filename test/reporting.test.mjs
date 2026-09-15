@@ -212,7 +212,7 @@ test("批次页面以品牌/引用情报为主视图，GEO 调优诊断降为二
   assert.match(script, /buildOptimizationHtmlReport/);
   assert.match(script, /AI 搜索品牌与引用情报/);
   assert.match(script, /搜索问题 → AI 是否出现目标品牌/);
-  assert.match(script, /AI 引用最多的是哪些链接/);
+  assert.match(script, /AI 的引用主要来自哪些域名与链接/);
   assert.match(script, /被引用文章大部分是什么结构/);
   assert.match(script, /哪些被引用文章本身提到了目标品牌/);
   assert.match(script, /二级 GEO 调优诊断/);
