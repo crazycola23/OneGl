@@ -113,6 +113,7 @@ test("OpenAPI documents tenant clients, remote auth, webhooks and GEO intelligen
   assert.ok(openApiDocument.paths["/v1/providers"]);
   assert.ok(openApiDocument.paths["/v1/projects"]);
   assert.ok(openApiDocument.paths["/v1/projects/{projectId}/competitors"]);
+  assert.ok(openApiDocument.paths["/v1/projects/{projectId}/intelligence"]);
   assert.ok(openApiDocument.paths["/v1/accounts/{accountId}/auth-sessions"]);
   assert.ok(openApiDocument.paths["/v1/auth-sessions/{authSessionId}/screenshot"]);
   assert.ok(openApiDocument.paths["/v1/batches/{batchId}/start"]);
