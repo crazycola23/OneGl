@@ -70,6 +70,8 @@ If the same key is reused with a different request body, OneGl returns:
 
 If the original request with that key is still being processed, OneGl returns `idempotency_in_progress`.
 
+The first HTTP outcome for an idempotent operation is retained, including validation/account-state errors. If a user fixes a precondition such as `account_action_required` and intentionally tries the action again, the SaaS should create a **new** Idempotency-Key. Reuse the old key only when retrying an ambiguous network/gateway outcome of the same intended action.
+
 The SaaS should generate a new idempotency key for each intended create/run action. A natural key is the SaaS-side job/request UUID.
 
 ### Example: safe Execution creation
@@ -87,7 +89,7 @@ A gateway timeout followed by an identical retry will return the same `execution
 
 ## 3. Cursor pagination
 
-Large SaaS history lists use cursor pagination:
+Large SaaS history lists use cursor pagination. Existing v0.6 list-size compatibility is preserved: default `limit` is `100` and maximum is `500`.
 
 ```http
 GET /v1/tasks?limit=50
@@ -261,7 +263,7 @@ Recommended behavior by failure type:
 | network timeout after POST | retry with the **same** `Idempotency-Key` and same body |
 | `idempotency_in_progress` | wait briefly and retry same request/key |
 | `idempotency_conflict` | treat as caller bug; generate a new key only for a genuinely new action |
-| `account_action_required` | send user to login/verification handling |
+| `account_action_required` | send user to login/verification handling; after recovery, retry the intended action with a **new** key |
 | `429` | obey Retry-After when rate limiting is added/exposed |
 | `5xx` | retry conservatively; do not change the idempotency key for an ambiguous create request |
 
