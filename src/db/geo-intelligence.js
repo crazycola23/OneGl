@@ -141,7 +141,9 @@ export async function loadBatchGeoIntelligence(pool, batchId) {
     }
     promptStats.set(promptId, prompt);
 
-    const providerKey = `${run.provider}::${run.model}::${run.provider_access}`;
+    // A provider can expose the same model name through multiple access paths and
+    // model versions. Keep every measurement surface distinct in the breakdown.
+    const providerKey = `${run.provider}::${run.model}::${run.provider_access}::${run.model_version ?? "unknown"}`;
     const target = providerStats.get(providerKey) ?? {
       provider: run.provider,
       model: run.model,
@@ -152,7 +154,6 @@ export async function loadBatchGeoIntelligence(pool, batchId) {
     };
     target.runs += 1;
     if (brandMentioned) target.brandMentions += 1;
-    if (!target.modelVersion && run.model_version) target.modelVersion = run.model_version;
     providerStats.set(providerKey, target);
   }
 
@@ -184,6 +185,8 @@ export async function loadBatchGeoIntelligence(pool, batchId) {
   );
   const stability = computeCitationVolatility(dailyDomains);
 
+  // Fetch the complete domain distribution so top-domain shares use the true
+  // citation denominator. Only the response list is truncated to 25 rows.
   const { rows: domainRows } = await pool.query(
     `SELECT a.normalized_domain AS domain, count(*)::int AS citations,
             count(DISTINCT r.id)::int AS runs
@@ -195,12 +198,11 @@ export async function loadBatchGeoIntelligence(pool, batchId) {
         AND c.source_type = 'visible'
         AND c.visible_to_user IS TRUE
       GROUP BY 1
-      ORDER BY citations DESC, domain
-      LIMIT 25`,
+      ORDER BY citations DESC, domain`,
     [batchId],
   );
   const totalCitations = domainRows.reduce((sum, row) => sum + Number(row.citations), 0);
-  const topDomains = domainRows.map((row) => ({
+  const topDomains = domainRows.slice(0, 25).map((row) => ({
     domain: row.domain,
     citations: Number(row.citations),
     runs: Number(row.runs),
