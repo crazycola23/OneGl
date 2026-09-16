@@ -1,5 +1,6 @@
 node_modules/
 .env
+deploy/.env.production
 .onegl/
 .venv/
 # 客户交付报告：含具体品牌的监测结论与豆包回答原文，不进公开仓库
