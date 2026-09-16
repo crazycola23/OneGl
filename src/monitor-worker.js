@@ -11,6 +11,7 @@ import {
 import { countActiveKeywords } from "./project/keywords.js";
 import { enqueueBatch } from "./queue/batches.js";
 import { createSamplingBatch } from "./sampling/batch.js";
+import { ensureScheduledTaskExecutionForBatch } from "./tasks/service.js";
 
 if (!isDatabaseConfigured()) throw new Error("DATABASE_URL is required for monitor:worker");
 
@@ -118,9 +119,21 @@ async function executeOccurrence(execution) {
       batch = { id: created.batchId, status: "pending" };
     }
 
+    const serviceExecution = await ensureScheduledTaskExecutionForBatch(pool, {
+      monitorPlanId: Number(context.plan_id),
+      batchId: batch.id,
+    });
+    let reportId = null;
+    if (serviceExecution) {
+      const { rows } = await pool.query("SELECT public_id FROM service_reports WHERE execution_id = $1", [serviceExecution.id]);
+      reportId = rows[0]?.public_id ?? null;
+    }
+
     const started = await enqueueBatch(pool, batch.id, { log: () => undefined });
     const details = {
       batch_id: batch.id,
+      execution_id: serviceExecution?.public_id ?? null,
+      report_id: reportId,
       started: started.started,
       start_reason: started.reason ?? null,
       sample_size: sampleSize,
