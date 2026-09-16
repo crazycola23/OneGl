@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 
 import pg from "pg";
@@ -8,7 +8,7 @@ import { createApiClient } from "../src/api/service-store.js";
 const DATABASE_URL = process.env.DATABASE_URL;
 const REDIS_URL = process.env.REDIS_URL;
 
-function startApi(port, apiKey, prefix) {
+function startApi(port, prefix) {
   const child = spawn(process.execPath, ["src/api-entry.js"], {
     cwd: process.cwd(),
     env: {
@@ -33,7 +33,7 @@ function startApi(port, apiKey, prefix) {
   let stderr = "";
   child.stdout.on("data", (chunk) => { stdout += String(chunk); });
   child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-  return { child, apiKey, output: () => ({ stdout, stderr }) };
+  return { child, output: () => ({ stdout, stderr }) };
 }
 
 async function waitForApi(processInfo, timeoutMs = 10_000) {
@@ -74,20 +74,32 @@ async function waitForAudit(pool, ids, timeoutMs = 5_000) {
   throw new Error("audit rows were not persisted in time");
 }
 
+function runTool(script, args = []) {
+  const result = spawnSync(process.execPath, [script, ...args], {
+    cwd: process.cwd(),
+    env: { ...process.env, DATABASE_URL },
+    encoding: "utf8",
+  });
+  if (result.status !== 0) throw new Error(`${script} failed\n${result.stdout}\n${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
 test("API observability persists tenant/client audit, rate-limits across Redis, and exposes protected metrics", async (t) => {
   if (!DATABASE_URL || !REDIS_URL) return t.skip("DATABASE_URL and REDIS_URL are required");
   const pool = new pg.Pool({ connectionString: DATABASE_URL });
   const suffix = `${process.pid}_${Date.now()}`;
   const port = 35000 + (process.pid % 1000);
   let processInfo;
+  let clientName = null;
   try {
     const tenant = (await pool.query("SELECT id FROM service_tenants WHERE slug = 'default'" )).rows[0];
     assert.ok(tenant?.id);
+    clientName = `observability-${suffix}`;
     const client = await createApiClient(pool, {
       tenantId: Number(tenant.id),
-      name: `observability-${suffix}`,
+      name: clientName,
     });
-    processInfo = startApi(port, client.api_key, `onegl-observability-${suffix}`);
+    processInfo = startApi(port, `onegl-observability-${suffix}`);
     await waitForApi(processInfo);
     const base = `http://127.0.0.1:${port}`;
     const requestIds = [];
@@ -130,6 +142,15 @@ test("API observability persists tenant/client audit, rate-limits across Redis, 
     assert.match(text, /onegl_api_requests_total\{method="GET",route="\/v1\/projects",status="2xx"\} 2/);
     assert.match(text, /onegl_database_ready 1/);
     assert.match(text, /onegl_webhook_events/);
+    assert.match(text, /onegl_worker_state\{state="offline"\} 1/);
+
+    const auditTool = runTool("tools/audit-log.js", ["--tenant-id", String(tenant.id), "--hours", "1", "--limit", "10"]);
+    assert.ok(auditTool.data.some((row) => requestIds.includes(row.request_id)));
+
+    const summary = runTool("tools/ops-summary.js", ["--tenant-id", String(tenant.id), "--hours", "1"]);
+    assert.ok(summary.api.requests >= 3);
+    assert.ok(summary.api.rate_limited >= 1);
+    assert.ok(summary.api.top_routes.some((row) => row.route_key === "/v1/projects"));
 
     const columns = (await pool.query(
       `SELECT column_name FROM information_schema.columns
@@ -140,7 +161,7 @@ test("API observability persists tenant/client audit, rate-limits across Redis, 
     assert.ok(!columns.includes("authorization"));
   } finally {
     if (processInfo) await stop(processInfo.child);
-    await pool.query("DELETE FROM service_api_clients WHERE name = $1", [`observability-${suffix}`]).catch(() => undefined);
+    if (clientName) await pool.query("DELETE FROM service_api_clients WHERE name = $1", [clientName]).catch(() => undefined);
     await pool.end().catch(() => undefined);
   }
 });
