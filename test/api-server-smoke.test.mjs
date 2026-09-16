@@ -81,6 +81,7 @@ test("api:serve exposes health/OpenAPI and protects v1 routes", async () => {
     assert.ok(specBody.paths["/v1/admin/tenants"]);
     assert.ok(specBody.paths["/v1/providers"]);
     assert.ok(specBody.paths["/v1/projects/{projectId}/competitors"]);
+    assert.ok(specBody.paths["/v1/projects/{projectId}/intelligence"]);
     assert.ok(specBody.paths["/v1/batches/{batchId}/intelligence"]);
 
     const anonymous = await fetch(`${base}/v1/projects`);
