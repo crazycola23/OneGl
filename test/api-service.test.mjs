@@ -2,40 +2,49 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import test from "node:test";
 
-import { parseBatchCreate, parseProjectCreate } from "../src/api/contracts.js";
+import { parseBatchCreate, parseKeywordsCreate, parseLimit, parseProjectCreate } from "../src/api/contracts.js";
 import { ApiHttpError, readJsonBody } from "../src/api/http.js";
 import { openApiDocument } from "../src/api/openapi.js";
 import {
-  hashServiceKey,
+  DEFAULT_SCOPES,
+  hashApiKey,
+  internalAccountKey,
   internalProjectName,
   requireScope,
   webhookSecretFor,
 } from "../src/api/service-store.js";
 
 test("tenant client keys are stored as hashes and scopes are enforced", () => {
-  assert.equal(hashServiceKey("alpha"), hashServiceKey("alpha"));
-  assert.notEqual(hashServiceKey("alpha"), hashServiceKey("beta"));
-  assert.doesNotThrow(() => requireScope({ master: false, scopes: ["projects:read"] }, "projects:read"));
+  const plaintext = "onegl_client_secret_example";
+  assert.notEqual(hashApiKey(plaintext), plaintext);
+  assert.equal(hashApiKey(plaintext), hashApiKey(plaintext));
+
+  assert.doesNotThrow(() => requireScope({ kind: "client", scopes: ["projects:read"] }, "projects:read"));
   assert.throws(
-    () => requireScope({ master: false, scopes: ["projects:read"] }, "batches:write"),
+    () => requireScope({ kind: "client", scopes: ["projects:read"] }, "projects:write"),
     (error) => error instanceof ApiHttpError && error.status === 403,
   );
-  assert.doesNotThrow(() => requireScope({ master: true, scopes: [] }, "anything:write"));
+  assert.doesNotThrow(() => requireScope({ kind: "master", scopes: ["*"] }, "anything"));
+  assert.ok(DEFAULT_SCOPES.includes("webhooks:write"));
 });
 
 test("tenant project names are internally namespaced without breaking legacy default tenant names", () => {
-  assert.equal(internalProjectName({ slug: "acme" }, "小米汽车"), "acme::小米汽车");
-  assert.equal(internalProjectName({ slug: "default" }, "Demo"), "Demo");
+  assert.equal(internalProjectName({ slug: "default" }, "小米汽车"), "小米汽车");
+  assert.equal(internalProjectName({ slug: "agency-a" }, "小米汽车"), "agency-a::小米汽车");
+  assert.equal(internalAccountKey({ slug: "default" }, "account_01"), "account_01");
+  assert.equal(internalAccountKey({ slug: "agency-a" }, "account_01"), "agency-a::account_01");
 });
 
 test("webhook signing secrets are deterministic per tenant and endpoint", () => {
   const previous = process.env.ONEGL_WEBHOOK_SIGNING_KEY;
-  process.env.ONEGL_WEBHOOK_SIGNING_KEY = "test-root-signing-key";
+  process.env.ONEGL_WEBHOOK_SIGNING_KEY = "test-master-signing-key";
   try {
-    const one = webhookSecretFor(1, 10);
-    assert.equal(one, webhookSecretFor(1, 10));
-    assert.notEqual(one, webhookSecretFor(1, 11));
-    assert.notEqual(one, webhookSecretFor(2, 10));
+    const a = webhookSecretFor(3, 9);
+    const b = webhookSecretFor(3, 9);
+    const c = webhookSecretFor(3, 10);
+    assert.equal(a, b);
+    assert.notEqual(a, c);
+    assert.match(a, /^whsec_[0-9a-f]{64}$/);
   } finally {
     if (previous == null) delete process.env.ONEGL_WEBHOOK_SIGNING_KEY;
     else process.env.ONEGL_WEBHOOK_SIGNING_KEY = previous;
@@ -43,49 +52,40 @@ test("webhook signing secrets are deterministic per tenant and endpoint", () => 
 });
 
 test("project contract normalizes optional bootstrap keywords", () => {
-  assert.deepEqual(
-    parseProjectCreate({
-      name: " 小米汽车 ",
-      target_brand: " 小米 ",
-      keywords: ["20万新能源SUV", "20万新能源SUV", "国产新能源推荐"],
-      category: " recommendation ",
-    }),
-    {
-      name: "小米汽车",
-      description: null,
-      targetBrand: "小米",
-      keywords: ["20万新能源SUV", "国产新能源推荐"],
-      category: "recommendation",
-    },
-  );
+  const parsed = parseProjectCreate({
+    name: " demo ",
+    description: "  note ",
+    target_brand: " Brand ",
+    keywords: [" a ", "a", "", " b "],
+    category: "  category ",
+  });
+  assert.deepEqual(parsed, {
+    name: "demo",
+    description: "note",
+    targetBrand: "Brand",
+    keywords: ["a", "b"],
+    category: "category",
+  });
 });
 
 test("batch contract validates method, limits and account list", () => {
   assert.deepEqual(
-    parseBatchCreate({
-      project_id: 12,
-      accounts: ["account_01", "account_01", "account_02"],
-      repeats: 3,
-      size: 20,
-      method: "RANDOM",
-      start: true,
-    }),
+    parseBatchCreate({ project_id: 2, accounts: [" a ", "a", "b"], method: "random", repeats: 2, start: true }),
     {
-      projectId: 12,
-      size: 20,
-      repeats: 3,
-      accounts: ["account_01", "account_02"],
+      projectId: 2,
+      name: null,
+      size: null,
       method: "random",
       seed: null,
-      name: null,
+      accounts: ["a", "b"],
+      repeats: 2,
       start: true,
     },
   );
-
-  assert.throws(
-    () => parseBatchCreate({ project_id: 1, accounts: ["account_01"], method: "unknown" }),
-    (error) => error instanceof ApiHttpError && error.status === 400,
-  );
+  assert.throws(() => parseBatchCreate({ project_id: 1, accounts: [], method: "random" }), ApiHttpError);
+  assert.throws(() => parseBatchCreate({ project_id: 1, accounts: ["a"], method: "nope" }), ApiHttpError);
+  assert.equal(parseLimit("", 7, 20), 7);
+  assert.equal(parseLimit("99", 7, 20), 20);
 });
 
 test("JSON reader rejects invalid and oversized request bodies", async () => {
@@ -105,16 +105,19 @@ test("JSON reader rejects invalid and oversized request bodies", async () => {
   );
 });
 
-test("OpenAPI documents tenant clients, remote auth, webhooks and business API without raw browser controls", () => {
+test("OpenAPI documents tenant clients, remote auth, webhooks and GEO intelligence without raw browser controls", () => {
   assert.equal(openApiDocument.openapi, "3.1.0");
-  assert.equal(openApiDocument.info.version, "0.2.0");
+  assert.equal(openApiDocument.info.version, "0.3.0");
   assert.ok(openApiDocument.paths["/v1/admin/tenants"]);
   assert.ok(openApiDocument.paths["/v1/admin/tenants/{tenantId}/clients"]);
+  assert.ok(openApiDocument.paths["/v1/providers"]);
   assert.ok(openApiDocument.paths["/v1/projects"]);
+  assert.ok(openApiDocument.paths["/v1/projects/{projectId}/competitors"]);
   assert.ok(openApiDocument.paths["/v1/accounts/{accountId}/auth-sessions"]);
   assert.ok(openApiDocument.paths["/v1/auth-sessions/{authSessionId}/screenshot"]);
   assert.ok(openApiDocument.paths["/v1/batches/{batchId}/start"]);
   assert.ok(openApiDocument.paths["/v1/batches/{batchId}/report"]);
+  assert.ok(openApiDocument.paths["/v1/batches/{batchId}/intelligence"]);
   assert.ok(openApiDocument.paths["/v1/webhooks"]);
   assert.ok(openApiDocument.paths["/v1/webhooks/test"]);
   assert.ok(openApiDocument.paths["/v1/runs/{runId}"]);
