@@ -1,8 +1,14 @@
 import crypto from "node:crypto";
 
-import { ApiHttpError } from "./http.js";
+import { ApiHttpError, readJsonBody } from "./http.js";
 
 const KEY_RE = /^[A-Za-z0-9._:-]{1,200}$/;
+const IDEMPOTENT_POST_PATHS = [
+  /^\/v1\/tasks$/,
+  /^\/v1\/tasks\/tsk_[a-f0-9]+\/clone$/,
+  /^\/v1\/tasks\/tsk_[a-f0-9]+\/executions$/,
+  /^\/v1\/tasks\/tsk_[a-f0-9]+\/schedules$/,
+];
 
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -28,8 +34,19 @@ export function idempotencyRequestHash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(canonicalize(value ?? null))).digest("hex");
 }
 
-export async function claimIdempotency(pool, { tenantId, operation, key, requestHash }) {
-  if (!key) return { claimed: true, record: null };
+export function supportsSaasIdempotency(req, pathname) {
+  return req.method === "POST" && IDEMPOTENT_POST_PATHS.some((pattern) => pattern.test(pathname));
+}
+
+export async function beginSaasIdempotency(pool, { tenantId, req, pathname }) {
+  const key = idempotencyKeyFromRequest(req);
+  if (!key || !supportsSaasIdempotency(req, pathname)) return null;
+
+  // readJsonBody caches the parsed body on the request, so the real route can read it again.
+  const body = await readJsonBody(req);
+  const requestHash = idempotencyRequestHash(body);
+  const operation = `${req.method} ${pathname}`;
+
   const { rows } = await pool.query(
     `INSERT INTO service_idempotency_keys (tenant_id, operation, idempotency_key, request_hash)
      VALUES ($1, $2, $3, $4)
@@ -37,7 +54,17 @@ export async function claimIdempotency(pool, { tenantId, operation, key, request
      RETURNING *`,
     [tenantId, operation, key, requestHash],
   );
-  if (rows[0]) return { claimed: true, record: rows[0] };
+
+  if (rows[0]) {
+    return {
+      key,
+      operation,
+      recordId: Number(rows[0].id),
+      replay: false,
+      responseStatus: null,
+      responseBody: null,
+    };
+  }
 
   const existing = (
     await pool.query(
@@ -46,30 +73,33 @@ export async function claimIdempotency(pool, { tenantId, operation, key, request
       [tenantId, operation, key],
     )
   ).rows[0];
-  if (!existing) throw new ApiHttpError(409, "idempotency_conflict", "idempotency key could not be resolved");
+
+  if (!existing) {
+    throw new ApiHttpError(409, "idempotency_conflict", "Idempotency-Key could not be resolved");
+  }
   if (existing.request_hash !== requestHash) {
     throw new ApiHttpError(409, "idempotency_conflict", "Idempotency-Key was already used with a different request body");
   }
-  if (!existing.resource_id) {
+  if (existing.response_status == null || existing.response_body == null) {
     throw new ApiHttpError(409, "idempotency_in_progress", "an identical request with this Idempotency-Key is still being processed");
   }
-  return { claimed: false, record: existing };
+
+  return {
+    key,
+    operation,
+    recordId: Number(existing.id),
+    replay: true,
+    responseStatus: Number(existing.response_status),
+    responseBody: existing.response_body,
+  };
 }
 
-export async function completeIdempotency(pool, { recordId, resourceType, resourceId, responseStatus }) {
-  if (!recordId) return;
+export async function completeSaasIdempotency(pool, context, status, payload) {
+  if (!context || context.replay) return;
   await pool.query(
     `UPDATE service_idempotency_keys
-        SET resource_type = $2, resource_id = $3, response_status = $4, completed_at = now()
-      WHERE id = $1`,
-    [recordId, resourceType, resourceId, responseStatus],
-  );
-}
-
-export async function releaseIdempotency(pool, recordId) {
-  if (!recordId) return;
-  await pool.query(
-    "DELETE FROM service_idempotency_keys WHERE id = $1 AND resource_id IS NULL",
-    [recordId],
+        SET response_status = $2, response_body = $3::jsonb, completed_at = now()
+      WHERE id = $1 AND completed_at IS NULL`,
+    [context.recordId, status, JSON.stringify(payload)],
   );
 }
