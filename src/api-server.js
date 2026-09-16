@@ -40,6 +40,8 @@ import {
 } from "./api/service-store.js";
 import {
   cancelRemoteAuthSession,
+  persistedRemoteAuthRuntime,
+  persistedRemoteAuthScreenshot,
   remoteAuthRuntime,
   remoteAuthScreenshot,
   shutdownRemoteAuthSessions,
@@ -115,8 +117,8 @@ async function healthPayload() {
     database,
     queue: { configured: isQueueConfigured() },
     auth: { master_configured: Boolean(process.env.ONEGL_API_KEY), client_keys_supported: true },
-    webhooks: { signing_configured: Boolean(process.env.ONEGL_WEBHOOK_SIGNING_KEY) },
-    remote_auth: { enabled: true },
+    webhooks: { signing_configured: Boolean(process.env.ONEGL_WEBHOOK_SIGNING_KEY), ssrf_guard: true },
+    remote_auth: { enabled: true, durable_runtime_state: true },
   };
 }
 
@@ -418,14 +420,25 @@ async function routeApi(req, res, url) {
     requireScope(auth, "accounts:read");
     const row = await getAuthSessionRow(db, tenant.id, authSession[1]);
     if (!row) throw new ApiHttpError(404, "auth_session_not_found", "auth session was not found");
-    return sendJson(res, 200, { data: { ...row, runtime: remoteAuthRuntime(row.id) } });
+    let runtime = remoteAuthRuntime(row.id);
+    if (!runtime) {
+      const { rows } = await db.query(
+        `SELECT status, updated_at, completed_at, runtime_owner, runtime_heartbeat_at,
+                (screenshot IS NOT NULL) AS screenshot_available
+           FROM service_auth_sessions
+          WHERE id = $1 AND tenant_id = $2`,
+        [row.id, tenant.id],
+      );
+      runtime = persistedRemoteAuthRuntime(rows[0]);
+    }
+    return sendJson(res, 200, { data: { ...row, runtime } });
   }
   const authScreenshot = pathname.match(/^\/v1\/auth-sessions\/([0-9a-f-]{36})\/screenshot$/i);
   if (req.method === "GET" && authScreenshot) {
     requireScope(auth, "accounts:read");
     const row = await getAuthSessionRow(db, tenant.id, authScreenshot[1]);
     if (!row) throw new ApiHttpError(404, "auth_session_not_found", "auth session was not found");
-    const screenshot = remoteAuthScreenshot(row.id);
+    const screenshot = remoteAuthScreenshot(row.id) ?? await persistedRemoteAuthScreenshot(db, tenant.id, row.id);
     if (!screenshot) throw new ApiHttpError(409, "screenshot_not_ready", "auth session screenshot is not available yet");
     return sendBuffer(res, 200, screenshot, "image/png");
   }
