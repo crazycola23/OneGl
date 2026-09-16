@@ -1,4 +1,5 @@
 import { ApiHttpError, readJsonBody, sendJson } from "./http.js";
+import { handleMonitoringRoute } from "./monitoring-routes.js";
 import { getTenantProject, requireScope, tenantOwnsBatch } from "./service-store.js";
 import {
   deleteProjectCompetitor,
@@ -29,6 +30,8 @@ function intelligenceDays(url) {
 
 /** Returns true when this module handled the request. */
 export async function handleGeoIntelligenceRoute({ req, res, url, db, auth, tenant }) {
+  if (await handleMonitoringRoute({ req, res, url, db, auth, tenant })) return true;
+
   const pathname = url.pathname;
 
   if (req.method === "GET" && pathname === "/v1/providers") {
