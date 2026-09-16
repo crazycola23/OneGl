@@ -15,6 +15,7 @@ export function sendJson(res, status, payload) {
     "cache-control": "no-store",
   });
   res.end(body);
+  return true;
 }
 
 export function sendBuffer(res, status, body, contentType = "application/octet-stream") {
@@ -25,6 +26,7 @@ export function sendBuffer(res, status, body, contentType = "application/octet-s
     "x-content-type-options": "nosniff",
   });
   res.end(body);
+  return true;
 }
 
 export async function readJsonBody(req, { maxBytes = 1024 * 1024 } = {}) {
