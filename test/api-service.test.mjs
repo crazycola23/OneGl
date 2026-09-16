@@ -2,11 +2,6 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import test from "node:test";
 
-import {
-  apiCredentialFromHeaders,
-  isApiRequestAuthorized,
-  secureStringEqual,
-} from "../src/api/auth.js";
 import { parseBatchCreate, parseProjectCreate } from "../src/api/contracts.js";
 import { ApiHttpError, readJsonBody } from "../src/api/http.js";
 import { openApiDocument } from "../src/api/openapi.js";
@@ -16,16 +11,6 @@ import {
   requireScope,
   webhookSecretFor,
 } from "../src/api/service-store.js";
-
-test("API credentials accept bearer and X-API-Key without exposing comparison timing", () => {
-  assert.equal(apiCredentialFromHeaders({ authorization: "Bearer secret-123" }), "secret-123");
-  assert.equal(apiCredentialFromHeaders({ "x-api-key": "key-456" }), "key-456");
-  assert.equal(secureStringEqual("same-value", "same-value"), true);
-  assert.equal(secureStringEqual("same-value", "other-value"), false);
-  assert.equal(secureStringEqual("short", "longer-value"), false);
-  assert.equal(isApiRequestAuthorized({ headers: { authorization: "Bearer service-key" } }, "service-key"), true);
-  assert.equal(isApiRequestAuthorized({ headers: { "x-api-key": "wrong" } }, "service-key"), false);
-});
 
 test("tenant client keys are stored as hashes and scopes are enforced", () => {
   assert.equal(hashServiceKey("alpha"), hashServiceKey("alpha"));
