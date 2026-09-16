@@ -15,9 +15,9 @@ export const openApiDocument = {
   openapi: "3.1.0",
   info: {
     title: "OneGl Service API",
-    version: "0.1.0",
+    version: "0.2.0",
     description:
-      "Server-to-server API for operating OneGl GEO measurement projects, keyword pools and batches. Browser cookies/storageState and browser-control primitives are intentionally not exposed.",
+      "Multi-tenant server-to-server API for OneGl GEO measurement. Tenant-scoped API clients, signed webhooks and constrained account-connect sessions are supported. Browser cookies/storageState and arbitrary browser-control primitives are never exposed.",
   },
   servers: [{ url: "/" }],
   components: {
@@ -28,11 +28,7 @@ export const openApiDocument = {
     schemas: {
       Error: {
         type: "object",
-        properties: {
-          error: { type: "string" },
-          message: { type: "string" },
-          details: {},
-        },
+        properties: { error: { type: "string" }, message: { type: "string" }, details: {} },
         required: ["error", "message"],
       },
       ProjectCreate: {
@@ -40,6 +36,7 @@ export const openApiDocument = {
         required: ["name"],
         properties: {
           name: { type: "string", minLength: 1 },
+          external_id: { type: ["string", "null"] },
           description: { type: ["string", "null"] },
           target_brand: { type: ["string", "null"] },
           keywords: { type: "array", maxItems: 5000, items: { type: "string" } },
@@ -54,6 +51,15 @@ export const openApiDocument = {
           category: { type: ["string", "null"] },
         },
       },
+      AccountCreate: {
+        type: "object",
+        required: ["account_id"],
+        properties: {
+          account_id: { type: "string", minLength: 1 },
+          provider: { type: "string", enum: ["doubao"], default: "doubao" },
+          label: { type: ["string", "null"] },
+        },
+      },
       BatchCreate: {
         type: "object",
         required: ["project_id", "accounts"],
@@ -65,92 +71,127 @@ export const openApiDocument = {
           seed: { type: ["string", "null"] },
           accounts: { type: "array", minItems: 1, maxItems: 100, items: { type: "string" } },
           repeats: { type: "integer", minimum: 1, maximum: 100, default: 1 },
-          start: {
-            type: "boolean",
-            default: false,
-            description: "When true, enqueue the newly created batch immediately.",
-          },
+          start: { type: "boolean", default: false },
+        },
+      },
+      TenantCreate: {
+        type: "object",
+        required: ["slug"],
+        properties: { slug: { type: "string" }, name: { type: "string" } },
+      },
+      ClientCreate: {
+        type: "object",
+        required: ["name"],
+        properties: {
+          name: { type: "string" },
+          scopes: { type: "array", items: { type: "string" } },
+          expires_at: { type: ["string", "null"], format: "date-time" },
+        },
+      },
+      WebhookCreate: {
+        type: "object",
+        required: ["url"],
+        properties: {
+          url: { type: "string", format: "uri" },
+          event_types: { type: "array", items: { type: "string" }, default: ["*"] },
+          description: { type: ["string", "null"] },
         },
       },
     },
     responses: {
       BadRequest: jsonResponse("Invalid request", { $ref: "#/components/schemas/Error" }),
       Unauthorized: jsonResponse("Missing or invalid API credentials", { $ref: "#/components/schemas/Error" }),
+      Forbidden: jsonResponse("Credential lacks the required scope", { $ref: "#/components/schemas/Error" }),
       NotFound: jsonResponse("Resource not found", { $ref: "#/components/schemas/Error" }),
-      Conflict: jsonResponse("Resource cannot perform the requested operation in its current state", {
-        $ref: "#/components/schemas/Error",
-      }),
+      Conflict: jsonResponse("Resource cannot perform the requested operation in its current state", { $ref: "#/components/schemas/Error" }),
     },
   },
   security: [{ bearerAuth: [] }, { apiKey: [] }],
   paths: {
-    "/healthz": {
-      get: {
-        security: [],
-        summary: "Service health",
-        responses: { 200: jsonResponse("Service health") },
-      },
-    },
-    "/openapi.json": {
-      get: {
-        security: [],
-        summary: "OpenAPI document",
-        responses: { 200: jsonResponse("OpenAPI 3.1 document") },
-      },
-    },
-    "/v1/projects": {
-      get: {
-        summary: "List projects",
-        responses: {
-          200: jsonResponse("Projects"),
-          401: { $ref: "#/components/responses/Unauthorized" },
-        },
-      },
+    "/healthz": { get: { security: [], summary: "Service health", responses: { 200: jsonResponse("Service health") } } },
+    "/openapi.json": { get: { security: [], summary: "OpenAPI document", responses: { 200: jsonResponse("OpenAPI 3.1 document") } } },
+
+    "/v1/admin/tenants": {
+      get: { summary: "List tenants (master key)", responses: { 200: jsonResponse("Tenants"), 403: { $ref: "#/components/responses/Forbidden" } } },
       post: {
-        summary: "Create a project",
-        requestBody: {
-          required: true,
-          content: { "application/json": { schema: { $ref: "#/components/schemas/ProjectCreate" } } },
-        },
-        responses: {
-          201: jsonResponse("Project created or existing project returned"),
-          400: { $ref: "#/components/responses/BadRequest" },
-          401: { $ref: "#/components/responses/Unauthorized" },
-        },
+        summary: "Create/update tenant (master key)",
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/TenantCreate" } } } },
+        responses: { 201: jsonResponse("Tenant"), 403: { $ref: "#/components/responses/Forbidden" } },
       },
+    },
+    "/v1/admin/tenants/{tenantId}/clients": {
+      parameters: [idParameter("tenantId", "Tenant ID")],
+      get: { summary: "List tenant API clients (master key)", responses: { 200: jsonResponse("API clients") } },
+      post: {
+        summary: "Create tenant API client; secret returned once (master key)",
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/ClientCreate" } } } },
+        responses: { 201: jsonResponse("API client with one-time api_key") },
+      },
+    },
+    "/v1/admin/clients/{clientId}": {
+      parameters: [idParameter("clientId", "API client ID")],
+      delete: { summary: "Revoke API client (master key)", responses: { 200: jsonResponse("Revoked") } },
+    },
+
+    "/v1/projects": {
+      get: { summary: "List tenant projects", responses: { 200: jsonResponse("Projects") } },
+      post: {
+        summary: "Create tenant project",
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/ProjectCreate" } } } },
+        responses: { 201: jsonResponse("Project") },
+      },
+    },
+    "/v1/projects/{projectId}": {
+      parameters: [idParameter("projectId", "Project ID")],
+      get: { summary: "Get tenant project", responses: { 200: jsonResponse("Project"), 404: { $ref: "#/components/responses/NotFound" } } },
     },
     "/v1/projects/{projectId}/keywords": {
       parameters: [idParameter("projectId", "Project ID")],
-      get: {
-        summary: "List project keywords",
-        responses: {
-          200: jsonResponse("Keywords"),
-          404: { $ref: "#/components/responses/NotFound" },
-        },
-      },
+      get: { summary: "List project keywords", responses: { 200: jsonResponse("Keywords") } },
       post: {
-        summary: "Add or revive project keywords",
-        requestBody: {
-          required: true,
-          content: { "application/json": { schema: { $ref: "#/components/schemas/KeywordCreate" } } },
-        },
-        responses: {
-          201: jsonResponse("Keyword import result"),
-          400: { $ref: "#/components/responses/BadRequest" },
-          404: { $ref: "#/components/responses/NotFound" },
-        },
+        summary: "Add/revive project keywords",
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/KeywordCreate" } } } },
+        responses: { 201: jsonResponse("Keyword import result") },
       },
     },
+
     "/v1/accounts": {
       get: {
-        summary: "List execution accounts and health state",
-        description: "Returns operational account state only. Session cookies/storageState are never returned.",
+        summary: "List tenant execution accounts",
+        description: "Returns derived operational state only; cookies/storageState are never returned.",
         responses: { 200: jsonResponse("Accounts") },
       },
+      post: {
+        summary: "Register a tenant account alias",
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/AccountCreate" } } } },
+        responses: { 201: jsonResponse("Account binding") },
+      },
     },
+    "/v1/accounts/{accountId}/auth-sessions": {
+      parameters: [{ name: "accountId", in: "path", required: true, schema: { type: "string" } }],
+      post: {
+        summary: "Start constrained remote login session",
+        description: "Starts an isolated browser session and exposes screenshots/status only. No arbitrary browser-control endpoint is provided.",
+        requestBody: { content: { "application/json": { schema: { type: "object", properties: { ttl_minutes: { type: "integer", minimum: 1 } } } } } },
+        responses: { 202: jsonResponse("Auth session") },
+      },
+    },
+    "/v1/auth-sessions/{authSessionId}": {
+      parameters: [{ name: "authSessionId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+      get: { summary: "Get remote auth session state", responses: { 200: jsonResponse("Auth session") } },
+    },
+    "/v1/auth-sessions/{authSessionId}/screenshot": {
+      parameters: [{ name: "authSessionId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+      get: { summary: "Get current login screenshot", responses: { 200: { description: "PNG screenshot", content: { "image/png": { schema: { type: "string", contentEncoding: "binary" } } } } } },
+    },
+    "/v1/auth-sessions/{authSessionId}/cancel": {
+      parameters: [{ name: "authSessionId", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+      post: { summary: "Cancel remote auth session", responses: { 200: jsonResponse("Cancelled") } },
+    },
+
     "/v1/batches": {
       get: {
-        summary: "List batches",
+        summary: "List tenant batches",
         parameters: [
           { name: "project_id", in: "query", schema: { type: "integer", minimum: 1 } },
           { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500, default: 100 } },
@@ -158,90 +199,49 @@ export const openApiDocument = {
         responses: { 200: jsonResponse("Batches") },
       },
       post: {
-        summary: "Create a sampling batch",
-        requestBody: {
-          required: true,
-          content: { "application/json": { schema: { $ref: "#/components/schemas/BatchCreate" } } },
-        },
-        responses: {
-          201: jsonResponse("Batch created"),
-          400: { $ref: "#/components/responses/BadRequest" },
-          409: { $ref: "#/components/responses/Conflict" },
-          422: jsonResponse("Semantically invalid batch request", { $ref: "#/components/schemas/Error" }),
-        },
+        summary: "Create sampling batch",
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/BatchCreate" } } } },
+        responses: { 201: jsonResponse("Batch"), 409: { $ref: "#/components/responses/Conflict" } },
       },
     },
     "/v1/batches/{batchId}": {
       parameters: [idParameter("batchId", "Batch ID")],
-      get: {
-        summary: "Get batch progress",
-        responses: {
-          200: jsonResponse("Batch progress"),
-          404: { $ref: "#/components/responses/NotFound" },
-        },
-      },
+      get: { summary: "Get batch progress", responses: { 200: jsonResponse("Batch progress"), 404: { $ref: "#/components/responses/NotFound" } } },
     },
     "/v1/batches/{batchId}/start": {
       parameters: [idParameter("batchId", "Batch ID")],
-      post: {
-        summary: "Enqueue a batch",
-        responses: {
-          202: jsonResponse("Batch enqueued"),
-          404: { $ref: "#/components/responses/NotFound" },
-          409: { $ref: "#/components/responses/Conflict" },
-        },
-      },
+      post: { summary: "Enqueue batch", responses: { 202: jsonResponse("Batch enqueued"), 409: { $ref: "#/components/responses/Conflict" } } },
     },
     "/v1/batches/{batchId}/stop": {
       parameters: [idParameter("batchId", "Batch ID")],
-      post: {
-        summary: "Stop a queued/running batch",
-        responses: {
-          200: jsonResponse("Batch stopped"),
-          404: { $ref: "#/components/responses/NotFound" },
-          409: { $ref: "#/components/responses/Conflict" },
-        },
-      },
+      post: { summary: "Stop queued/running batch", responses: { 200: jsonResponse("Batch stopped") } },
     },
     "/v1/batches/{batchId}/runs": {
       parameters: [idParameter("batchId", "Batch ID")],
-      get: {
-        summary: "List runs for a batch",
-        parameters: [
-          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500, default: 200 } },
-        ],
-        responses: {
-          200: jsonResponse("Runs"),
-          404: { $ref: "#/components/responses/NotFound" },
-        },
-      },
+      get: { summary: "List batch runs", responses: { 200: jsonResponse("Runs") } },
     },
     "/v1/batches/{batchId}/report": {
       parameters: [idParameter("batchId", "Batch ID")],
-      get: {
-        summary: "Get batch analytics report",
-        responses: {
-          200: jsonResponse("Batch report, source aggregates and source intelligence"),
-          404: { $ref: "#/components/responses/NotFound" },
-        },
-      },
+      get: { summary: "Get batch analytics report", responses: { 200: jsonResponse("Report") } },
     },
     "/v1/runs/{runId}": {
-      parameters: [
-        {
-          name: "runId",
-          in: "path",
-          required: true,
-          schema: { type: "string", pattern: "^run_[A-Za-z0-9_-]+$" },
-        },
-      ],
-      get: {
-        summary: "Get one run with citations",
-        responses: {
-          200: jsonResponse("Run and citations"),
-          404: { $ref: "#/components/responses/NotFound" },
-        },
+      parameters: [{ name: "runId", in: "path", required: true, schema: { type: "string", pattern: "^run_[A-Za-z0-9_-]+$" } }],
+      get: { summary: "Get run with citations", responses: { 200: jsonResponse("Run and citations") } },
+    },
+
+    "/v1/webhooks": {
+      get: { summary: "List webhook endpoints", responses: { 200: jsonResponse("Webhooks") } },
+      post: {
+        summary: "Create signed webhook endpoint",
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/WebhookCreate" } } } },
+        responses: { 201: jsonResponse("Webhook endpoint and derived signing secret") },
       },
     },
+    "/v1/webhooks/{webhookId}": {
+      parameters: [idParameter("webhookId", "Webhook endpoint ID")],
+      delete: { summary: "Delete webhook endpoint", responses: { 200: jsonResponse("Deleted") } },
+    },
+    "/v1/webhooks/test": { post: { summary: "Queue test webhook event", responses: { 202: jsonResponse("Webhook event") } } },
+    "/v1/webhook-events": { get: { summary: "List recent webhook delivery events", responses: { 200: jsonResponse("Events") } } },
   },
 };
