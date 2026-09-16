@@ -21,6 +21,19 @@
     ]
   },
 
+  "competitors": [
+    {
+      "name": "特斯拉",
+      "aliases": ["Tesla", "Model 3", "Model Y"],
+      "domains": ["tesla.com"]
+    },
+    {
+      "name": "比亚迪",
+      "aliases": ["BYD", "比亚迪汽车"],
+      "domains": ["byd.com"]
+    }
+  ],
+
   "accounts": ["account_01"],
 
   "keywordPool": {
