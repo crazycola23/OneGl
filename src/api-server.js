@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 
 import { parseBatchCreate, parseKeywordsCreate, parseLimit, parseProjectCreate } from "./api/contracts.js";
+import { handleGeoIntelligenceRoute } from "./api/geo-intelligence-routes.js";
 import { ApiHttpError, errorPayload, readJsonBody, sendBuffer, sendJson } from "./api/http.js";
 import { openApiDocument } from "./api/openapi.js";
 import {
@@ -299,6 +300,8 @@ async function routeApi(req, res, url) {
 
   const tenant = await resolveTenant(db, auth, req);
   const pathname = url.pathname;
+
+  if (await handleGeoIntelligenceRoute({ req, res, url, db, auth, tenant })) return;
 
   if (req.method === "GET" && pathname === `${API_PREFIX}/projects`) {
     requireScope(auth, "projects:read");
