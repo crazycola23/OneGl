@@ -47,8 +47,10 @@ export async function reconcileAlertStates(pool, firingAlerts) {
     if (row.state !== "firing" || current.has(row.alert_key)) continue;
     await pool.query(
       `UPDATE service_ops_alert_states
-          SET state = 'resolved', last_observed_at = $2, resolved_at = $2,
-              details = details || jsonb_build_object('resolved_at', $2::text),
+          SET state = 'resolved',
+              last_observed_at = $2::timestamptz,
+              resolved_at = $2::timestamptz,
+              details = details || jsonb_build_object('resolved_at', ($2::timestamptz)::text),
               last_notification_error = NULL, updated_at = now()
         WHERE alert_key = $1`,
       [row.alert_key, now],
