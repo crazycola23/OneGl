@@ -17,7 +17,7 @@ function decodeCursor(raw, kind) {
   }
 }
 
-function parseLimit(url, fallback = 50, max = 200) {
+function parseLimit(url, fallback = 100, max = 500) {
   const raw = url.searchParams.get("limit");
   if (raw == null || raw === "") return fallback;
   const value = Number(raw);
@@ -50,9 +50,9 @@ function localTime(hour, minute) {
 export async function handleSaasPaginationRoute({ req, res, url, db, auth, tenant }) {
   if (req.method !== "GET") return false;
   const pathname = url.pathname;
-  const limit = parseLimit(url);
 
   if (pathname === "/v1/tasks") {
+    const limit = parseLimit(url);
     requireScope(auth, "projects:read");
     const cursor = decodeCursor(url.searchParams.get("cursor"), "tasks");
     const { rows } = await db.query(
@@ -71,6 +71,7 @@ export async function handleSaasPaginationRoute({ req, res, url, db, auth, tenan
 
   const taskExecutions = pathname.match(/^\/v1\/tasks\/(tsk_[a-f0-9]+)\/executions$/);
   if (taskExecutions) {
+    const limit = parseLimit(url);
     requireScope(auth, "batches:read");
     const task = await getTaskInternal(db, tenant.id, taskExecutions[1]);
     if (!task) throw new ApiHttpError(404, "task_not_found", "task was not found");
@@ -91,6 +92,7 @@ export async function handleSaasPaginationRoute({ req, res, url, db, auth, tenan
 
   const executionResults = pathname.match(/^\/v1\/executions\/(exe_[a-f0-9]+)\/results$/);
   if (executionResults) {
+    const limit = parseLimit(url);
     requireScope(auth, "reports:read");
     const execution = await getExecutionInternal(db, tenant.id, executionResults[1]);
     if (!execution) throw new ApiHttpError(404, "execution_not_found", "execution was not found");
@@ -129,6 +131,7 @@ export async function handleSaasPaginationRoute({ req, res, url, db, auth, tenan
 
   const taskReports = pathname.match(/^\/v1\/tasks\/(tsk_[a-f0-9]+)\/reports$/);
   if (taskReports) {
+    const limit = parseLimit(url);
     requireScope(auth, "reports:read");
     const task = await getTaskInternal(db, tenant.id, taskReports[1]);
     if (!task) throw new ApiHttpError(404, "task_not_found", "task was not found");
@@ -159,6 +162,7 @@ export async function handleSaasPaginationRoute({ req, res, url, db, auth, tenan
 
   const taskSchedules = pathname.match(/^\/v1\/tasks\/(tsk_[a-f0-9]+)\/schedules$/);
   if (taskSchedules) {
+    const limit = parseLimit(url);
     requireScope(auth, "batches:read");
     const task = await getTaskInternal(db, tenant.id, taskSchedules[1]);
     if (!task) throw new ApiHttpError(404, "task_not_found", "task was not found");
