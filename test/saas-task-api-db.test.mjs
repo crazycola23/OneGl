@@ -120,7 +120,9 @@ test("SaaS task facade returns stable task/execution/result/report/schedule IDs"
     const polled = await api(base, `/v1/executions/${executionId}`);
     assert.equal(polled.response.status, 200);
     assert.equal(polled.payload.data.execution_id, executionId);
-    assert.equal(polled.payload.data.progress.total, 0);
+    assert.equal(polled.payload.data.progress.total, 2);
+    assert.equal(polled.payload.data.progress.remaining, 2);
+    assert.equal(polled.payload.data.progress.percent, 0);
 
     const results = await api(base, `/v1/executions/${executionId}/results`);
     assert.equal(results.response.status, 200);
