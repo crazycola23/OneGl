@@ -91,15 +91,40 @@ Do not store `ONEGL_STORAGE_STATE_KEY` in PostgreSQL. Recommended sources are th
 
 ## Key rotation
 
-Version 1 currently expects the active key that created the encrypted file. Rotation should therefore be deliberate:
+OneGl includes a re-encryption CLI so a key can be rotated without forcing every account to log in again. Perform rotation as a maintenance operation while API remote-auth writers and account-executing workers are stopped.
 
-1. stop account-executing workers and remote-auth writers;
-2. retain the old key securely until all existing state has been decrypted;
-3. re-authenticate accounts under the new key, or use a dedicated re-encryption migration tool when one is introduced;
-4. verify no files remain that require the old key;
-5. retire the old key.
+Inject the previous and new keys from your secret manager:
 
-Do not simply replace the environment key while old `.enc` files remain; authenticated decryption will correctly fail.
+```env
+ONEGL_STORAGE_STATE_OLD_KEY=base64:<previous 32-byte key>
+ONEGL_STORAGE_STATE_KEY=base64:<new 32-byte key>
+```
+
+First validate every encrypted file without changing it:
+
+```bash
+npm run storage:rotate -- --dry-run
+```
+
+Then rotate in place:
+
+```bash
+npm run storage:rotate
+```
+
+The command scans the default state plus `.onegl/auth/accounts/*.storage.json.enc`, authenticates every file before starting writes, and replaces each file atomically with a new AES-GCM envelope. It never writes a plaintext backup.
+
+The operation is restartable. If a machine stops after some files were already rewritten, rerunning the same command recognizes files already encrypted by the new key, verifies them with the new key, skips them, and continues rotating the files that still use the old key.
+
+After the command succeeds:
+
+1. run the dry-run again and confirm all files are accepted;
+2. remove `ONEGL_STORAGE_STATE_OLD_KEY` from the deployment secret set;
+3. keep only the new `ONEGL_STORAGE_STATE_KEY`;
+4. restart API/workers;
+5. check `/readyz` or `npm run runtime:check -- --role api` before restoring traffic.
+
+Do not rotate while workers are actively writing storageState. A live writer holding the previous key could overwrite a newly rotated file after the rotation command completed.
 
 ## Backups and incident response
 
