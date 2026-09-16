@@ -56,6 +56,16 @@ jobs:
           DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
         run: node --test test/geo-intelligence-db.test.mjs
 
+      - name: Monitoring DB integration
+        env:
+          DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
+        run: node --test test/monitoring-db.test.mjs
+
+      - name: Doubao sourceContent DB integration
+        env:
+          DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
+        run: node --test test/doubao-source-signals-db.test.mjs
+
       - name: Install test browser
         run: npx playwright-core install --with-deps chromium
 

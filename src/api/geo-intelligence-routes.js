@@ -1,5 +1,7 @@
 import { ApiHttpError, readJsonBody, sendJson } from "./http.js";
+import { handleMonitoringRoute } from "./monitoring-routes.js";
 import { getTenantProject, requireScope, tenantOwnsBatch } from "./service-store.js";
+import { loadBatchDoubaoSourceSignals, loadProjectDoubaoSourceSignals } from "../db/doubao-source-signals.js";
 import {
   deleteProjectCompetitor,
   listProjectCompetitors,
@@ -29,6 +31,8 @@ function intelligenceDays(url) {
 
 /** Returns true when this module handled the request. */
 export async function handleGeoIntelligenceRoute({ req, res, url, db, auth, tenant }) {
+  if (await handleMonitoringRoute({ req, res, url, db, auth, tenant })) return true;
+
   const pathname = url.pathname;
 
   if (req.method === "GET" && pathname === "/v1/providers") {
@@ -76,6 +80,10 @@ export async function handleGeoIntelligenceRoute({ req, res, url, db, auth, tena
     if (!project) throw new ApiHttpError(404, "project_not_found", `project ${projectId} was not found`);
     const data = await loadProjectGeoIntelligence(db, projectId, { days: intelligenceDays(url) });
     if (!data) throw new ApiHttpError(404, "project_not_found", `project ${projectId} was not found`);
+    data.sourceContent = await loadProjectDoubaoSourceSignals(db, projectId, {
+      from: data.scope.from,
+      to: data.scope.to,
+    });
     sendJson(res, 200, { data });
     return true;
   }
@@ -103,6 +111,7 @@ export async function handleGeoIntelligenceRoute({ req, res, url, db, auth, tena
     }
     const data = await loadBatchGeoIntelligence(db, batchId);
     if (!data) throw new ApiHttpError(404, "batch_not_found", `batch ${batchId} was not found`);
+    data.sourceContent = await loadBatchDoubaoSourceSignals(db, batchId);
     sendJson(res, 200, { data });
     return true;
   }

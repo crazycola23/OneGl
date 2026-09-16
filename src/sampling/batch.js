@@ -30,7 +30,16 @@ export async function loadPool(pool, projectId) {
 
 export async function createSamplingBatch(
   pool,
-  { projectName, name, size, method = "stratified", seed = null, accounts = [], repeats = 1 },
+  {
+    projectName,
+    name,
+    size,
+    method = "stratified",
+    seed = null,
+    accounts = [],
+    repeats = 1,
+    monitorExecutionId = null,
+  },
   { log = console.log } = {},
 ) {
   const projectResult = await pool.query("SELECT id, target_brand FROM projects WHERE name = $1", [
@@ -74,9 +83,9 @@ export async function createSamplingBatch(
     const batchResult = await client.query(
       `INSERT INTO sampling_batches (
          project_id, name, provider, pool_version, pool_size, sample_size,
-         sampling_method, sampling_seed, account_keys, repeats, status
+         sampling_method, sampling_seed, account_keys, repeats, status, monitor_execution_id
        )
-       VALUES ($1, $2, 'doubao', $3, $4, $5, $6, $7, $8::jsonb, $9, 'pending')
+       VALUES ($1, $2, 'doubao', $3, $4, $5, $6, $7, $8::jsonb, $9, 'pending', $10)
        RETURNING id`,
       [
         project.id,
@@ -88,6 +97,7 @@ export async function createSamplingBatch(
         effectiveSeed,
         JSON.stringify(accounts),
         repeats,
+        monitorExecutionId,
       ],
     );
     const batchId = Number(batchResult.rows[0].id);
