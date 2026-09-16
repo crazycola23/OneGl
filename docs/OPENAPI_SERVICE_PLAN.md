@@ -200,6 +200,27 @@ GET /v1/runs/{runId}
 
 All ownership checks are tenant-scoped.
 
+## Product-side UI mapping
+
+A customer-facing platform can map its pages almost one-for-one to the service resources without embedding the OneGl Admin Console:
+
+```text
+Product page                 OneGl API
+-------------------------------------------------------------
+Projects                     GET/POST /v1/projects
+Keyword manager              /v1/projects/{id}/keywords
+AI account connections       GET/POST /v1/accounts
+Connect Doubao               POST /v1/accounts/{id}/auth-sessions
+Login QR / connection state  /v1/auth-sessions/{id}[/screenshot]
+Monitoring jobs              GET/POST /v1/batches
+Job detail/progress          GET /v1/batches/{id}
+Run detail                   GET /v1/runs/{runId}
+Results/report               GET /v1/batches/{id}/report
+Notifications                signed webhooks
+```
+
+The product backend should proxy the auth-session screenshot rather than giving the browser a OneGl API key.
+
 ## Webhooks
 
 Create an endpoint:
@@ -243,7 +264,7 @@ Verification input is:
 
 using the endpoint `signing_secret` as the HMAC-SHA256 key. Consumers should reject stale timestamps and deduplicate by event ID.
 
-Delivery retries use bounded exponential-style backoff and retain delivery attempts/status in PostgreSQL.
+Delivery retries use bounded backoff and retain delivery attempts/status in PostgreSQL.
 
 ## Security boundaries
 
