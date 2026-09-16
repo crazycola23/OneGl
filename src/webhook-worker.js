@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 
 import { createPool, isDatabaseConfigured } from "./db/pool.js";
 import { webhookSecretFor } from "./api/service-store.js";
+import { safeOutboundRequest } from "./security/outbound-url.js";
 
 if (!isDatabaseConfigured()) {
   console.error("DATABASE_URL 未配置，Webhook Worker 无法启动。");
@@ -13,6 +14,7 @@ const pool = createPool();
 const pollMs = intEnv("ONEGL_WEBHOOK_POLL_MS", 2000, 250);
 const timeoutMs = intEnv("ONEGL_WEBHOOK_TIMEOUT_MS", 10000, 1000);
 const maxAttempts = intEnv("ONEGL_WEBHOOK_MAX_ATTEMPTS", 5, 1);
+const allowHttp = /^(1|true|yes)$/i.test(process.env.ONEGL_WEBHOOK_ALLOW_HTTP ?? "");
 let shuttingDown = false;
 
 function intEnv(name, fallback, min) {
@@ -89,6 +91,7 @@ function signedHeaders(event, endpoint, rawBody, eventId) {
     .digest("hex");
   return {
     "content-type": "application/json",
+    "content-length": String(Buffer.byteLength(rawBody)),
     "user-agent": "OneGl-Webhook/1.0",
     "x-onegl-event": event.event_type,
     "x-onegl-event-id": eventId,
@@ -115,15 +118,16 @@ async function deliver(event, endpoint) {
   let errorMessage = null;
   let ok = false;
   try {
-    const response = await fetch(endpoint.url, {
+    const response = await safeOutboundRequest(endpoint.url, {
       method: "POST",
       headers: signedHeaders(event, endpoint, body, eventId),
       body,
-      signal: AbortSignal.timeout(timeoutMs),
-      redirect: "error",
+      timeoutMs,
+      maxResponseBytes: 2000,
+      allowHttp,
     });
     responseCode = response.status;
-    responseBody = (await response.text()).slice(0, 2000);
+    responseBody = response.body;
     ok = response.ok;
     if (!ok) errorMessage = `HTTP ${response.status}`;
   } catch (error) {

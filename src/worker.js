@@ -3,6 +3,7 @@ import os from "node:os";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DelayedError, UnrecoverableError, Worker } from "bullmq";
+import { acquireAccountExecutionLease } from "./accounts/distributed-lock.js";
 import {
   ACCOUNT_BLOCKING_CODES,
   accountAvailability,
@@ -66,6 +67,7 @@ const pool = createPool();
 const safety = safetyConfig();
 const prefix = process.env.ONEGL_QUEUE_PREFIX ?? "onegl";
 const WORKER_CONCURRENCY_PER_ACCOUNT = 1;
+const ACCOUNT_LOCK_RETRY_MS = Math.max(1_000, Number(process.env.ONEGL_ACCOUNT_LOCK_RETRY_MS) || 15_000);
 const SOURCE_INTELLIGENCE_CONCURRENCY = 1;
 const SOURCE_INTELLIGENCE_RECONCILE_MS = 15_000;
 const SOURCE_INTELLIGENCE_SCRIPT = fileURLToPath(
@@ -113,6 +115,7 @@ async function publishHeartbeat() {
       accountCount: listeningAccounts.length,
       concurrencyPerAccount: WORKER_CONCURRENCY_PER_ACCOUNT,
       accountParallelism: safety.accountParallelism,
+      distributedExecutionLease: true,
       sourceIntelligence: {
         queue: sourceIntelligenceQueueName(),
         concurrency: SOURCE_INTELLIGENCE_CONCURRENCY,
@@ -175,8 +178,8 @@ async function brandRulesFor(projectName) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * 全局并发闸门。ONEGL_ACCOUNT_PARALLELISM 默认 1，也就是同一时间只跑一个账号；
- * 单账号内部由「每个账号一条队列 + concurrency 1」保证串行。
+ * 进程内闸门仍保留作为第二层保护；真正跨 Worker 进程的账号互斥与全局并行度
+ * 由 PostgreSQL advisory lock 保证。
  */
 function createSemaphore(permits) {
   let available = permits;
@@ -287,6 +290,23 @@ async function handleJob(job, token) {
     await markSkipped(batchId, plan.reason);
     await refreshBatchProgress(pool, batchId);
     return { skipped: true, reason: plan.reason };
+  }
+
+  const executionLease = await acquireAccountExecutionLease(pool, {
+    accountKey,
+    parallelism: safety.accountParallelism,
+  });
+  if (!executionLease) {
+    const retryAt = Date.now() + ACCOUNT_LOCK_RETRY_MS;
+    await job.moveToDelayed(retryAt, token);
+    log({
+      event: "job-delayed-distributed-lock",
+      batch_id: batchId,
+      run_id: runId,
+      account_key: accountKey,
+      retry_at: new Date(retryAt).toISOString(),
+    });
+    throw new DelayedError();
   }
 
   await gate.acquire();
@@ -414,6 +434,7 @@ async function handleJob(job, token) {
     throw new Error(`${code}: ${outcome.normalized?.message ?? "未知错误"}`);
   } finally {
     gate.release();
+    await executionLease.release();
   }
 }
 
@@ -428,7 +449,7 @@ async function startWorkerFor(accountKey) {
   // token 必须透传给处理器：moveToDelayed 需要它来把任务挪到冷却结束时刻。
   const worker = new Worker(name, (job, token) => handleJob(job, token), {
     connection: getRedis(),
-    // 单账号串行：同一账号任何时刻只允许一个豆包会话任务
+    // BullMQ 的 concurrency=1 只约束当前 Worker 实例；跨进程互斥由数据库租约保证。
     concurrency: WORKER_CONCURRENCY_PER_ACCOUNT,
     lockDuration: 10 * 60 * 1000,
     stalledInterval: 60 * 1000,
@@ -637,8 +658,8 @@ async function main() {
   console.log("OneGl 后台采集 Worker 已启动");
   console.log(`  队列前缀      : ${prefix}`);
   console.log(`  监听账号队列  : ${accounts.join(", ") || "（暂无账号）"}`);
-  console.log(`  单账号并发    : ${WORKER_CONCURRENCY_PER_ACCOUNT}`);
-  console.log(`  账号并行度    : ${safety.accountParallelism}`);
+  console.log(`  单账号并发    : ${WORKER_CONCURRENCY_PER_ACCOUNT}（跨进程数据库锁）`);
+  console.log(`  账号并行度    : ${safety.accountParallelism}（跨进程全局 slot）`);
   console.log(`  引用页分析    : ${sourceIntelligenceQueueName()}（并发 ${SOURCE_INTELLIGENCE_CONCURRENCY}）`);
   console.log(
     `  请求间隔      : ${safety.minDelayMs}–${safety.maxDelayMs} ms（随机）`,
