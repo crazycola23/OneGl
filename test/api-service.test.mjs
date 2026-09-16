@@ -38,9 +38,9 @@ test("tenant client keys are stored as hashes and scopes are enforced", () => {
   assert.doesNotThrow(() => requireScope({ master: true, scopes: [] }, "anything:write"));
 });
 
-test("tenant project names are internally namespaced", () => {
+test("tenant project names are internally namespaced without breaking legacy default tenant names", () => {
   assert.equal(internalProjectName({ slug: "acme" }, "小米汽车"), "acme::小米汽车");
-  assert.equal(internalProjectName({ slug: "default" }, "Demo"), "default::Demo");
+  assert.equal(internalProjectName({ slug: "default" }, "Demo"), "Demo");
 });
 
 test("webhook signing secrets are deterministic per tenant and endpoint", () => {
