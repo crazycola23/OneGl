@@ -5,7 +5,6 @@ import { loadConfig } from "../config.js";
 import { launchBrowserSession } from "../browser.js";
 import { inspectSession, openDoubao } from "../doubao.js";
 import { markStorageStatePresent, recordAccountFailure } from "../accounts/safety.js";
-import { updateAuthSessionRow } from "./service-store.js";
 
 const runtimes = new Map();
 const RUNTIME_OWNER = `${os.hostname()}:${process.pid}:${crypto.randomUUID()}`;
@@ -113,6 +112,7 @@ async function finish(runtime, status, details = {}) {
   if (runtime.timer) clearInterval(runtime.timer);
   runtime.timer = null;
   await closeBrowser(runtime);
+  runtime.screenshot = null;
   await runtime.pool.query(
     `UPDATE service_auth_sessions
         SET status = $4,
@@ -120,11 +120,14 @@ async function finish(runtime, status, details = {}) {
             updated_at = now(),
             completed_at = COALESCE(completed_at, now()),
             runtime_heartbeat_at = now(),
-            runtime_owner = NULL
+            runtime_owner = NULL,
+            screenshot = NULL,
+            screenshot_at = NULL
       WHERE id = $1 AND tenant_id = $2
         AND (runtime_owner = $3 OR runtime_owner IS NULL)`,
     [runtime.id, runtime.tenantId, RUNTIME_OWNER, status, JSON.stringify(details ?? {})],
   ).catch(() => undefined);
+  runtimes.delete(runtime.id);
 }
 
 async function abandon(runtime) {
@@ -133,6 +136,8 @@ async function abandon(runtime) {
   if (runtime.timer) clearInterval(runtime.timer);
   runtime.timer = null;
   await closeBrowser(runtime);
+  runtime.screenshot = null;
+  runtimes.delete(runtime.id);
 }
 
 async function markLoginConnected(runtime) {
@@ -366,7 +371,9 @@ export async function cancelRemoteAuthSession({ pool, tenantId, id }) {
         SET cancel_requested_at = COALESCE(cancel_requested_at, now()),
             status = CASE WHEN completed_at IS NULL THEN 'cancelled' ELSE status END,
             completed_at = COALESCE(completed_at, now()),
-            updated_at = now()
+            updated_at = now(),
+            screenshot = NULL,
+            screenshot_at = NULL
       WHERE id = $1 AND tenant_id = $2
       RETURNING id, runtime_owner`,
     [id, tenantId],
