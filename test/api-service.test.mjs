@@ -108,7 +108,7 @@ test("JSON reader rejects invalid and oversized request bodies", async () => {
 
 test("OpenAPI documents SaaS tasks plus Doubao monitoring without raw browser controls", () => {
   assert.equal(openApiDocument.openapi, "3.1.0");
-  assert.equal(openApiDocument.info.version, "0.5.0");
+  assert.equal(openApiDocument.info.version, "0.6.0");
   assert.ok(openApiDocument.paths["/v1/admin/tenants"]);
   assert.ok(openApiDocument.paths["/v1/providers"]);
   assert.ok(openApiDocument.paths["/v1/projects/{projectId}/monitor-plans"]);
@@ -124,6 +124,11 @@ test("OpenAPI documents SaaS tasks plus Doubao monitoring without raw browser co
   assert.ok(openApiDocument.paths["/v1/tasks/{taskId}/schedules"]);
   assert.ok(openApiDocument.paths["/v1/schedules/{scheduleId}/executions"]);
   assert.ok(openApiDocument.paths["/v1/projects/{projectId}/intelligence"]);
+  assert.ok(openApiDocument.components.schemas.TaskResource);
+  assert.ok(openApiDocument.components.schemas.ExecutionResource);
+  assert.ok(openApiDocument.components.schemas.ResultResource);
+  assert.ok(openApiDocument.components.schemas.ReportResource);
+  assert.deepEqual(openApiDocument.components.schemas.ReportResource.properties.status.enum, ["generating", "ready"]);
   assert.match(openApiDocument.paths["/v1/projects/{projectId}/intelligence"].get.description, /sourceContent/);
   assert.equal(openApiDocument.paths["/click-new-chat"], undefined);
   assert.equal(openApiDocument.paths["/type-prompt"], undefined);
