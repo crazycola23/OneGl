@@ -41,11 +41,12 @@ export async function collectSloSnapshot(pool, config = sloConfig()) {
       [config.windowMinutes],
     ),
     pool.query(
-      `SELECT count(*) FILTER (WHERE b.status IN ('completed','partial','failed'))::bigint AS terminal,
+      `SELECT count(*)::bigint AS terminal,
               count(*) FILTER (WHERE b.status IN ('partial','failed'))::bigint AS bad
          FROM service_task_executions e
          JOIN sampling_batches b ON b.id = e.batch_id
-        WHERE e.created_at >= now() - ($1 * interval '1 minute')`,
+        WHERE b.status IN ('completed','partial','failed')
+          AND COALESCE(b.finished_at, e.created_at) >= now() - ($1 * interval '1 minute')`,
       [config.windowMinutes],
     ),
     pool.query(
@@ -55,10 +56,12 @@ export async function collectSloSnapshot(pool, config = sloConfig()) {
           AND status IN ('login_required','session_expired','verification_required','access_restricted','paused')`,
     ),
     pool.query(
-      `SELECT count(*)::bigint AS failed
-         FROM service_webhook_events
-        WHERE status = 'failed'
-          AND created_at >= now() - ($1 * interval '1 minute')`,
+      `SELECT count(DISTINCT e.id)::bigint AS failed
+         FROM service_webhook_events e
+         JOIN service_webhook_deliveries d ON d.event_id = e.id
+        WHERE e.status = 'failed'
+          AND d.status = 'failed'
+          AND d.attempted_at >= now() - ($1 * interval '1 minute')`,
       [config.windowMinutes],
     ),
     isQueueConfigured() ? checkRedis() : Promise.resolve({ ready: false, message: "REDIS_URL is not configured" }),
@@ -102,7 +105,7 @@ export async function collectSloSnapshot(pool, config = sloConfig()) {
     },
     redis: {
       ready: Boolean(redis.ready),
-      message: redis.message ?? "",
+      message: redis.ready ? "" : "Redis health check failed",
     },
     worker,
   };
@@ -120,7 +123,7 @@ export function evaluateSloSnapshot(snapshot, config = sloConfig()) {
       "redis_unavailable",
       "critical",
       "Redis is unavailable; queue execution and distributed API controls are degraded.",
-      { message: snapshot.redis?.message || "Redis is unavailable" },
+      { ready: false },
     ));
   } else if (["offline", "unknown"].includes(snapshot.worker?.state)) {
     alerts.push(alert(
