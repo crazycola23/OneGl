@@ -15,6 +15,7 @@
     "runs": "node src/cli.js runs",
     "serve": "node src/server.js",
     "api:serve": "node src/api-server.js",
+    "webhook:worker": "node src/webhook-worker.js",
     "check": "node --check src/*.js && node -e \"JSON.parse(require('fs').readFileSync('validation/phase0-prompts.json','utf8'))\"",
     "validate:scaffold": "node src/validate.js scaffold",
     "validate:evaluate": "node src/validate.js evaluate",
