@@ -102,8 +102,16 @@ test("API observability persists tenant/client audit, rate-limits across Redis, 
     processInfo = startApi(port, `onegl-observability-${suffix}`);
     await waitForApi(processInfo);
     const base = `http://127.0.0.1:${port}`;
-    const requestIds = [];
 
+    const specResponse = await fetch(`${base}/openapi.json`);
+    assert.equal(specResponse.status, 200);
+    const spec = await specResponse.json();
+    assert.ok(spec.paths["/v1/tasks"].get.responses["200"].headers["X-OneGl-Request-Id"]);
+    assert.ok(spec.paths["/v1/tasks"].get.responses["200"].headers["X-RateLimit-Limit"]);
+    assert.ok(spec.paths["/v1/tasks"].get.responses["429"]);
+    assert.ok(spec.paths["/v1/tasks"].get.responses["429"].headers["Retry-After"]);
+
+    const requestIds = [];
     for (let index = 0; index < 3; index += 1) {
       const response = await fetch(`${base}/v1/projects`, {
         headers: { authorization: `Bearer ${client.api_key}` },
