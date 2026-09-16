@@ -7,8 +7,7 @@ import { ApiHttpError, readJsonBody } from "../src/api/http.js";
 import { openApiDocument } from "../src/api/openapi.js";
 import {
   DEFAULT_SCOPES,
-  hashApiKey,
-  internalAccountKey,
+  hashServiceKey,
   internalProjectName,
   requireScope,
   webhookSecretFor,
@@ -16,23 +15,21 @@ import {
 
 test("tenant client keys are stored as hashes and scopes are enforced", () => {
   const plaintext = "onegl_client_secret_example";
-  assert.notEqual(hashApiKey(plaintext), plaintext);
-  assert.equal(hashApiKey(plaintext), hashApiKey(plaintext));
+  assert.notEqual(hashServiceKey(plaintext), plaintext);
+  assert.equal(hashServiceKey(plaintext), hashServiceKey(plaintext));
 
   assert.doesNotThrow(() => requireScope({ kind: "client", scopes: ["projects:read"] }, "projects:read"));
   assert.throws(
     () => requireScope({ kind: "client", scopes: ["projects:read"] }, "projects:write"),
     (error) => error instanceof ApiHttpError && error.status === 403,
   );
-  assert.doesNotThrow(() => requireScope({ kind: "master", scopes: ["*"] }, "anything"));
+  assert.doesNotThrow(() => requireScope({ kind: "master", master: true, scopes: ["*"] }, "anything"));
   assert.ok(DEFAULT_SCOPES.includes("webhooks:write"));
 });
 
 test("tenant project names are internally namespaced without breaking legacy default tenant names", () => {
   assert.equal(internalProjectName({ slug: "default" }, "小米汽车"), "小米汽车");
   assert.equal(internalProjectName({ slug: "agency-a" }, "小米汽车"), "agency-a::小米汽车");
-  assert.equal(internalAccountKey({ slug: "default" }, "account_01"), "account_01");
-  assert.equal(internalAccountKey({ slug: "agency-a" }, "account_01"), "agency-a::account_01");
 });
 
 test("webhook signing secrets are deterministic per tenant and endpoint", () => {
@@ -44,7 +41,7 @@ test("webhook signing secrets are deterministic per tenant and endpoint", () => 
     const c = webhookSecretFor(3, 10);
     assert.equal(a, b);
     assert.notEqual(a, c);
-    assert.match(a, /^whsec_[0-9a-f]{64}$/);
+    assert.match(a, /^[A-Za-z0-9_-]{43}$/);
   } finally {
     if (previous == null) delete process.env.ONEGL_WEBHOOK_SIGNING_KEY;
     else process.env.ONEGL_WEBHOOK_SIGNING_KEY = previous;
