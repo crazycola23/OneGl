@@ -10,9 +10,9 @@ function contract() {
   return document;
 }
 
-test("SaaS OpenAPI exposes stable v0.6 task contract", () => {
+test("SaaS OpenAPI exposes stable v0.7 production contract", () => {
   const document = contract();
-  assert.equal(document.info.version, "0.6.0");
+  assert.equal(document.info.version, "0.7.0");
 
   for (const name of [
     "TaskSamplingInput",
@@ -30,6 +30,8 @@ test("SaaS OpenAPI exposes stable v0.6 task contract", () => {
     "TaskScheduleCreate",
     "ScheduleResource",
     "SaasError",
+    "PageMeta",
+    "SaasWebhookEvent",
   ]) {
     assert.ok(document.components.schemas[name], `missing schema ${name}`);
   }
@@ -63,7 +65,7 @@ test("execution, result and report statuses are explicit", () => {
   assert.deepEqual(document.components.schemas.ReportResource.properties.status.enum, ["generating", "ready"]);
 });
 
-test("core SaaS responses are documented as data envelopes", () => {
+test("core SaaS single-resource responses remain data envelopes", () => {
   const document = contract();
   const responseSchemas = [
     document.paths["/v1/tasks"].post.responses[201],
@@ -76,7 +78,52 @@ test("core SaaS responses are documented as data envelopes", () => {
     const schema = response.content["application/json"].schema;
     assert.deepEqual(schema.required, ["data"]);
     assert.ok(schema.properties.data);
+    assert.ok(response.headers["X-OneGl-API-Version"]);
   }
+});
+
+test("history lists use opaque cursor pagination", () => {
+  const document = contract();
+  for (const [path, method] of [
+    ["/v1/tasks", "get"],
+    ["/v1/tasks/{taskId}/executions", "get"],
+    ["/v1/executions/{executionId}/results", "get"],
+    ["/v1/tasks/{taskId}/reports", "get"],
+    ["/v1/tasks/{taskId}/schedules", "get"],
+  ]) {
+    const operation = document.paths[path][method];
+    assert.ok(operation.parameters.some((parameter) => parameter.name === "cursor"));
+    const schema = operation.responses[200].content["application/json"].schema;
+    assert.deepEqual(schema.required, ["data", "meta"]);
+    assert.equal(schema.properties.meta.$ref, "#/components/schemas/PageMeta");
+  }
+});
+
+test("create-style SaaS POST routes document Idempotency-Key", () => {
+  const document = contract();
+  for (const path of [
+    "/v1/tasks",
+    "/v1/tasks/{taskId}/clone",
+    "/v1/tasks/{taskId}/executions",
+    "/v1/tasks/{taskId}/schedules",
+  ]) {
+    const operation = document.paths[path].post;
+    assert.ok(operation.parameters.some((parameter) => parameter.name === "Idempotency-Key"));
+  }
+});
+
+test("SaaS webhook contract uses public event types", () => {
+  const document = contract();
+  const eventType = document.components.schemas.SaasWebhookEvent.properties.type.enum;
+  for (const value of [
+    "execution.completed",
+    "execution.partial",
+    "execution.failed",
+    "execution.cancelled",
+    "account.action_required",
+    "account.ready",
+  ]) assert.ok(eventType.includes(value));
+  assert.match(document.components.schemas.SaasWebhookEvent.properties.id.pattern, /evt_/);
 });
 
 test("execution sampling overrides are partial and internal queue controls are not public", () => {
