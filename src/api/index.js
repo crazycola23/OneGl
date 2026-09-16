@@ -1,4 +1,11 @@
-export { apiCredentialFromHeaders, isApiRequestAuthorized, secureStringEqual } from "./auth.js";
-export { parseBatchCreate, parseKeywordsCreate, parseLimit, parseProjectCreate } from "./contracts.js";
-export { ApiHttpError, errorPayload, readJsonBody, sendJson } from "./http.js";
+export { apiKeyAuth } from "./auth.js";
 export { openApiDocument } from "./openapi.js";
+export {
+  authenticateServiceRequest,
+  createApiClient,
+  createTenant,
+  internalProjectName,
+  requireMaster,
+  requireScope,
+  webhookSecretFor,
+} from "./service-store.js";
