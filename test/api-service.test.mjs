@@ -103,15 +103,19 @@ test("JSON reader rejects invalid and oversized request bodies", async () => {
   );
 });
 
-test("OpenAPI documents tenant clients, remote auth, webhooks and GEO intelligence without raw browser controls", () => {
+test("OpenAPI documents Doubao monitoring and intelligence without raw browser controls", () => {
   assert.equal(openApiDocument.openapi, "3.1.0");
-  assert.equal(openApiDocument.info.version, "0.3.0");
+  assert.equal(openApiDocument.info.version, "0.4.0");
   assert.ok(openApiDocument.paths["/v1/admin/tenants"]);
   assert.ok(openApiDocument.paths["/v1/admin/tenants/{tenantId}/clients"]);
   assert.ok(openApiDocument.paths["/v1/providers"]);
   assert.ok(openApiDocument.paths["/v1/projects"]);
   assert.ok(openApiDocument.paths["/v1/projects/{projectId}/competitors"]);
+  assert.ok(openApiDocument.paths["/v1/projects/{projectId}/monitor-plans"]);
+  assert.ok(openApiDocument.paths["/v1/monitor-plans/{monitorPlanId}"]);
+  assert.ok(openApiDocument.paths["/v1/monitor-plans/{monitorPlanId}/executions"]);
   assert.ok(openApiDocument.paths["/v1/projects/{projectId}/intelligence"]);
+  assert.match(openApiDocument.paths["/v1/projects/{projectId}/intelligence"].get.description, /sourceContent/);
   assert.ok(openApiDocument.paths["/v1/accounts/{accountId}/auth-sessions"]);
   assert.ok(openApiDocument.paths["/v1/auth-sessions/{authSessionId}/screenshot"]);
   assert.ok(openApiDocument.paths["/v1/batches/{batchId}/start"]);
