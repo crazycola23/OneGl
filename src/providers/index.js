@@ -6,7 +6,10 @@ const byId = new Map();
 
 for (const adapter of adapters) {
   byId.set(adapter.id, adapter);
-  byId.set(adapter.provider, adapter);
+  // Convenience aliases are only valid while a provider has one unambiguous
+  // default adapter. Explicit adapter ids remain authoritative once multiple
+  // access paths (for example web + API) exist for the same provider.
+  if (!byId.has(adapter.provider)) byId.set(adapter.provider, adapter);
 }
 
 export function getProviderAdapter(id = "doubao") {
