@@ -46,21 +46,26 @@ export function loadConfig(overrides = {}) {
     throw new Error("ONEGL_BROWSER must be camoufox, chromium, or firefox");
   }
 
-  const authStatePath =
+  const authStatePlaintextPath =
     accountKey === null
       ? path.join(dataDir, "auth", "doubao.storage.json")
       : path.join(dataDir, "auth", "accounts", `${accountKey}.storage.json`);
+  const authStateEncryptedPath = `${authStatePlaintextPath}.enc`;
+  const storageStateKey =
+    overrides.storageStateKey ?? process.env.ONEGL_STORAGE_STATE_KEY ?? null;
 
   return {
     dataDir,
     accountKey,
-    // authStatePath is retained as the legacy plaintext location so an existing install can
-    // migrate without forcing the operator to log in again. With ONEGL_STORAGE_STATE_KEY set,
-    // new writes go to authStateEncryptedPath and the plaintext file is removed.
-    authStatePath,
-    authStateEncryptedPath: `${authStatePath}.enc`,
-    storageStateKey:
-      overrides.storageStateKey ?? process.env.ONEGL_STORAGE_STATE_KEY ?? null,
+    // Keep both paths explicit: authStatePlaintextPath is only for legacy migration / optional
+    // local plaintext mode. authStatePath is the effective destination displayed to operators.
+    authStatePlaintextPath,
+    authStateEncryptedPath,
+    authStatePath:
+      storageStateKey == null || String(storageStateKey).trim() === ""
+        ? authStatePlaintextPath
+        : authStateEncryptedPath,
+    storageStateKey,
     requireStorageStateEncryption:
       overrides.requireStorageStateEncryption ??
       boolEnv(process.env.ONEGL_REQUIRE_STORAGE_STATE_ENCRYPTION, false),
