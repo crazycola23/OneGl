@@ -1,13 +1,14 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { normalizeDomain } from "../db/domain.js";
+import { upsertProjectCompetitor } from "../db/geo-intelligence.js";
 import { ensureAccounts } from "../db/persist.js";
 import { loadPoolFile, poolSummary } from "../sampling/pool.js";
 import { canonicalizeUrl, domainFromUrl } from "../url.js";
 
 /**
  * Bootstraps a monitoring project from a single config file:
- * target brand + alias rules, keyword pool, accounts, tracked articles.
+ * target brand + alias rules, competitors, keyword pool, accounts, tracked articles.
  *
  * Re-running it is safe: every write is an upsert, so evolving the pool or the alias
  * rules does not duplicate anything and does not disturb runs already recorded.
@@ -27,6 +28,17 @@ export async function loadProjectConfig(filePath) {
 
   const brand = payload?.brand ?? {};
   const brandName = String(brand.name ?? project).trim();
+  const competitors = Array.isArray(payload.competitors)
+    ? payload.competitors
+        .map((item) => ({
+          name: String(item?.name ?? "").trim(),
+          aliases: Array.isArray(item?.aliases) ? item.aliases : [],
+          domains: Array.isArray(item?.domains) ? item.domains : [],
+          excludePatterns: Array.isArray(item?.excludePatterns) ? item.excludePatterns : [],
+          enabled: item?.enabled !== false,
+        }))
+        .filter((item) => item.name)
+    : [];
 
   return {
     project,
@@ -38,6 +50,7 @@ export async function loadProjectConfig(filePath) {
       productAliases: Array.isArray(brand.productAliases) ? brand.productAliases : [],
       excludePatterns: Array.isArray(brand.excludePatterns) ? brand.excludePatterns : [],
     },
+    competitors,
     accounts: Array.isArray(payload.accounts) ? payload.accounts.map(String) : [],
     pool: payload.keywordPool ?? null,
     trackedArticles: Array.isArray(payload.trackedArticles) ? payload.trackedArticles : [],
@@ -92,6 +105,7 @@ export async function applyProjectConfig(pool, config, { log = console.log } = {
     poolTotal: 0,
     poolImported: 0,
     categories: [],
+    competitors: 0,
     accounts: [],
     trackedArticles: 0,
     backfilledCitations: 0,
@@ -187,6 +201,14 @@ export async function applyProjectConfig(pool, config, { log = console.log } = {
   } finally {
     client.release();
   }
+
+  // Competitor rules are independent of collection and deliberately live outside the
+  // project transaction: changing them should not rewrite or invalidate historical runs.
+  for (const competitor of config.competitors ?? []) {
+    await upsertProjectCompetitor(pool, summary.projectId, competitor);
+    summary.competitors += 1;
+  }
+  if (summary.competitors) log(`竞品规则：${summary.competitors} 个`);
 
   // ------------------------------------------------------------ accounts
   if (config.accounts.length) {

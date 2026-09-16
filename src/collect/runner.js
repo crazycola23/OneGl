@@ -1,13 +1,13 @@
 import { BRAND_DETECTION_VERSION, compileBrandRules, detectBrandMention } from "../brand/detect.js";
 import { persistRun } from "../db/persist.js";
 import { captureDomObservation } from "../dom-observer.js";
-import { executeDoubaoPrompt } from "../doubao.js";
 import { ErrorCode, normalizeError } from "../errors.js";
 import {
   createConservativeDoubaoPage,
   prepareFrontEndForRun,
 } from "../front-end-guard.js";
 import { createNetworkEvidenceCollector } from "../network-evidence.js";
+import { getProviderAdapter } from "../providers/index.js";
 
 /**
  * 采集内核的单次执行。
@@ -78,7 +78,19 @@ function emptyNetworkEvidence(message) {
   };
 }
 
+function disabledNetworkEvidence() {
+  return {
+    version: 1,
+    state: "disabled",
+    queries: [],
+    retrievedSources: [],
+    responses: [],
+    diagnostics: [],
+  };
+}
+
 async function finalizeNetworkEvidence(collector) {
+  if (!collector) return disabledNetworkEvidence();
   try {
     return await collector.stop();
   } catch (error) {
@@ -116,14 +128,34 @@ function networkEvidencePatch(evidence) {
   };
 }
 
+function mergeSearchQueries(...groups) {
+  const seen = new Set();
+  const out = [];
+  for (const group of groups) {
+    for (const value of Array.isArray(group) ? group : []) {
+      const query = String(value ?? "").replace(/\s+/g, " ").trim();
+      if (!query) continue;
+      const key = query.toLocaleLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(query);
+    }
+  }
+  return out;
+}
+
 /**
  * 执行一次提问并落库。
+ *
+ * Browser-backed and direct-API adapters share this entry. DOM/network evidence is
+ * enabled only when a browser page exists; provider-reported webQueries/citations are
+ * still persisted for non-browser adapters.
  *
  * 不抛异常：调用方需要根据错误码决定重试、暂停账号还是跳过，
  * 所以把结果与错误一起返回。
  */
 export async function runOnePrompt({
-  page,
+  page = null,
   store,
   config,
   prompt,
@@ -139,6 +171,7 @@ export async function runOnePrompt({
   const runToken = context.runToken ?? null;
   const jobId = context.jobId ?? null;
   const attempt = Number.isInteger(context.attempt) && context.attempt > 0 ? context.attempt : 1;
+  const provider = getProviderAdapter(context.provider ?? config?.provider ?? "doubao");
 
   const run = await store.createRun({
     runId,
@@ -149,6 +182,12 @@ export async function runOnePrompt({
     runToken,
     jobId,
     attempt,
+  });
+  await store.updateRun(run.id, {
+    provider: provider.provider,
+    model: provider.model,
+    providerAccess: provider.access,
+    modelVersion: null,
   });
   if (validation) await store.updateRun(run.id, { validation });
 
@@ -171,17 +210,19 @@ export async function runOnePrompt({
       // Scope detection is best-effort; failure must not disturb collection.
     }
   };
-  page.on("request", observeTurnScope);
+  if (page?.on) page.on("request", observeTurnScope);
 
-  const networkCollector = createNetworkEvidenceCollector(page, {
-    enabled: config.networkEvidenceEnabled === true,
-    maxBodyBytes: config.networkEvidenceMaxBodyBytes,
-    bodyTimeoutMs: config.networkEvidenceBodyTimeoutMs,
-    getTurnId: () => {
-      const fromUrl = page.url().match(/\/chat\/(\d{6,})/);
-      return turnScope.conversationId ?? fromUrl?.[1] ?? null;
-    },
-  });
+  const networkCollector = page
+    ? createNetworkEvidenceCollector(page, {
+      enabled: config.networkEvidenceEnabled === true,
+      maxBodyBytes: config.networkEvidenceMaxBodyBytes,
+      bodyTimeoutMs: config.networkEvidenceBodyTimeoutMs,
+      getTurnId: () => {
+        const fromUrl = page.url().match(/\/chat\/(\d{6,})/);
+        return turnScope.conversationId ?? fromUrl?.[1] ?? null;
+      },
+    })
+    : null;
   let networkEvidence = null;
   let frontEndPreflight = null;
   let saved = null;
@@ -189,17 +230,22 @@ export async function runOnePrompt({
   let ok = false;
 
   try {
-    // Conservative front-end gate: do not start another turn while the UI is still busy,
-    // do not automatically enter the "新工作任务" mode, and fail closed on abnormal UI state.
-    frontEndPreflight = await prepareFrontEndForRun(page, config);
-    const guardedPage = createConservativeDoubaoPage(page);
-    const result = await executeDoubaoPrompt(guardedPage, prompt, config);
+    let executionPage = page;
+    // Doubao keeps its conservative front-end safety boundary. Future API/scraped
+    // providers implement their own access mechanics behind the provider adapter.
+    if (provider.id === "doubao-web") {
+      if (!page) throw new Error("doubao-web provider requires a browser page");
+      frontEndPreflight = await prepareFrontEndForRun(page, config);
+      executionPage = createConservativeDoubaoPage(page);
+    }
+    const result = await provider.run({ page: executionPage, prompt, config, context });
+    const answer = result.textContent;
 
     networkEvidence = await finalizeNetworkEvidence(networkCollector);
-    page.off("request", observeTurnScope);
+    page?.off?.("request", observeTurnScope);
     await writeNetworkEvidenceArtifact(store, run.id, attempt, networkEvidence);
     await captureArtifacts(store, run.id, page, prompt, attempt);
-    await store.writeAttemptArtifact(run.id, attempt, "answer.md", `${result.answer}\n`);
+    await store.writeAttemptArtifact(run.id, attempt, "answer.md", `${answer}\n`);
     await store.writeAttemptArtifact(
       run.id,
       attempt,
@@ -208,11 +254,16 @@ export async function runOnePrompt({
     );
 
     const partial = result.citationState === "parse_failed";
+    const networkPatch = networkEvidencePatch(networkEvidence);
     ok = true;
     saved = await store.updateRun(run.id, {
       status: partial ? "partial" : "success",
       completedAt: new Date().toISOString(),
-      answer: result.answer,
+      provider: result.provider ?? provider.provider,
+      model: result.model ?? provider.model,
+      providerAccess: result.access ?? provider.access,
+      modelVersion: result.modelVersion ?? null,
+      answer,
       citations: result.citations,
       citationState: result.citationState,
       expectedCitationCount: result.expectedCitationCount,
@@ -224,8 +275,9 @@ export async function runOnePrompt({
       frontEndPreflight,
       attempt,
       artifactPath: attemptArtifactPath,
-      ...networkEvidencePatch(networkEvidence),
-      ...applyBrandDetection(context.brandRules ?? null, result.answer),
+      ...networkPatch,
+      searchQueries: mergeSearchQueries(result.webQueries, networkPatch.searchQueries),
+      ...applyBrandDetection(context.brandRules ?? null, answer),
       errorCode: partial ? ErrorCode.CITATION_PARSE_FAILED : null,
       errorMessage: partial
         ? "回答已抓到，但可见引用数量与页面标注不一致。"
@@ -233,7 +285,7 @@ export async function runOnePrompt({
     });
   } catch (error) {
     networkEvidence = await finalizeNetworkEvidence(networkCollector);
-    page.off("request", observeTurnScope);
+    page?.off?.("request", observeTurnScope);
     await writeNetworkEvidenceArtifact(store, run.id, attempt, networkEvidence);
     await captureArtifacts(store, run.id, page, prompt, attempt);
     normalized = normalizeError(error);
@@ -256,6 +308,9 @@ export async function runOnePrompt({
     saved = await store.updateRun(run.id, {
       status: "failed",
       completedAt: new Date().toISOString(),
+      provider: provider.provider,
+      model: provider.model,
+      providerAccess: provider.access,
       answer: partialAnswer,
       errorCode: normalized.code,
       errorMessage: normalized.message,
