@@ -1,0 +1,299 @@
+# OneGl Kubernetes production template.
+#
+# Before applying:
+#   1. build/push the image and replace ghcr.io/example/onegl:latest
+#   2. create Secret/onegl-secrets (see secret.example.yaml)
+#   3. ensure the cluster has a ReadWriteMany storage class for encrypted browser storageState
+#   4. run the onegl-migrate Job and wait for completion before scaling application workloads
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: onegl
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: onegl-config
+  namespace: onegl
+data:
+  NODE_ENV: production
+  ONEGL_PRODUCTION: "true"
+  ONEGL_DATA_DIR: /var/lib/onegl
+  ONEGL_BROWSER: chromium
+  ONEGL_HEADLESS: "true"
+  ONEGL_BROWSER_LOCALE: zh-CN
+  ONEGL_BROWSER_TIMEZONE: Asia/Shanghai
+  ONEGL_BROWSER_VIEWPORT_WIDTH: "1440"
+  ONEGL_BROWSER_VIEWPORT_HEIGHT: "900"
+  ONEGL_API_HOST: 0.0.0.0
+  ONEGL_API_PORT: "3200"
+  ONEGL_API_RATE_LIMIT_PER_MINUTE: "120"
+  ONEGL_AUDIT_RETENTION_DAYS: "30"
+  ONEGL_QUEUE_PREFIX: onegl
+  ONEGL_MONITOR_TICK_MS: "30000"
+  ONEGL_ALERT_POLL_MS: "60000"
+  ONEGL_ALERT_REPEAT_MINUTES: "60"
+  ONEGL_SLO_WINDOW_MINUTES: "15"
+  ONEGL_SLO_API_MIN_REQUESTS: "20"
+  ONEGL_SLO_API_5XX_RATE_MAX: "0.02"
+  ONEGL_SLO_API_P95_MS_MAX: "3000"
+  ONEGL_SLO_EXECUTION_MIN_COUNT: "5"
+  ONEGL_SLO_EXECUTION_BAD_RATE_MAX: "0.20"
+  ONEGL_SLO_MANUAL_ACCOUNTS_MAX: "0"
+  ONEGL_SLO_FAILED_WEBHOOKS_MAX: "0"
+  ONEGL_ACCOUNT_PARALLELISM: "1"
+  ONEGL_ACCOUNT_HOURLY_LIMIT: "10"
+  ONEGL_ACCOUNT_DAILY_LIMIT: "40"
+  ONEGL_MIN_INTER_RUN_SECONDS: "45"
+  ONEGL_MIN_DELAY_MS: "30000"
+  ONEGL_MAX_DELAY_MS: "90000"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: onegl-data
+  namespace: onegl
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: onegl-migrate
+  namespace: onegl
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/example/onegl:latest
+          imagePullPolicy: IfNotPresent
+          command: ["npm", "run", "db:migrate"]
+          envFrom:
+            - configMapRef: { name: onegl-config }
+            - secretRef: { name: onegl-secrets }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: onegl-api
+  namespace: onegl
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: onegl-api }
+  template:
+    metadata:
+      labels: { app: onegl-api }
+    spec:
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: api
+          image: ghcr.io/example/onegl:latest
+          imagePullPolicy: IfNotPresent
+          command: ["npm", "run", "api:serve"]
+          envFrom:
+            - configMapRef: { name: onegl-config }
+            - secretRef: { name: onegl-secrets }
+          ports:
+            - name: http
+              containerPort: 3200
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests: { cpu: 200m, memory: 384Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/onegl }
+            - { name: tmp, mountPath: /tmp }
+            - { name: shm, mountPath: /dev/shm }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: onegl-data }
+        - name: tmp
+          emptyDir: {}
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: onegl-api
+  namespace: onegl
+spec:
+  selector: { app: onegl-api }
+  ports:
+    - name: http
+      port: 3200
+      targetPort: http
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: onegl-worker
+  namespace: onegl
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: onegl-worker }
+  template:
+    metadata:
+      labels: { app: onegl-worker }
+    spec:
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: worker
+          image: ghcr.io/example/onegl:latest
+          imagePullPolicy: IfNotPresent
+          command: ["npm", "run", "worker"]
+          envFrom:
+            - configMapRef: { name: onegl-config }
+            - secretRef: { name: onegl-secrets }
+          readinessProbe:
+            exec:
+              command: ["node", "tools/runtime-check.js", "--role", "worker"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 500m, memory: 768Mi }
+            limits: { cpu: "2", memory: 2Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/onegl }
+            - { name: tmp, mountPath: /tmp }
+            - { name: shm, mountPath: /dev/shm }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: onegl-data }
+        - name: tmp
+          emptyDir: {}
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: onegl-monitor
+  namespace: onegl
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: onegl-monitor }
+  template:
+    metadata:
+      labels: { app: onegl-monitor }
+    spec:
+      containers:
+        - name: monitor
+          image: ghcr.io/example/onegl:latest
+          command: ["npm", "run", "monitor:worker"]
+          envFrom:
+            - configMapRef: { name: onegl-config }
+            - secretRef: { name: onegl-secrets }
+          readinessProbe:
+            exec:
+              command: ["node", "tools/runtime-check.js", "--role", "monitor"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: onegl-webhook
+  namespace: onegl
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: onegl-webhook }
+  template:
+    metadata:
+      labels: { app: onegl-webhook }
+    spec:
+      containers:
+        - name: webhook
+          image: ghcr.io/example/onegl:latest
+          command: ["npm", "run", "webhook:worker"]
+          envFrom:
+            - configMapRef: { name: onegl-config }
+            - secretRef: { name: onegl-secrets }
+          readinessProbe:
+            exec:
+              command: ["node", "tools/runtime-check.js", "--role", "webhook"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: onegl-alert
+  namespace: onegl
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: onegl-alert }
+  template:
+    metadata:
+      labels: { app: onegl-alert }
+    spec:
+      containers:
+        - name: alert
+          image: ghcr.io/example/onegl:latest
+          command: ["npm", "run", "alert:worker"]
+          envFrom:
+            - configMapRef: { name: onegl-config }
+            - secretRef: { name: onegl-secrets }
+          readinessProbe:
+            exec:
+              command: ["node", "tools/runtime-check.js", "--role", "alert"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001

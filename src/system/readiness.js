@@ -22,12 +22,22 @@ function positiveInteger(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function validHttpsEndpoint(value) {
+  if (!configuredSecret(value)) return false;
+  try {
+    const url = new URL(String(value));
+    return url.protocol === "https:" && Boolean(url.hostname) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 export function isProductionRuntime(env = process.env) {
   return boolValue(env.ONEGL_PRODUCTION, false) || String(env.NODE_ENV ?? "").toLowerCase() === "production";
 }
 
 export function roleRequiresQueue(role) {
-  return new Set(["api", "worker", "monitor"]).has(String(role || "api"));
+  return new Set(["api", "worker", "monitor", "alert"]).has(String(role || "api"));
 }
 
 export function staticSafetyReport({ role = "api", env = process.env } = {}) {
@@ -41,6 +51,8 @@ export function staticSafetyReport({ role = "api", env = process.env } = {}) {
   const needsQueue = roleRequiresQueue(role);
   const allowHttpWebhook = boolValue(env.ONEGL_WEBHOOK_ALLOW_HTTP, false);
   const apiRateLimit = positiveInteger(env.ONEGL_API_RATE_LIMIT_PER_MINUTE, 120);
+  const alertEndpointValid = validHttpsEndpoint(env.ONEGL_ALERT_WEBHOOK_URL);
+  const alertSigningReady = configuredSecret(env.ONEGL_ALERT_SIGNING_KEY, 32);
 
   const checks = {
     database_configured: {
@@ -87,6 +99,17 @@ export function staticSafetyReport({ role = "api", env = process.env } = {}) {
         role !== "api" || !production || apiRateLimit !== null
           ? ""
           : "production API requires ONEGL_API_RATE_LIMIT_PER_MINUTE to be a positive integer",
+    },
+    alert_delivery: {
+      ready: role !== "alert" || !production || (alertEndpointValid && alertSigningReady),
+      required: role === "alert" && production,
+      endpoint_configured: configuredSecret(env.ONEGL_ALERT_WEBHOOK_URL),
+      endpoint_https: alertEndpointValid,
+      signing_configured: alertSigningReady,
+      message:
+        role !== "alert" || !production || (alertEndpointValid && alertSigningReady)
+          ? ""
+          : "production alert worker requires a credential-free HTTPS ONEGL_ALERT_WEBHOOK_URL and ONEGL_ALERT_SIGNING_KEY with at least 32 characters",
     },
   };
 

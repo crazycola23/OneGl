@@ -102,6 +102,18 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379
         run: node --test test/observability-controls-db.test.mjs
 
+      - name: SLO alert state integration
+        env:
+          DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
+          REDIS_URL: redis://127.0.0.1:6379
+        run: node --test test/slo-alerts-db.test.mjs
+
+      - name: Docker Compose topology check
+        run: |
+          cp deploy/.env.production.example deploy/.env.production
+          docker compose -f deploy/docker-compose.yml config >/dev/null
+          rm deploy/.env.production
+
       - name: Install test browser
         run: npx playwright-core install --with-deps chromium
 

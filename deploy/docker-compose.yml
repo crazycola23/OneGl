@@ -1,0 +1,71 @@
+name: onegl
+
+x-onegl-base: &onegl-base
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  env_file:
+    - .env.production
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 30s
+
+services:
+  migrate:
+    <<: *onegl-base
+    restart: "no"
+    command: ["npm", "run", "db:migrate"]
+
+  api:
+    <<: *onegl-base
+    command: ["npm", "run", "api:serve"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      ONEGL_API_HOST: 0.0.0.0
+      ONEGL_API_PORT: 3200
+    ports:
+      - "127.0.0.1:${ONEGL_PUBLIC_API_PORT:-3200}:3200"
+    volumes:
+      - onegl-data:/var/lib/onegl
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3200/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    <<: *onegl-base
+    command: ["npm", "run", "worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - onegl-data:/var/lib/onegl
+    shm_size: "1gb"
+
+  monitor:
+    <<: *onegl-base
+    command: ["npm", "run", "monitor:worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  webhook:
+    <<: *onegl-base
+    command: ["npm", "run", "webhook:worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  alert:
+    <<: *onegl-base
+    command: ["npm", "run", "alert:worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  onegl-data:

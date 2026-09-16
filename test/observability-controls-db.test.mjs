@@ -131,13 +131,17 @@ test("API observability persists tenant/client audit, rate-limits across Redis, 
     }
 
     const rows = await waitForAudit(pool, requestIds);
-    assert.deepEqual(rows.map((row) => Number(row.status)), [200, 200, 429]);
+    // Audit writes are intentionally asynchronous to the HTTP response. PostgreSQL insert IDs
+    // therefore are not a contract for request ordering; request_id is the stable correlation key.
+    const byRequestId = new Map(rows.map((row) => [row.request_id, row]));
+    assert.deepEqual(requestIds.map((id) => Number(byRequestId.get(id)?.status)), [200, 200, 429]);
     assert.ok(rows.every((row) => Number(row.tenant_id) === Number(tenant.id)));
     assert.ok(rows.every((row) => Number(row.client_id) === Number(client.id)));
     assert.ok(rows.every((row) => row.auth_kind === "client"));
     assert.ok(rows.every((row) => row.method === "GET" && row.path === "/v1/projects" && row.route_key === "/v1/projects"));
-    assert.equal(rows[2].error_code, "api_rate_limited");
-    assert.equal(rows[2].rate_limited, true);
+    const limited = byRequestId.get(requestIds[2]);
+    assert.equal(limited?.error_code, "api_rate_limited");
+    assert.equal(limited?.rate_limited, true);
     assert.ok(rows.every((row) => Number(row.duration_ms) >= 0));
 
     const metricDenied = await fetch(`${base}/metrics`);
