@@ -1,5 +1,8 @@
 import { ApiHttpError, readJsonBody, sendJson } from "./http.js";
+import { buildCustomerDashboard } from "./customer-dashboard.js";
+import { applyCustomerDashboardOpenApi } from "./customer-dashboard-openapi.js";
 import { handleMonitoringRoute } from "./monitoring-routes.js";
+import { openApiDocument } from "./openapi.js";
 import { getTenantProject, requireScope, tenantOwnsBatch } from "./service-store.js";
 import { loadBatchDoubaoSourceSignals, loadProjectDoubaoSourceSignals } from "../db/doubao-source-signals.js";
 import {
@@ -10,6 +13,8 @@ import {
   upsertProjectCompetitor,
 } from "../db/geo-intelligence.js";
 import { listProviderAdapters } from "../providers/index.js";
+
+applyCustomerDashboardOpenApi(openApiDocument);
 
 function positiveId(raw, name) {
   const value = Number(raw);
@@ -29,6 +34,16 @@ function intelligenceDays(url) {
   return value;
 }
 
+function dashboardQuestionLimit(url) {
+  const raw = url.searchParams.get("question_limit");
+  if (raw == null || raw === "") return 100;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 500) {
+    throw new ApiHttpError(400, "invalid_request", "question_limit must be an integer between 1 and 500");
+  }
+  return value;
+}
+
 /** Returns true when this module handled the request. */
 export async function handleGeoIntelligenceRoute({ req, res, url, db, auth, tenant }) {
   if (await handleMonitoringRoute({ req, res, url, db, auth, tenant })) return true;
@@ -38,6 +53,18 @@ export async function handleGeoIntelligenceRoute({ req, res, url, db, auth, tena
   if (req.method === "GET" && pathname === "/v1/providers") {
     requireScope(auth, "projects:read");
     sendJson(res, 200, { data: listProviderAdapters() });
+    return true;
+  }
+
+  const taskDashboard = pathname.match(/^\/v1\/tasks\/(tsk_[a-f0-9]+)\/dashboard$/);
+  if (req.method === "GET" && taskDashboard) {
+    requireScope(auth, "reports:read");
+    const data = await buildCustomerDashboard(db, Number(tenant.id), taskDashboard[1], {
+      days: intelligenceDays(url),
+      questionLimit: dashboardQuestionLimit(url),
+    });
+    if (!data) throw new ApiHttpError(404, "task_not_found", "task was not found");
+    sendJson(res, 200, { data });
     return true;
   }
 

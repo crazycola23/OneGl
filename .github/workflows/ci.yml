@@ -85,6 +85,11 @@ jobs:
           DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
         run: node --test test/saas-production-contract-db.test.mjs
 
+      - name: Customer dashboard API DB integration
+        env:
+          DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
+        run: node --test test/customer-dashboard-api-db.test.mjs
+
       - name: Runtime hardening DB integration
         env:
           DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
