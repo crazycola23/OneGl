@@ -1,3 +1,5 @@
-# API layer
+# OneGl Service API
 
-This directory contains OneGl's service-facing API helpers. It is intentionally business-level: callers create and operate batches and read results; they do not directly drive browser UI actions.
+The public service implementation lives in `src/api-server.js` with tenant/client/webhook state helpers in `service-store.js`, constrained remote login in `remote-auth.js`, and OpenAPI 3.1 in `openapi.js`.
+
+See `docs/OPENAPI_SERVICE_PLAN.md` for deployment, tenant/client bootstrap, account-connect, batch and webhook integration flows.
