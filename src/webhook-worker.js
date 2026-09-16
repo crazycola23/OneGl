@@ -22,6 +22,11 @@ function intEnv(name, fallback, min) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function publicEventId(event) {
+  const digest = crypto.createHash("sha256").update(String(event.event_key)).digest("hex").slice(0, 32);
+  return `evt_${digest}`;
+}
+
 async function claimEvent() {
   const client = await pool.connect();
   try {
@@ -75,7 +80,7 @@ async function alreadyDelivered(eventId, endpointId) {
   return Boolean(rows[0]);
 }
 
-function signedHeaders(event, endpoint, rawBody) {
+function signedHeaders(event, endpoint, rawBody, eventId) {
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const secret = webhookSecretFor(endpoint.tenant_id, endpoint.id);
   const signature = crypto
@@ -86,7 +91,8 @@ function signedHeaders(event, endpoint, rawBody) {
     "content-type": "application/json",
     "user-agent": "OneGl-Webhook/1.0",
     "x-onegl-event": event.event_type,
-    "x-onegl-event-id": String(event.id),
+    "x-onegl-event-id": eventId,
+    "x-onegl-webhook-version": "1",
     "x-onegl-timestamp": timestamp,
     "x-onegl-signature": `v1=${signature}`,
   };
@@ -95,9 +101,12 @@ function signedHeaders(event, endpoint, rawBody) {
 async function deliver(event, endpoint) {
   if (await alreadyDelivered(event.id, endpoint.id)) return { ok: true, skipped: true };
 
+  const eventId = publicEventId(event);
   const body = JSON.stringify({
-    id: String(event.id),
+    id: eventId,
     type: event.event_type,
+    occurred_at: event.created_at,
+    // Kept for compatibility with the original webhook envelope.
     created_at: event.created_at,
     data: event.payload,
   });
@@ -108,7 +117,7 @@ async function deliver(event, endpoint) {
   try {
     const response = await fetch(endpoint.url, {
       method: "POST",
-      headers: signedHeaders(event, endpoint, body),
+      headers: signedHeaders(event, endpoint, body, eventId),
       body,
       signal: AbortSignal.timeout(timeoutMs),
       redirect: "error",
@@ -147,7 +156,7 @@ async function processEvent(event) {
         WHERE id = $1`,
       [event.id],
     );
-    console.log(`[webhook] delivered event=${event.id} type=${event.event_type} endpoints=${endpoints.length}`);
+    console.log(`[webhook] delivered event=${publicEventId(event)} type=${event.event_type} endpoints=${endpoints.length}`);
     return;
   }
 
@@ -157,7 +166,7 @@ async function processEvent(event) {
       `UPDATE service_webhook_events SET status = 'failed', last_error = $2 WHERE id = $1`,
       [event.id, message || "delivery failed"],
     );
-    console.error(`[webhook] failed event=${event.id} type=${event.event_type} attempts=${event.attempts}`);
+    console.error(`[webhook] failed event=${publicEventId(event)} type=${event.event_type} attempts=${event.attempts}`);
     return;
   }
 
@@ -168,7 +177,7 @@ async function processEvent(event) {
       WHERE id = $1`,
     [event.id, seconds, message || "delivery failed"],
   );
-  console.warn(`[webhook] retry event=${event.id} in=${seconds}s`);
+  console.warn(`[webhook] retry event=${publicEventId(event)} in=${seconds}s`);
 }
 
 async function loop() {
