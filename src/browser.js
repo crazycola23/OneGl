@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
-import { mkdir, stat } from "node:fs/promises";
-import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { chromium, firefox } from "playwright-core";
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
+import {
+  loadStoredStorageState,
+  saveStoredStorageState,
+} from "./security/storage-state.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,15 +24,6 @@ payload = json.loads(os.environ["ONEGL_CAMOUFOX_PAYLOAD"])
 options = launch_options(**payload)
 print(json.dumps(options))
 `;
-
-async function exists(path) {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 async function camoufoxLaunchOptions(config, forceHeadful) {
   // Deliberately do not request Camoufox's behavior-humanization options. OneGl's
@@ -77,6 +70,11 @@ export async function launchBrowserSession(
 ) {
   let browser;
   const headless = forceHeadful ? false : config.headless;
+  // Resolve/decrypt authentication before launching a browser. If the key is missing or wrong,
+  // fail closed without creating a provider session that cannot safely persist its next state.
+  const storedAuth = ignoreStoredAuth
+    ? { present: false, encrypted: false, migrated: false, state: null, path: null }
+    : await loadStoredStorageState(config);
 
   if (config.browser === "camoufox") {
     const options = await camoufoxLaunchOptions(config, forceHeadful);
@@ -98,9 +96,8 @@ export async function launchBrowserSession(
     });
   }
 
-  const hasStoredAuth = !ignoreStoredAuth && (await exists(config.authStatePath));
   const context = await browser.newContext({
-    storageState: hasStoredAuth ? config.authStatePath : undefined,
+    storageState: storedAuth.present ? storedAuth.state : undefined,
     // Identical on every cold start, per account. Without this a restarted Worker
     // presents a different locale/timezone/window than the session it is resuming.
     locale: config.locale,
@@ -115,7 +112,10 @@ export async function launchBrowserSession(
     browser,
     context,
     page,
-    hasStoredAuth,
+    hasStoredAuth: storedAuth.present,
+    storageStateEncrypted: storedAuth.encrypted,
+    storageStateMigrated: storedAuth.migrated,
+    storageStatePath: storedAuth.path,
     /**
      * A crashed/disconnected session is indistinguishable from a risk signal when the
      * only symptom is a timeout: every subsequent job then fails against a dead
@@ -134,8 +134,8 @@ export async function launchBrowserSession(
       }
     },
     async saveAuth() {
-      await mkdir(dirname(config.authStatePath), { recursive: true });
-      await context.storageState({ path: config.authStatePath });
+      const state = await context.storageState();
+      return saveStoredStorageState(config, state);
     },
     async close() {
       await context.close().catch(() => undefined);
