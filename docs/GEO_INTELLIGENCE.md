@@ -1,16 +1,17 @@
 # GEO Intelligence
 
-OneGl separates **collection evidence** from **derived intelligence**. The browser collector keeps raw answer, citation, retrieval, DOM and network evidence; the intelligence layer re-derives metrics from those stored observations so every headline number remains auditable.
+OneGl separates **collection evidence** from **derived intelligence**. The collection layer keeps raw answer, citation, retrieval, DOM and network evidence; the intelligence layer re-derives metrics from those stored observations so every headline number remains auditable.
 
 ## Provider identity
 
-Every Run now has three independent identity dimensions:
+Every Run now has independent execution identity dimensions:
 
 - `provider`: the execution integration, for example `doubao`
 - `model`: the answer-engine/model family being measured
 - `provider_access`: `scraped` or `api`
+- `model_version`: optional model/surface version when the provider exposes one
 
-`model_version` is optional because consumer web surfaces do not always expose it. The distinction between `scraped` and `api` is intentional: a consumer product and a direct model API are different measurement surfaces and must not be silently mixed.
+The distinction between `scraped` and `api` is intentional: a consumer product and a direct model API are different measurement surfaces and must not be silently mixed. Provider analytics also keep different `model_version` values separate.
 
 Provider adapters normalize results to:
 
@@ -27,13 +28,24 @@ Provider adapters normalize results to:
 }
 ```
 
-The existing Doubao browser collector remains the implementation behind `doubao-web`; account safety, CAPTCHA fail-closed behavior and front-end guards are unchanged.
+The existing Doubao browser collector remains the implementation behind `doubao-web`; account safety, CAPTCHA fail-closed behavior and front-end guards are unchanged. The shared runner no longer requires a browser page for every provider, so later direct-API adapters can reuse the same persistence and analytics path without cloning the collector workflow.
+
+## Current-rule analytics
+
+Collection-time fields remain immutable audit evidence, but GEO intelligence deliberately re-runs **both brand and competitor matching** against stored raw answers using the project's current rules. The response exposes:
+
+```text
+ruleMode = current-project-rules
+```
+
+That gives the product two useful semantics:
+
+- historical reports can continue to show what OneGl concluded when a Run was captured;
+- current intelligence can immediately reflect a newly added alias, exclusion rule or competitor without rewriting historical Run evidence.
 
 ## Competitors and Share of Voice
 
 Competitors are configured per project with a name plus optional aliases, domains and exclusion patterns. They can be added through project JSON or the Service API.
-
-Competitor mentions are **not written permanently into historical runs**. The intelligence read path applies the current rules to stored raw answers. This means a newly added competitor can be compared against existing history immediately.
 
 Share of Voice uses comparable entity-mention units:
 
@@ -41,11 +53,11 @@ Share of Voice uses comparable entity-mention units:
 brand share = brand mention units / (brand mention units + competitor mention units)
 ```
 
-A single answer may mention more than one competitor, so the denominator is entity mentions rather than number of runs.
+A single answer may mention more than one competitor, so the denominator is entity mentions rather than number of runs. The intelligence response includes both the current aggregate and a daily `shareOfVoice.series` for charting.
 
 ## Query Fan-out
 
-If network evidence exposes the real web searches an engine issued, OneGl stores them in `run_search_queries` and derives:
+If network evidence or a provider exposes the real web searches an engine issued, OneGl stores them in `run_search_queries` and derives:
 
 - total and unique fan-out queries
 - high-frequency query rewrites
@@ -81,9 +93,19 @@ The current human-readable bands are deliberately heuristic:
 
 These thresholds should be calibrated later against OneGl's own longitudinal datasets; they are not presented as an industry standard.
 
+### Batch vs rolling-project stability
+
+A single Batch often finishes in one day, so a batch-level stability metric may correctly return `null`. For longitudinal product views use the project window endpoint instead:
+
+```http
+GET /v1/projects/{projectId}/intelligence?days=30
+```
+
+It aggregates valid Runs across batches and includes daily `visibility.series` and `shareOfVoice.series`. The lookback accepts `1..365` days and defaults to 30.
+
 ## Deterministic Opportunities
 
-`/v1/batches/{batchId}/intelligence` produces evidence-grounded opportunity candidates from measured signals such as:
+Both intelligence endpoints produce evidence-grounded opportunity candidates from measured signals such as:
 
 - competitor mention-rate gaps
 - frequent fan-out queries with weak brand coverage
@@ -120,7 +142,13 @@ Example:
 }
 ```
 
-### Batch intelligence
+### Project intelligence (preferred for trends)
+
+```http
+GET /v1/projects/{projectId}/intelligence?days=30
+```
+
+### Batch intelligence (exact execution slice)
 
 ```http
 GET /v1/batches/{batchId}/intelligence
@@ -129,9 +157,12 @@ GET /v1/batches/{batchId}/intelligence
 The response includes:
 
 ```text
-visibility
+scope
+project
+ruleMode
+visibility + visibility.series
 providers
-shareOfVoice
+shareOfVoice + shareOfVoice.series
 competitors
 fanout
 citations.stability
@@ -140,4 +171,4 @@ promptGaps
 opportunities
 ```
 
-Tenant ownership is checked before competitor or batch intelligence data is returned.
+Tenant ownership is checked before competitor, project-intelligence or batch-intelligence data is returned.
