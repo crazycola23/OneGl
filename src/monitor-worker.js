@@ -53,22 +53,20 @@ async function resolvedAccounts(context) {
   const missing = externalIds.filter((id) => !byExternal.has(id));
   if (missing.length) throw new Error(`monitor accounts are no longer registered: ${missing.join(", ")}`);
 
-  const eligible = [];
+  const configured = [];
   const blocked = [];
   const delayed = [];
   for (const externalId of externalIds) {
     const accountKey = byExternal.get(externalId);
     const availability = await accountAvailability(pool, accountKey);
+    configured.push({ externalId, accountKey });
     if (availability.kind === AVAILABILITY.PERMANENT) {
       blocked.push({ account_id: externalId, reason: availability.reason });
-      continue;
-    }
-    if (availability.kind === AVAILABILITY.TEMPORARY) {
+    } else if (availability.kind === AVAILABILITY.TEMPORARY) {
       delayed.push({ account_id: externalId, reason: availability.reason, retry_at: availability.retryAt });
     }
-    eligible.push({ externalId, accountKey });
   }
-  return { eligible, blocked, delayed };
+  return { configured, blocked, delayed };
 }
 
 async function existingBatch(executionId) {
@@ -85,14 +83,19 @@ async function executeOccurrence(execution) {
 
   try {
     const accounts = await resolvedAccounts(context);
-    if (!accounts.eligible.length) {
-      const reason = "all configured Doubao accounts require manual attention";
+
+    // Fail closed on manual/account-level blocks. A monitoring schedule must never silently
+    // route around verification, expired-login or access-restriction states by switching to
+    // another configured account. Temporary cooldown/hour/day limits are different: the
+    // ordinary batch worker will delay those accounts under the existing safety policy.
+    if (accounts.blocked.length) {
+      const reason = "one or more configured Doubao accounts require manual attention";
       await finishMonitorExecution(pool, execution, {
         status: "skipped",
         details: { blocked_accounts: accounts.blocked },
         error: reason,
       });
-      await emitEvent(context, "monitor.skipped", { reason, blocked_accounts: accounts.blocked });
+      await emitEvent(context, "monitor.action_required", { reason, blocked_accounts: accounts.blocked });
       return;
     }
 
@@ -108,7 +111,7 @@ async function executeOccurrence(execution) {
         size: sampleSize,
         method: context.sampling_method,
         seed: `monitor:${context.plan_id}:${new Date(context.scheduled_for).toISOString()}`,
-        accounts: accounts.eligible.map((row) => row.accountKey),
+        accounts: accounts.configured.map((row) => row.accountKey),
         repeats: Number(context.repeats) || 1,
         monitorExecutionId: Number(context.id),
       }, { log: () => undefined });
@@ -121,10 +124,17 @@ async function executeOccurrence(execution) {
       started: started.started,
       start_reason: started.reason ?? null,
       sample_size: sampleSize,
-      accounts: accounts.eligible.map((row) => row.externalId),
+      accounts: accounts.configured.map((row) => row.externalId),
       temporarily_delayed_accounts: accounts.delayed,
-      blocked_accounts: accounts.blocked,
     };
+
+    if (!started.started && !started.alreadyActive) {
+      const reason = started.reason ?? "batch could not be enqueued";
+      await finishMonitorExecution(pool, execution, { status: "failed", batchId: batch.id, details, error: reason });
+      await emitEvent(context, "monitor.failed", { ...details, error: reason });
+      return;
+    }
+
     await finishMonitorExecution(pool, execution, { status: "completed", batchId: batch.id, details });
     await emitEvent(context, "monitor.batch_created", details);
   } catch (error) {
