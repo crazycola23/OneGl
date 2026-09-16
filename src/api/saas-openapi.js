@@ -1,3 +1,14 @@
+const commonHeaders = {
+  "X-OneGl-API-Version": {
+    description: "OpenAPI contract version served by this OneGl instance.",
+    schema: { type: "string", example: "0.7.0" },
+  },
+  "Idempotency-Replayed": {
+    description: "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+    schema: { type: "string", enum: ["true"] },
+  },
+};
+
 const envelope = (schema) => ({
   type: "object",
   additionalProperties: false,
@@ -5,9 +16,30 @@ const envelope = (schema) => ({
   properties: { data: schema },
 });
 
+const paginatedEnvelope = (schema) => ({
+  type: "object",
+  additionalProperties: false,
+  required: ["data", "meta"],
+  properties: {
+    data: schema,
+    meta: { $ref: "#/components/schemas/PageMeta" },
+  },
+});
+
 const json = (description, schema = { type: "object" }) => ({
   description,
+  headers: commonHeaders,
   content: { "application/json": { schema: envelope(schema) } },
+});
+
+const pageJson = (description, itemSchema) => ({
+  description,
+  headers: commonHeaders,
+  content: {
+    "application/json": {
+      schema: paginatedEnvelope({ type: "array", items: itemSchema }),
+    },
+  },
 });
 
 const body = (schema, example = undefined) => ({
@@ -27,6 +59,19 @@ const stringId = (name, prefix) => ({
   schema: { type: "string", pattern: `^${prefix}_[a-f0-9]{32}$`, example: `${prefix}_0123456789abcdef0123456789abcdef` },
 });
 
+const idempotencyHeader = {
+  name: "Idempotency-Key",
+  in: "header",
+  required: false,
+  description: "Recommended for create/execute requests. Reusing the same key with the same request replays the first response; reusing it with a different body returns idempotency_conflict.",
+  schema: { type: "string", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9._:-]+$" },
+};
+
+const paginationParameters = [
+  { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200, default: 50 } },
+  { name: "cursor", in: "query", description: "Opaque next_cursor returned by the previous page.", schema: { type: "string" } },
+];
+
 const nullableDateTime = { type: ["string", "null"], format: "date-time" };
 const taskId = { type: "string", pattern: "^tsk_[a-f0-9]{32}$" };
 const executionId = { type: "string", pattern: "^exe_[a-f0-9]{32}$" };
@@ -35,8 +80,8 @@ const reportId = { type: "string", pattern: "^rpt_[a-f0-9]{32}$" };
 const scheduleId = { type: "string", pattern: "^sch_[a-f0-9]{32}$" };
 
 export function applySaasOpenApi(document) {
-  document.info.version = "0.6.0";
-  document.info.description = `${document.info.description}\n\nSaaS task facade: stable task/execution/result/report/schedule IDs sit above the internal project/batch/run model. The schemas below are the stable server-to-server contract. Callers should depend only on documented fields and ignore any extra diagnostic fields returned by older/newer OneGl builds.`;
+  document.info.version = "0.7.0";
+  document.info.description = `${document.info.description}\n\nSaaS production contract: stable task/execution/result/report/schedule IDs sit above the internal project/batch/run model. v1 is additive: documented fields and meanings remain compatible within /v1; a breaking contract requires a new major API path. Mutating SaaS POST routes support Idempotency-Key, history lists use opaque cursor pagination, and stable SaaS webhook events use public IDs only.`;
 
   Object.assign(document.components.schemas, {
     SaasError: {
@@ -47,10 +92,19 @@ export function applySaasOpenApi(document) {
         error: {
           type: "string",
           description: "Stable machine-readable error code.",
-          examples: ["invalid_request", "account_action_required", "task_not_found"],
+          examples: ["invalid_request", "account_action_required", "idempotency_conflict", "task_not_found"],
         },
         message: { type: "string", description: "Human-readable diagnostic message." },
         details: { description: "Optional structured details. Do not parse message text when details are available." },
+      },
+    },
+    PageMeta: {
+      type: "object",
+      additionalProperties: false,
+      required: ["has_more", "next_cursor"],
+      properties: {
+        has_more: { type: "boolean" },
+        next_cursor: { type: ["string", "null"], description: "Opaque cursor for the next page. Null means this is the last page." },
       },
     },
     TaskSamplingInput: {
@@ -317,22 +371,46 @@ export function applySaasOpenApi(document) {
         created_at: { type: "string", format: "date-time" },
       },
     },
+    SaasWebhookEvent: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id", "type", "occurred_at", "data"],
+      properties: {
+        id: { type: "string", pattern: "^evt_[a-f0-9]{32}$" },
+        type: {
+          type: "string",
+          enum: [
+            "execution.completed",
+            "execution.partial",
+            "execution.failed",
+            "execution.cancelled",
+            "account.action_required",
+            "account.ready",
+            "webhook.test",
+          ],
+        },
+        occurred_at: { type: "string", format: "date-time" },
+        created_at: { type: "string", format: "date-time", description: "Compatibility alias for occurred_at." },
+        data: { type: "object", additionalProperties: true },
+      },
+    },
   });
 
   document.components.responses.SaasBadRequest = { description: "Invalid SaaS API request", content: { "application/json": { schema: { $ref: "#/components/schemas/SaasError" } } } };
   document.components.responses.SaasNotFound = { description: "Requested SaaS resource was not found", content: { "application/json": { schema: { $ref: "#/components/schemas/SaasError" } } } };
-  document.components.responses.SaasConflict = { description: "Request conflicts with resource/account state", content: { "application/json": { schema: { $ref: "#/components/schemas/SaasError" } } } };
+  document.components.responses.SaasConflict = { description: "Request conflicts with resource/account/idempotency state", content: { "application/json": { schema: { $ref: "#/components/schemas/SaasError" } } } };
 
   Object.assign(document.paths, {
     "/v1/tasks": {
       get: {
         summary: "List reusable SaaS tasks",
-        parameters: [{ name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500, default: 100 } }],
-        responses: { 200: json("Tasks", { type: "array", items: { $ref: "#/components/schemas/TaskResource" } }) },
+        parameters: paginationParameters,
+        responses: { 200: pageJson("Tasks", { $ref: "#/components/schemas/TaskResource" }) },
       },
       post: {
         summary: "Create a reusable task from questions and selected platforms",
-        description: "Currently only doubao is executable. Persist the returned task_id in the calling SaaS.",
+        description: "Currently only doubao is executable. Persist the returned task_id in the calling SaaS. Send Idempotency-Key from the SaaS job/request ID to make network retries safe.",
+        parameters: [idempotencyHeader],
         requestBody: body({ $ref: "#/components/schemas/TaskCreate" }, {
           external_id: "saas_project_1024",
           name: "小米汽车 GEO 监测",
@@ -357,18 +435,24 @@ export function applySaasOpenApi(document) {
     },
     "/v1/tasks/{taskId}/clone": {
       parameters: [stringId("taskId", "tsk")],
-      post: { summary: "Clone a task so measurement-shaping fields can change without rewriting history", requestBody: body({ type: "object" }), responses: { 201: json("Cloned task", { $ref: "#/components/schemas/TaskResource" }) } },
+      post: {
+        summary: "Clone a task so measurement-shaping fields can change without rewriting history",
+        parameters: [idempotencyHeader],
+        requestBody: body({ type: "object" }),
+        responses: { 201: json("Cloned task", { $ref: "#/components/schemas/TaskResource" }), 409: { $ref: "#/components/responses/SaasConflict" } },
+      },
     },
     "/v1/tasks/{taskId}/executions": {
       parameters: [stringId("taskId", "tsk")],
       get: {
         summary: "List execution history",
-        parameters: [{ name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500, default: 100 } }],
-        responses: { 200: json("Executions", { type: "array", items: { $ref: "#/components/schemas/ExecutionResource" } }) },
+        parameters: paginationParameters,
+        responses: { 200: pageJson("Executions", { $ref: "#/components/schemas/ExecutionResource" }) },
       },
       post: {
         summary: "Execute or re-execute a task",
-        description: "Every call creates and starts a new execution_id, result IDs and report_id. Re-execution never overwrites previous measurements.",
+        description: "Every call creates and starts a new execution_id, result IDs and report_id. Re-execution never overwrites previous measurements. Idempotency-Key prevents gateway/client retries from creating a second execution.",
+        parameters: [idempotencyHeader],
         requestBody: { required: false, content: { "application/json": { schema: { $ref: "#/components/schemas/ExecutionCreate" }, example: {} } } },
         responses: {
           202: json("Execution accepted", { $ref: "#/components/schemas/ExecutionResource" }),
@@ -395,7 +479,11 @@ export function applySaasOpenApi(document) {
     },
     "/v1/executions/{executionId}/results": {
       parameters: [stringId("executionId", "exe")],
-      get: { summary: "List stable result IDs for every question/platform execution unit", responses: { 200: json("Results", { type: "array", items: { $ref: "#/components/schemas/ResultListItem" } }), 404: { $ref: "#/components/responses/SaasNotFound" } } },
+      get: {
+        summary: "List stable result IDs for every question/platform execution unit",
+        parameters: paginationParameters,
+        responses: { 200: pageJson("Results", { $ref: "#/components/schemas/ResultListItem" }), 404: { $ref: "#/components/responses/SaasNotFound" } },
+      },
     },
     "/v1/results/{resultId}": {
       parameters: [stringId("resultId", "res")],
@@ -413,14 +501,23 @@ export function applySaasOpenApi(document) {
       parameters: [stringId("taskId", "tsk")],
       get: {
         summary: "List historical reports for a task",
-        parameters: [{ name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500, default: 100 } }],
-        responses: { 200: json("Reports", { type: "array", items: { $ref: "#/components/schemas/ReportListItem" } }) },
+        parameters: paginationParameters,
+        responses: { 200: pageJson("Reports", { $ref: "#/components/schemas/ReportListItem" }) },
       },
     },
     "/v1/tasks/{taskId}/schedules": {
       parameters: [stringId("taskId", "tsk")],
-      get: { summary: "List recurring schedules for a task", responses: { 200: json("Schedules", { type: "array", items: { $ref: "#/components/schemas/ScheduleResource" } }) } },
-      post: { summary: "Create daily/weekly task schedule", requestBody: body({ $ref: "#/components/schemas/TaskScheduleCreate" }, { name: "每日豆包监测", schedule: { cadence: "daily", time_zone: "Asia/Shanghai", local_time: "09:00" }, account_ids: ["doubao-main"], enabled: true }), responses: { 201: json("Schedule", { $ref: "#/components/schemas/ScheduleResource" }) } },
+      get: {
+        summary: "List recurring schedules for a task",
+        parameters: paginationParameters,
+        responses: { 200: pageJson("Schedules", { $ref: "#/components/schemas/ScheduleResource" }) },
+      },
+      post: {
+        summary: "Create daily/weekly task schedule",
+        parameters: [idempotencyHeader],
+        requestBody: body({ $ref: "#/components/schemas/TaskScheduleCreate" }, { name: "每日豆包监测", schedule: { cadence: "daily", time_zone: "Asia/Shanghai", local_time: "09:00" }, account_ids: ["doubao-main"], enabled: true }),
+        responses: { 201: json("Schedule", { $ref: "#/components/schemas/ScheduleResource" }), 409: { $ref: "#/components/responses/SaasConflict" } },
+      },
     },
     "/v1/schedules/{scheduleId}": {
       parameters: [stringId("scheduleId", "sch")],
@@ -433,4 +530,8 @@ export function applySaasOpenApi(document) {
       get: { summary: "List scheduled occurrences and linked execution IDs", responses: { 200: json("Schedule executions") } },
     },
   });
+
+  if (document.paths["/v1/webhooks"]?.post) {
+    document.paths["/v1/webhooks"].post.description = "For SaaS integrations, subscribe to execution.completed, execution.partial, execution.failed, execution.cancelled, account.action_required and account.ready. Delivery uses X-OneGl-Event-Id (evt_...), X-OneGl-Timestamp and X-OneGl-Signature. Legacy batch.* events remain available for lower-level integrations.";
+  }
 }
