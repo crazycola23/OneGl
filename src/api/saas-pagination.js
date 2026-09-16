@@ -205,5 +205,39 @@ export async function handleSaasPaginationRoute({ req, res, url, db, auth, tenan
     return sendJson(res, 200, pageEnvelope(items, rows, limit, "schedules"));
   }
 
+  const scheduleExecutions = pathname.match(/^\/v1\/schedules\/(sch_[a-f0-9]+)\/executions$/);
+  if (scheduleExecutions) {
+    const limit = parseLimit(url);
+    requireScope(auth, "batches:read");
+    const { rows: schedules } = await db.query(
+      `SELECT monitor_plan_id
+         FROM service_task_schedules
+        WHERE tenant_id = $1 AND public_id = $2`,
+      [tenant.id, scheduleExecutions[1]],
+    );
+    if (!schedules[0]) throw new ApiHttpError(404, "schedule_not_found", "schedule was not found");
+    const cursor = decodeCursor(url.searchParams.get("cursor"), "schedule-executions");
+    const { rows } = await db.query(
+      `SELECT me.id, me.scheduled_for, me.status, me.batch_id, me.details, me.last_error,
+              e.public_id AS execution_id
+         FROM service_monitor_executions me
+         LEFT JOIN service_task_executions e ON e.batch_id = me.batch_id
+        WHERE me.tenant_id = $1 AND me.plan_id = $2
+          AND ($3::bigint IS NULL OR me.id < $3)
+        ORDER BY me.id DESC
+        LIMIT $4`,
+      [tenant.id, schedules[0].monitor_plan_id, cursor, limit + 1],
+    );
+    const items = rows.slice(0, limit).map((row) => ({
+      scheduled_for: row.scheduled_for,
+      status: row.status === "skipped" ? "action_required" : row.status,
+      execution_id: row.execution_id ?? null,
+      batch_created: Boolean(row.batch_id),
+      details: row.details,
+      error: row.last_error,
+    }));
+    return sendJson(res, 200, pageEnvelope(items, rows, limit, "schedule-executions"));
+  }
+
   return false;
 }
