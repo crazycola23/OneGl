@@ -36,3 +36,13 @@ CREATE INDEX service_api_audit_error_created_idx
   WHERE error_code IS NOT NULL;
 CREATE INDEX service_api_audit_route_created_idx
   ON service_api_audit_logs (route_key, id DESC);
+
+DO $$
+DECLARE target_role text := 'onegl';
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = target_role) THEN
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON service_api_audit_logs TO %I', target_role);
+    EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', target_role);
+  END IF;
+END
+$$;
