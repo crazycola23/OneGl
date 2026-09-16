@@ -1,0 +1,58 @@
+# Optional PrometheusRule for clusters using Prometheus Operator.
+# The OneGl Alert Worker remains the authoritative SLO evaluator (including DB-backed p95 and execution-rate checks).
+# These rules are an infrastructure-level fallback based only on /metrics.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: onegl
+  namespace: onegl
+spec:
+  groups:
+    - name: onegl.infrastructure
+      rules:
+        - alert: OneGlDatabaseMetricsUnavailable
+          expr: onegl_database_ready == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: OneGl cannot query PostgreSQL for operational metrics
+
+        - alert: OneGlWorkerOffline
+          expr: onegl_worker_state{state=~"offline|unknown"} == 1
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: OneGl Doubao worker heartbeat is offline or unknown
+
+        - alert: OneGlAccountNeedsManualAttention
+          expr: sum(onegl_accounts{status=~"login_required|session_expired|verification_required|access_restricted|paused"}) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: One or more OneGl Doubao accounts require manual attention
+
+        - alert: OneGlWebhookEventFailed
+          expr: sum(onegl_webhook_events{status="failed"}) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: OneGl has webhook events that exhausted delivery retries
+
+        - alert: OneGlApi5xxRateHigh
+          expr: |
+            (
+              sum(increase(onegl_api_requests_total{status="5xx"}[15m]))
+              /
+              clamp_min(sum(increase(onegl_api_requests_total[15m])), 1)
+            ) > 0.02
+            and
+            sum(increase(onegl_api_requests_total[15m])) >= 20
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: OneGl API 5xx rate is above 2% over 15 minutes
