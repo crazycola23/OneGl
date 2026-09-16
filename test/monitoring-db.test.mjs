@@ -10,9 +10,10 @@ import {
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
-test("monitor plans materialize each due occurrence once and advance the schedule", { skip: !enabled }, async () => {
+test("monitor plans materialize each due occurrence once, advance schedules and never backfill downtime", { skip: !enabled }, async () => {
   const pool = createPool();
   const suffix = `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  const accountKey = `monitor_account_${suffix}`;
   let projectId = null;
   let tenantId = null;
 
@@ -35,12 +36,12 @@ test("monitor plans materialize each due occurrence once and advance the schedul
 
     await pool.query(
       "INSERT INTO accounts (account_key, provider, status, enabled) VALUES ($1, 'doubao', 'healthy', true)",
-      [`monitor_account_${suffix}`],
+      [accountKey],
     );
     await pool.query(
       `INSERT INTO service_account_bindings (tenant_id, provider, account_key, external_id)
        VALUES ($1, 'doubao', $2, 'doubao-main')`,
-      [tenantId, `monitor_account_${suffix}`],
+      [tenantId, accountKey],
     );
 
     const plan = await createMonitorPlan(pool, {
@@ -70,11 +71,25 @@ test("monitor plans materialize each due occurrence once and advance the schedul
     assert.equal(executions.length, 1);
     assert.equal(executions[0].status, "pending");
 
-    const { rows } = await pool.query("SELECT next_run_at FROM service_monitor_plans WHERE id = $1", [plan.id]);
-    assert.equal(new Date(rows[0].next_run_at).toISOString(), "2026-09-17T01:00:00.000Z");
+    let result = await pool.query("SELECT next_run_at FROM service_monitor_plans WHERE id = $1", [plan.id]);
+    assert.equal(new Date(result.rows[0].next_run_at).toISOString(), "2026-09-17T01:00:00.000Z");
+
+    // Simulate several days of scheduler downtime. The next recovery call must create only
+    // the single overdue occurrence and jump to the next future slot; it must not create a
+    // fake historical batch for every missed day.
+    const recoveryAt = new Date("2026-09-20T12:00:00Z");
+    const recovered = await materializeDueMonitorExecutions(pool, { now: recoveryAt });
+    assert.equal(recovered.length, 1);
+    assert.equal(new Date(recovered[0].scheduled_for).toISOString(), "2026-09-17T01:00:00.000Z");
+
+    const noBackfill = await materializeDueMonitorExecutions(pool, { now: recoveryAt });
+    assert.equal(noBackfill.length, 0);
+    result = await pool.query("SELECT next_run_at FROM service_monitor_plans WHERE id = $1", [plan.id]);
+    assert.equal(new Date(result.rows[0].next_run_at).toISOString(), "2026-09-21T01:00:00.000Z");
   } finally {
     if (tenantId) await pool.query("DELETE FROM service_tenants WHERE id = $1", [tenantId]).catch(() => undefined);
     if (projectId) await pool.query("DELETE FROM projects WHERE id = $1", [projectId]).catch(() => undefined);
+    await pool.query("DELETE FROM accounts WHERE provider = 'doubao' AND account_key = $1", [accountKey]).catch(() => undefined);
     await pool.end();
   }
 });
