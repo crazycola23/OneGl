@@ -1,7 +1,7 @@
 import { loadConfig } from "../config.js";
 import { launchBrowserSession } from "../browser.js";
 import { inspectSession, openDoubao } from "../doubao.js";
-import { markStorageStatePresent } from "../accounts/safety.js";
+import { markStorageStatePresent, recordAccountFailure, recordAccountSuccess } from "../accounts/safety.js";
 import { updateAuthSessionRow } from "./service-store.js";
 
 const runtimes = new Map();
@@ -96,6 +96,7 @@ async function capture(runtime) {
     if (state.state === "healthy") {
       await runtime.session.saveAuth();
       await markStorageStatePresent(runtime.pool, runtime.accountKey, true, runtime.provider);
+      await recordAccountSuccess(runtime.pool, runtime.accountKey, runtime.provider);
       await finish(runtime, "connected", {
         provider: runtime.provider,
         account_id: runtime.externalId,
@@ -105,6 +106,11 @@ async function capture(runtime) {
     }
 
     if (state.state === "verification_required") {
+      await recordAccountFailure(runtime.pool, {
+        accountKey: runtime.accountKey,
+        provider: runtime.provider,
+        errorCode: "DOUBAO_VERIFICATION_REQUIRED",
+      }).catch(() => undefined);
       await finish(runtime, "verification_required", {
         provider: runtime.provider,
         account_id: runtime.externalId,
@@ -113,6 +119,11 @@ async function capture(runtime) {
       return;
     }
     if (state.state === "access_restricted") {
+      await recordAccountFailure(runtime.pool, {
+        accountKey: runtime.accountKey,
+        provider: runtime.provider,
+        errorCode: "DOUBAO_ACCESS_RESTRICTED",
+      }).catch(() => undefined);
       await finish(runtime, "access_restricted", {
         provider: runtime.provider,
         account_id: runtime.externalId,
