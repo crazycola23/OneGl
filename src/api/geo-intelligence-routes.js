@@ -1,6 +1,8 @@
 import { ApiHttpError, readJsonBody, sendJson } from "./http.js";
 import { buildCustomerDashboard } from "./customer-dashboard.js";
+import { applyCustomerDashboardOpenApi } from "./customer-dashboard-openapi.js";
 import { handleMonitoringRoute } from "./monitoring-routes.js";
+import { openApiDocument } from "./openapi.js";
 import { getTenantProject, requireScope, tenantOwnsBatch } from "./service-store.js";
 import { loadBatchDoubaoSourceSignals, loadProjectDoubaoSourceSignals } from "../db/doubao-source-signals.js";
 import {
@@ -11,6 +13,8 @@ import {
   upsertProjectCompetitor,
 } from "../db/geo-intelligence.js";
 import { listProviderAdapters } from "../providers/index.js";
+
+applyCustomerDashboardOpenApi(openApiDocument);
 
 function positiveId(raw, name) {
   const value = Number(raw);
