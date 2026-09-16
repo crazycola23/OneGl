@@ -8,6 +8,7 @@ import { ApiHttpError, errorPayload, readJsonBody, sendBuffer, sendJson } from "
 import { beginSaasIdempotency, completeSaasIdempotency } from "./api/idempotency.js";
 import { handleMonitoringRoute } from "./api/monitoring-routes.js";
 import { openApiDocument } from "./api/openapi.js";
+import { handleSaasPaginationRoute } from "./api/saas-pagination.js";
 import { applySaasOpenApi } from "./api/saas-openapi.js";
 import { handleTaskRoute } from "./api/task-routes.js";
 import {
@@ -325,6 +326,7 @@ async function routeApi(req, res, url) {
     };
   }
 
+  if (await handleSaasPaginationRoute({ req, res, url, db, auth, tenant })) return;
   if (await handleTaskRoute({ req, res, url, db, auth, tenant })) return;
   if (await handleMonitoringRoute({ req, res, url, db, auth, tenant })) return;
   if (await handleGeoIntelligenceRoute({ req, res, url, db, auth, tenant })) return;
