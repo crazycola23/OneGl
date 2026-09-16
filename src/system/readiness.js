@@ -16,6 +16,12 @@ function configuredSecret(value, minimum = 1) {
   return typeof value === "string" && value.trim().length >= minimum;
 }
 
+function positiveInteger(value, fallback) {
+  if (value == null || String(value).trim() === "") return fallback;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 export function isProductionRuntime(env = process.env) {
   return boolValue(env.ONEGL_PRODUCTION, false) || String(env.NODE_ENV ?? "").toLowerCase() === "production";
 }
@@ -34,6 +40,7 @@ export function staticSafetyReport({ role = "api", env = process.env } = {}) {
   const needsWebhookSigning = new Set(["api", "webhook"]).has(role);
   const needsQueue = roleRequiresQueue(role);
   const allowHttpWebhook = boolValue(env.ONEGL_WEBHOOK_ALLOW_HTTP, false);
+  const apiRateLimit = positiveInteger(env.ONEGL_API_RATE_LIMIT_PER_MINUTE, 120);
 
   const checks = {
     database_configured: {
@@ -72,6 +79,15 @@ export function staticSafetyReport({ role = "api", env = process.env } = {}) {
       required: production,
       message: !production || !allowHttpWebhook ? "" : "ONEGL_WEBHOOK_ALLOW_HTTP must be disabled in production",
     },
+    api_rate_limit: {
+      ready: role !== "api" || !production || apiRateLimit !== null,
+      required: role === "api" && production,
+      limit_per_minute: apiRateLimit,
+      message:
+        role !== "api" || !production || apiRateLimit !== null
+          ? ""
+          : "production API requires ONEGL_API_RATE_LIMIT_PER_MINUTE to be a positive integer",
+    },
   };
 
   const advisory = {
@@ -80,6 +96,12 @@ export function staticSafetyReport({ role = "api", env = process.env } = {}) {
       message: configuredSecret(env.ONEGL_API_KEY)
         ? ""
         : "ONEGL_API_KEY is not configured; tenant client keys still work but master/bootstrap admin calls are unavailable",
+    },
+    metrics_endpoint: {
+      configured: configuredSecret(env.ONEGL_METRICS_TOKEN, 32),
+      message: configuredSecret(env.ONEGL_METRICS_TOKEN, 32)
+        ? ""
+        : "ONEGL_METRICS_TOKEN is not configured; /metrics remains disabled",
     },
   };
 

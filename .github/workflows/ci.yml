@@ -96,6 +96,12 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379
         run: node --test test/production-readiness-db.test.mjs
 
+      - name: Observability controls integration
+        env:
+          DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
+          REDIS_URL: redis://127.0.0.1:6379
+        run: node --test test/observability-controls-db.test.mjs
+
       - name: Install test browser
         run: npx playwright-core install --with-deps chromium
 
