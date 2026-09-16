@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { chromium, firefox } from "playwright-core";
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
 import {
+  assertStorageStateEncryptionReady,
   loadStoredStorageState,
   saveStoredStorageState,
 } from "./security/storage-state.js";
@@ -70,6 +71,9 @@ export async function launchBrowserSession(
 ) {
   let browser;
   const headless = forceHeadful ? false : config.headless;
+  // Validate the encryption contract even for a fresh remote-auth session. Otherwise a browser
+  // could accept a login and only discover at save time that the required key is absent/invalid.
+  assertStorageStateEncryptionReady(config);
   // Resolve/decrypt authentication before launching a browser. If the key is missing or wrong,
   // fail closed without creating a provider session that cannot safely persist its next state.
   const storedAuth = ignoreStoredAuth
