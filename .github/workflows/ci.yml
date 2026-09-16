@@ -71,6 +71,11 @@ jobs:
           DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
         run: node --test test/saas-task-api-db.test.mjs
 
+      - name: SaaS production contract DB integration
+        env:
+          DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
+        run: node --test test/saas-production-contract-db.test.mjs
+
       - name: Install test browser
         run: npx playwright-core install --with-deps chromium
 
