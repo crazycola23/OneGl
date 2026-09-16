@@ -68,6 +68,17 @@ export async function deleteProjectCompetitor(pool, projectId, competitorId) {
   return result.rowCount > 0;
 }
 
+async function loadProject(pool, projectId) {
+  const { rows } = await pool.query(
+    `SELECT id AS project_id, name AS project_name, target_brand, brand_aliases,
+            brand_product_aliases, brand_exclude_patterns
+       FROM projects
+      WHERE id = $1`,
+    [projectId],
+  );
+  return rows[0] ?? null;
+}
+
 async function loadBatchProject(pool, batchId) {
   const { rows } = await pool.query(
     `SELECT b.id AS batch_id, b.project_id, b.name AS batch_name,
@@ -81,27 +92,40 @@ async function loadBatchProject(pool, batchId) {
   return rows[0] ?? null;
 }
 
-/**
- * Re-derives GEO analytics from auditable raw runs/search queries/citations.
- * Competitor mentions are intentionally computed on read so adding a competitor
- * immediately works against historical answers without rewriting old runs.
- */
-export async function loadBatchGeoIntelligence(pool, batchId) {
-  const project = await loadBatchProject(pool, batchId);
-  if (!project) return null;
-  const competitors = (await listProjectCompetitors(pool, project.project_id)).filter((row) => row.enabled);
+const RUN_SELECT = `
+  SELECT r.id, r.prompt_id, p.prompt, r.provider,
+         COALESCE(r.model, r.provider) AS model,
+         COALESCE(r.provider_access, 'scraped') AS provider_access,
+         r.model_version, r.answer, r.brand_mentioned, r.created_at
+    FROM runs r
+    JOIN prompts p ON p.id = r.prompt_id
+`;
 
-  const { rows: runs } = await pool.query(
-    `SELECT r.id, r.prompt_id, p.prompt, r.provider,
-            COALESCE(r.model, r.provider) AS model,
-            COALESCE(r.provider_access, 'scraped') AS provider_access,
-            r.model_version, r.answer, r.brand_mentioned, r.created_at
-       FROM runs r
-       JOIN prompts p ON p.id = r.prompt_id
+async function loadBatchRuns(pool, batchId) {
+  const { rows } = await pool.query(
+    `${RUN_SELECT}
       WHERE r.sampling_batch_id = $1 AND ${VALID_RUN}
       ORDER BY r.id`,
     [batchId],
   );
+  return rows;
+}
+
+async function loadProjectRuns(pool, projectId, since) {
+  const { rows } = await pool.query(
+    `${RUN_SELECT}
+      WHERE p.project_id = $1
+        AND r.created_at >= $2
+        AND ${VALID_RUN}
+      ORDER BY r.id`,
+    [projectId, since],
+  );
+  return rows;
+}
+
+async function buildIntelligence(pool, project, runs, scope) {
+  const projectId = Number(project.project_id);
+  const competitors = (await listProjectCompetitors(pool, projectId)).filter((row) => row.enabled);
 
   const brandRules = compileBrandRules({
     name: project.target_brand ?? project.project_name,
@@ -141,8 +165,6 @@ export async function loadBatchGeoIntelligence(pool, batchId) {
     }
     promptStats.set(promptId, prompt);
 
-    // A provider can expose the same model name through multiple access paths and
-    // model versions. Keep every measurement surface distinct in the breakdown.
     const providerKey = `${run.provider}::${run.model}::${run.provider_access}::${run.model_version ?? "unknown"}`;
     const target = providerStats.get(providerKey) ?? {
       provider: run.provider,
@@ -157,14 +179,15 @@ export async function loadBatchGeoIntelligence(pool, batchId) {
     providerStats.set(providerKey, target);
   }
 
+  const runIds = runs.map((run) => Number(run.id));
   const { rows: queryRows } = await pool.query(
     `SELECT r.prompt_id, p.prompt, q.query_text AS query, r.brand_mentioned
        FROM run_search_queries q
        JOIN runs r ON r.id = q.run_id
        JOIN prompts p ON p.id = r.prompt_id
-      WHERE r.sampling_batch_id = $1 AND ${VALID_RUN}
+      WHERE r.id = ANY($1::bigint[])
       ORDER BY r.id, q.query_position`,
-    [batchId],
+    [runIds],
   );
   const fanout = computeQueryFanout(queryRows, { promptRunCounts });
 
@@ -175,31 +198,29 @@ export async function loadBatchGeoIntelligence(pool, batchId) {
        FROM citations c
        JOIN runs r ON r.id = c.run_id
        JOIN articles a ON a.id = c.article_id
-      WHERE r.sampling_batch_id = $1
-        AND ${VALID_RUN}
+      WHERE r.id = ANY($1::bigint[])
         AND c.source_type = 'visible'
         AND c.visible_to_user IS TRUE
       GROUP BY 1, 2
       ORDER BY 1, 2`,
-    [batchId],
+    [runIds],
   );
   const stability = computeCitationVolatility(dailyDomains);
 
-  // Fetch the complete domain distribution so top-domain shares use the true
-  // citation denominator. Only the response list is truncated to 25 rows.
+  // Fetch the complete distribution so top-domain shares use the true denominator;
+  // only the response list is truncated.
   const { rows: domainRows } = await pool.query(
     `SELECT a.normalized_domain AS domain, count(*)::int AS citations,
             count(DISTINCT r.id)::int AS runs
        FROM citations c
        JOIN runs r ON r.id = c.run_id
        JOIN articles a ON a.id = c.article_id
-      WHERE r.sampling_batch_id = $1
-        AND ${VALID_RUN}
+      WHERE r.id = ANY($1::bigint[])
         AND c.source_type = 'visible'
         AND c.visible_to_user IS TRUE
       GROUP BY 1
       ORDER BY citations DESC, domain`,
-    [batchId],
+    [runIds],
   );
   const totalCitations = domainRows.reduce((sum, row) => sum + Number(row.citations), 0);
   const topDomains = domainRows.slice(0, 25).map((row) => ({
@@ -249,11 +270,10 @@ export async function loadBatchGeoIntelligence(pool, batchId) {
   });
 
   return {
-    batch: {
-      id: Number(project.batch_id),
-      name: project.batch_name,
-      projectId: Number(project.project_id),
-      projectName: project.project_name,
+    scope,
+    project: {
+      id: projectId,
+      name: project.project_name,
       targetBrand: project.target_brand,
     },
     visibility: {
@@ -278,4 +298,37 @@ export async function loadBatchGeoIntelligence(pool, batchId) {
     promptGaps,
     opportunities,
   };
+}
+
+/** Re-derives one batch from its stored evidence. */
+export async function loadBatchGeoIntelligence(pool, batchId) {
+  const project = await loadBatchProject(pool, batchId);
+  if (!project) return null;
+  const runs = await loadBatchRuns(pool, batchId);
+  return buildIntelligence(pool, project, runs, {
+    type: "batch",
+    batchId: Number(project.batch_id),
+    batchName: project.batch_name,
+  });
+}
+
+/**
+ * Re-derives project intelligence over a rolling time window across every batch.
+ * This is the preferred surface for longitudinal citation stability: a single batch
+ * often completes within one day and therefore cannot produce a meaningful daily
+ * transition score.
+ */
+export async function loadProjectGeoIntelligence(pool, projectId, { days = 30, now = new Date() } = {}) {
+  const normalizedDays = Math.max(1, Math.min(365, Number(days) || 30));
+  const project = await loadProject(pool, projectId);
+  if (!project) return null;
+  const until = new Date(now);
+  const since = new Date(until.getTime() - normalizedDays * 86_400_000);
+  const runs = await loadProjectRuns(pool, projectId, since);
+  return buildIntelligence(pool, project, runs, {
+    type: "project-window",
+    days: normalizedDays,
+    from: since.toISOString(),
+    to: until.toISOString(),
+  });
 }
