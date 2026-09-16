@@ -43,7 +43,7 @@ test("citation volatility separates set churn from weighted source churn", () =>
   ]);
 
   assert.equal(result.transitions, 1);
-  assert.equal(result.setVolatility, 2 / 3);
+  assert.equal(result.setVolatility, 0.667);
   assert.equal(result.weightedVolatility, 0.2);
   assert.equal(result.stabilityScore, 80);
   assert.equal(citationDifficulty(result.stabilityScore), "locked-in");
