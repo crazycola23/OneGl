@@ -4,6 +4,7 @@ import http from "node:http";
 import { createPool, isDatabaseConfigured } from "../db/pool.js";
 import { getRedis, isQueueConfigured, queuePrefix } from "../queue/connection.js";
 import { isProductionRuntime } from "../system/readiness.js";
+import { classifyWorkerHeartbeat, readWorkerHeartbeat } from "../system/status.js";
 
 const REQUEST_ID_PATTERN = /^req_[a-f0-9]{32}$/;
 const installedSymbol = Symbol.for("onegl.api.observability.installed");
@@ -211,6 +212,18 @@ async function databaseMetricLines(pool) {
   return lines;
 }
 
+async function workerMetricLines() {
+  if (!isQueueConfigured()) return [metricLine("onegl_worker_state", { state: "unknown" }, 1)];
+  const heartbeat = await readWorkerHeartbeat();
+  const verdict = classifyWorkerHeartbeat(heartbeat);
+  return [
+    metricLine("onegl_worker_state", { state: verdict.state }, 1),
+    metricLine("onegl_worker_heartbeat_age_seconds", {}, verdict.ageMs == null ? 0 : verdict.ageMs / 1000),
+    metricLine("onegl_worker_account_count", {}, heartbeat?.accountCount ?? 0),
+    metricLine("onegl_worker_account_parallelism", {}, heartbeat?.accountParallelism ?? 0),
+  ];
+}
+
 async function prometheusMetrics(pool) {
   const lines = [
     "# HELP onegl_api_requests_total API requests observed by this API process.",
@@ -229,6 +242,7 @@ async function prometheusMetrics(pool) {
   }
   lines.push(metricLine("onegl_api_rate_limited_total", {}, counters.get(counterKey(["rate_limited"])) ?? 0));
   lines.push(...await databaseMetricLines(pool));
+  lines.push(...await workerMetricLines());
   return `${lines.join("\n")}\n`;
 }
 
