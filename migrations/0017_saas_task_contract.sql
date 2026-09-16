@@ -87,6 +87,25 @@ ALTER TABLE sampling_batches DROP CONSTRAINT IF EXISTS sampling_batches_status_c
 ALTER TABLE sampling_batches ADD CONSTRAINT sampling_batches_status_check
   CHECK (status IN ('pending', 'queued', 'running', 'paused', 'completed', 'partial', 'failed', 'aborted'));
 
+-- A batch already knows its exact execution units as soon as sampling_batch_prompts are inserted.
+-- Keep requested_jobs accurate before Redis enqueue so a SaaS polling a newly-created execution sees
+-- 0/N instead of 0/0. enqueueBatch later writes the same authoritative assignment count again.
+CREATE OR REPLACE FUNCTION onegl_increment_batch_requested_jobs()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE sampling_batches
+     SET requested_jobs = requested_jobs + 1
+   WHERE id = NEW.batch_id;
+  RETURN NEW;
+END
+$$;
+DROP TRIGGER IF EXISTS sampling_batch_prompts_requested_jobs_trg ON sampling_batch_prompts;
+CREATE TRIGGER sampling_batch_prompts_requested_jobs_trg
+AFTER INSERT ON sampling_batch_prompts
+FOR EACH ROW EXECUTE FUNCTION onegl_increment_batch_requested_jobs();
+
 -- Platform connections are login-bound. Registering an account should never make it executable
 -- before a real login/storage state has been saved by the auth flow.
 ALTER TABLE accounts ALTER COLUMN status SET DEFAULT 'login_required';
