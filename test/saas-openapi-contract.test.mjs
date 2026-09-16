@@ -15,6 +15,8 @@ test("SaaS OpenAPI exposes stable v0.6 task contract", () => {
   assert.equal(document.info.version, "0.6.0");
 
   for (const name of [
+    "TaskSamplingInput",
+    "TaskSampling",
     "TaskCreate",
     "TaskResource",
     "ExecutionCreate",
@@ -75,6 +77,18 @@ test("core SaaS responses are documented as data envelopes", () => {
     assert.deepEqual(schema.required, ["data"]);
     assert.ok(schema.properties.data);
   }
+});
+
+test("execution sampling overrides are partial and internal queue controls are not public", () => {
+  const document = contract();
+  const sampling = document.components.schemas.TaskSamplingInput;
+  assert.equal(sampling.required, undefined);
+  assert.ok(sampling.properties.method);
+  assert.ok(sampling.properties.repeats);
+
+  const executionCreate = document.components.schemas.ExecutionCreate;
+  assert.equal(executionCreate.properties.start, undefined);
+  assert.equal(executionCreate.properties.sampling.$ref, "#/components/schemas/TaskSamplingInput");
 });
 
 test("public IDs are typed by prefix and task create does not expose browser primitives", () => {
