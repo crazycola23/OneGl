@@ -8,7 +8,10 @@ export class ApiHttpError extends Error {
   }
 }
 
-export function sendJson(res, status, payload) {
+export async function sendJson(res, status, payload) {
+  if (typeof res.__oneglBeforeJsonSend === "function") {
+    await res.__oneglBeforeJsonSend(status, payload);
+  }
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -29,7 +32,14 @@ export function sendBuffer(res, status, body, contentType = "application/octet-s
   return true;
 }
 
-export async function readJsonBody(req, { maxBytes = 1024 * 1024 } = {}) {
+async function readBodyBuffer(req, maxBytes) {
+  if (req.__oneglBodyBuffer) {
+    if (req.__oneglBodyBuffer.length > maxBytes) {
+      throw new ApiHttpError(413, "payload_too_large", "request body is too large");
+    }
+    return req.__oneglBodyBuffer;
+  }
+
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -39,14 +49,27 @@ export async function readJsonBody(req, { maxBytes = 1024 * 1024 } = {}) {
     }
     chunks.push(chunk);
   }
-  if (!chunks.length) return {};
-  const raw = Buffer.concat(chunks).toString("utf8");
+  req.__oneglBodyBuffer = chunks.length ? Buffer.concat(chunks) : Buffer.alloc(0);
+  return req.__oneglBodyBuffer;
+}
+
+export async function readJsonBody(req, { maxBytes = 1024 * 1024 } = {}) {
+  if (req.__oneglJsonBody !== undefined) return req.__oneglJsonBody;
+
+  const buffer = await readBodyBuffer(req, maxBytes);
+  if (!buffer.length) {
+    req.__oneglJsonBody = {};
+    return req.__oneglJsonBody;
+  }
+
+  const raw = buffer.toString("utf8");
   try {
     const parsed = JSON.parse(raw);
     if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
       throw new Error("body must be a JSON object");
     }
-    return parsed;
+    req.__oneglJsonBody = parsed;
+    return req.__oneglJsonBody;
   } catch (error) {
     throw new ApiHttpError(400, "invalid_json", "request body must be a JSON object", {
       message: error instanceof Error ? error.message : String(error),
