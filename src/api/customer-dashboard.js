@@ -11,6 +11,25 @@ function finite(value) {
   return value == null || !Number.isFinite(Number(value)) ? null : Number(value);
 }
 
+async function distinctCitedDomainCount(pool, projectId, from, to) {
+  const { rows } = await pool.query(
+    `SELECT count(DISTINCT a.normalized_domain)::int AS n
+       FROM citations c
+       JOIN runs r ON r.id = c.run_id
+       JOIN prompts p ON p.id = r.prompt_id
+       JOIN articles a ON a.id = c.article_id
+      WHERE p.project_id = $1
+        AND r.created_at >= $2
+        AND r.created_at <= $3
+        AND r.status IN ('success', 'partial')
+        AND r.conversation_reset_confirmed IS TRUE
+        AND c.source_type = 'visible'
+        AND c.visible_to_user IS TRUE`,
+    [projectId, from, to],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
 function publicOpportunity(item = {}, source = "geo") {
   const evidence = item.evidence ?? {};
   const mappedEvidence = {};
@@ -143,12 +162,16 @@ export async function buildCustomerDashboard(pool, tenantId, taskId, { days = 30
   ]);
   if (!task || !internal || task.state === "archived") return null;
 
-  const intelligence = await loadProjectGeoIntelligence(pool, Number(internal.project_id), { days });
+  const projectId = Number(internal.project_id);
+  const intelligence = await loadProjectGeoIntelligence(pool, projectId, { days });
   if (!intelligence) return null;
-  const sourceContent = await loadProjectDoubaoSourceSignals(pool, Number(internal.project_id), {
-    from: intelligence.scope.from,
-    to: intelligence.scope.to,
-  });
+  const [sourceContent, uniqueDomains] = await Promise.all([
+    loadProjectDoubaoSourceSignals(pool, projectId, {
+      from: intelligence.scope.from,
+      to: intelligence.scope.to,
+    }),
+    distinctCitedDomainCount(pool, projectId, intelligence.scope.from, intelligence.scope.to),
+  ]);
 
   let latestExecution = null;
   let latestResults = [];
@@ -159,6 +182,7 @@ export async function buildCustomerDashboard(pool, tenantId, taskId, { days = 30
 
   const source = sourceContentView(sourceContent);
   const citations = citationView(intelligence.citations);
+  citations.unique_domains = uniqueDomains;
   const searchQueries = queryFanoutView(intelligence.fanout);
   const competitors = (intelligence.competitors ?? []).map((row) => ({
     name: row.name,
