@@ -11,14 +11,14 @@ function parseArgs(argv) {
     if (token === "--static") args.staticOnly = true;
     else if (token === "--role") {
       const next = argv[index + 1];
-      if (!next) throw new Error("--role requires api, worker, webhook, or monitor");
+      if (!next) throw new Error("--role requires api, worker, webhook, monitor, or alert");
       args.role = next;
       index += 1;
     } else if (token.startsWith("--role=")) args.role = token.slice(7);
     else throw new Error(`unknown argument: ${token}`);
   }
-  if (!new Set(["api", "worker", "webhook", "monitor"]).has(args.role)) {
-    throw new Error("--role must be api, worker, webhook, or monitor");
+  if (!new Set(["api", "worker", "webhook", "monitor", "alert"]).has(args.role)) {
+    throw new Error("--role must be api, worker, webhook, monitor, or alert");
   }
   return args;
 }
