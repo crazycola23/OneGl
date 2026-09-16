@@ -53,13 +53,22 @@ export function applySaasOpenApi(document) {
         details: { description: "Optional structured details. Do not parse message text when details are available." },
       },
     },
+    TaskSamplingInput: {
+      type: "object",
+      additionalProperties: false,
+      description: "Optional sampling overrides. Each field may be supplied independently.",
+      properties: {
+        method: { type: "string", enum: ["stratified", "random"], default: "stratified" },
+        repeats: { type: "integer", minimum: 1, maximum: 100, default: 1 },
+      },
+    },
     TaskSampling: {
       type: "object",
       additionalProperties: false,
       required: ["method", "repeats"],
       properties: {
-        method: { type: "string", enum: ["stratified", "random"], default: "stratified" },
-        repeats: { type: "integer", minimum: 1, maximum: 100, default: 1 },
+        method: { type: "string", enum: ["stratified", "random"] },
+        repeats: { type: "integer", minimum: 1, maximum: 100 },
       },
     },
     TaskCreate: {
@@ -96,7 +105,7 @@ export function applySaasOpenApi(document) {
           items: { type: "string", minLength: 1 },
           default: [],
         },
-        sampling: { $ref: "#/components/schemas/TaskSampling" },
+        sampling: { $ref: "#/components/schemas/TaskSamplingInput" },
       },
     },
     TaskResource: {
@@ -122,13 +131,12 @@ export function applySaasOpenApi(document) {
     ExecutionCreate: {
       type: "object",
       additionalProperties: false,
-      description: "All fields are optional. Omitted fields inherit the saved Task configuration.",
+      description: "All fields are optional. Omitted fields inherit the saved Task configuration. Creating an Execution starts it immediately.",
       properties: {
         account_ids: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: { type: "string", minLength: 1 } },
         platforms: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: { type: "string", enum: ["doubao"] } },
-        sampling: { $ref: "#/components/schemas/TaskSampling" },
+        sampling: { $ref: "#/components/schemas/TaskSamplingInput" },
         seed: { type: ["string", "null"], description: "Optional deterministic sampling seed." },
-        start: { type: "boolean", default: true, description: "Normally true. false creates the execution resource without enqueueing it immediately." },
       },
     },
     ExecutionProgress: {
@@ -360,7 +368,7 @@ export function applySaasOpenApi(document) {
       },
       post: {
         summary: "Execute or re-execute a task",
-        description: "Every call creates a new execution_id, result IDs and report_id. Re-execution never overwrites previous measurements.",
+        description: "Every call creates and starts a new execution_id, result IDs and report_id. Re-execution never overwrites previous measurements.",
         requestBody: { required: false, content: { "application/json": { schema: { $ref: "#/components/schemas/ExecutionCreate" }, example: {} } } },
         responses: {
           202: json("Execution accepted", { $ref: "#/components/schemas/ExecutionResource" }),
