@@ -78,7 +78,19 @@ function emptyNetworkEvidence(message) {
   };
 }
 
+function disabledNetworkEvidence() {
+  return {
+    version: 1,
+    state: "disabled",
+    queries: [],
+    retrievedSources: [],
+    responses: [],
+    diagnostics: [],
+  };
+}
+
 async function finalizeNetworkEvidence(collector) {
+  if (!collector) return disabledNetworkEvidence();
   try {
     return await collector.stop();
   } catch (error) {
@@ -135,11 +147,15 @@ function mergeSearchQueries(...groups) {
 /**
  * 执行一次提问并落库。
  *
+ * Browser-backed and direct-API adapters share this entry. DOM/network evidence is
+ * enabled only when a browser page exists; provider-reported webQueries/citations are
+ * still persisted for non-browser adapters.
+ *
  * 不抛异常：调用方需要根据错误码决定重试、暂停账号还是跳过，
  * 所以把结果与错误一起返回。
  */
 export async function runOnePrompt({
-  page,
+  page = null,
   store,
   config,
   prompt,
@@ -194,17 +210,19 @@ export async function runOnePrompt({
       // Scope detection is best-effort; failure must not disturb collection.
     }
   };
-  page.on("request", observeTurnScope);
+  if (page?.on) page.on("request", observeTurnScope);
 
-  const networkCollector = createNetworkEvidenceCollector(page, {
-    enabled: config.networkEvidenceEnabled === true,
-    maxBodyBytes: config.networkEvidenceMaxBodyBytes,
-    bodyTimeoutMs: config.networkEvidenceBodyTimeoutMs,
-    getTurnId: () => {
-      const fromUrl = page.url().match(/\/chat\/(\d{6,})/);
-      return turnScope.conversationId ?? fromUrl?.[1] ?? null;
-    },
-  });
+  const networkCollector = page
+    ? createNetworkEvidenceCollector(page, {
+      enabled: config.networkEvidenceEnabled === true,
+      maxBodyBytes: config.networkEvidenceMaxBodyBytes,
+      bodyTimeoutMs: config.networkEvidenceBodyTimeoutMs,
+      getTurnId: () => {
+        const fromUrl = page.url().match(/\/chat\/(\d{6,})/);
+        return turnScope.conversationId ?? fromUrl?.[1] ?? null;
+      },
+    })
+    : null;
   let networkEvidence = null;
   let frontEndPreflight = null;
   let saved = null;
@@ -216,6 +234,7 @@ export async function runOnePrompt({
     // Doubao keeps its conservative front-end safety boundary. Future API/scraped
     // providers implement their own access mechanics behind the provider adapter.
     if (provider.id === "doubao-web") {
+      if (!page) throw new Error("doubao-web provider requires a browser page");
       frontEndPreflight = await prepareFrontEndForRun(page, config);
       executionPage = createConservativeDoubaoPage(page);
     }
@@ -223,7 +242,7 @@ export async function runOnePrompt({
     const answer = result.textContent;
 
     networkEvidence = await finalizeNetworkEvidence(networkCollector);
-    page.off("request", observeTurnScope);
+    page?.off?.("request", observeTurnScope);
     await writeNetworkEvidenceArtifact(store, run.id, attempt, networkEvidence);
     await captureArtifacts(store, run.id, page, prompt, attempt);
     await store.writeAttemptArtifact(run.id, attempt, "answer.md", `${answer}\n`);
@@ -266,7 +285,7 @@ export async function runOnePrompt({
     });
   } catch (error) {
     networkEvidence = await finalizeNetworkEvidence(networkCollector);
-    page.off("request", observeTurnScope);
+    page?.off?.("request", observeTurnScope);
     await writeNetworkEvidenceArtifact(store, run.id, attempt, networkEvidence);
     await captureArtifacts(store, run.id, page, prompt, attempt);
     normalized = normalizeError(error);
