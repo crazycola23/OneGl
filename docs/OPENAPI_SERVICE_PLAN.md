@@ -1,79 +1,128 @@
 # OneGl Service API
 
-This service lets another trusted platform use OneGl as an execution backend without exposing browser-control primitives or Doubao session material.
-
-## Topology
+OneGl can run as an execution backend for another product. The product owns end-user login, product UI, billing and permissions; OneGl owns GEO execution, account safety, browser sessions, queueing, evidence and reporting.
 
 ```text
 Product / SaaS UI
       |
-      | user auth
+      | product user session
       v
 Product backend
       |
-      | HTTPS + OneGl service API key
+      | HTTPS + tenant API key
       v
 OneGl Service API
       |
       +--> PostgreSQL
       +--> BullMQ / Redis --> OneGl Worker --> Doubao Web
+      +--> Remote auth session (temporary login browser)
+      +--> Durable webhook events --> Webhook Worker --> Product backend
 ```
 
-The existing OneGl dashboard remains an internal/admin console. The service API is a separate process and exposes only business-level resources: projects, keyword pools, accounts, batches, runs and reports.
+The existing OneGl dashboard stays an internal/admin console. It is not the customer-facing surface.
 
-## Start
+## Processes
 
-Configure at minimum:
+```bash
+npm run api:serve          # business API
+npm run worker             # GEO execution
+npm run webhook:worker     # signed webhook delivery
+npm run serve              # internal/admin dashboard (optional)
+```
+
+## Minimum configuration
 
 ```bash
 DATABASE_URL=postgresql://...
 REDIS_URL=redis://...
-ONEGL_API_KEY=<long-random-secret>
+ONEGL_API_KEY=<long-random-master-secret>
+ONEGL_WEBHOOK_SIGNING_KEY=<different-long-random-secret>
 ONEGL_API_HOST=127.0.0.1
 ONEGL_API_PORT=3200
 ```
 
-Then run:
+For cross-host deployment, keep OneGl behind TLS or a private network. Do not expose a plaintext API port directly to the public Internet.
 
-```bash
-npm run api:serve
-```
+## Authentication model
 
-The API exposes:
+There are two credential levels.
 
-- `GET /healthz`
-- `GET /openapi.json`
-- authenticated `/v1/*` endpoints
+### Master key
 
-For cross-host deployment, keep OneGl behind a TLS reverse proxy or private network. Do not expose a plaintext service port directly to the public Internet.
+`ONEGL_API_KEY` is an operator/bootstrap key. It can create tenants and tenant API clients and can select a tenant with `X-OneGl-Tenant` for administrative first-party calls.
 
-## Authentication
+Do not put it in browser JavaScript or mobile clients.
 
-Either header form is accepted:
+### Tenant client keys
+
+Create tenant-scoped keys with:
 
 ```http
-Authorization: Bearer <ONEGL_API_KEY>
+POST /v1/admin/tenants/{tenantId}/clients
+Authorization: Bearer <master-key>
+Content-Type: application/json
+
+{
+  "name": "main-product-backend",
+  "scopes": [
+    "projects:read",
+    "projects:write",
+    "accounts:read",
+    "accounts:write",
+    "batches:read",
+    "batches:write",
+    "reports:read",
+    "webhooks:read",
+    "webhooks:write"
+  ]
+}
 ```
 
-or:
+The returned `api_key` is shown once. Only its SHA-256 hash and a display prefix are stored in PostgreSQL. Tenant client keys cannot select another tenant.
 
-```http
-X-API-Key: <ONEGL_API_KEY>
+## Tenant isolation
+
+The collector's historical core tables remain compatible with the CLI/dashboard. The service layer adds binding tables:
+
+```text
+service_tenants
+  +-- service_project_bindings --> projects
+  +-- service_account_bindings --> accounts
+  +-- service_api_clients
+  +-- service_webhook_endpoints
+  +-- service_auth_sessions
 ```
 
-The key is intended for server-to-server calls from your product backend. Do not put it in browser JavaScript or mobile clients.
+Projects are internally namespaced while the API returns the tenant-facing display name. Account aliases are also mapped to opaque internal account keys, so one tenant cannot address another tenant's project, batch, run or account through the API.
+
+Existing pre-service projects/accounts are migrated into the `default` tenant.
 
 ## Typical product flow
 
-### 1. Create a project
+### 1. Create tenant and product client
+
+```http
+POST /v1/admin/tenants
+Authorization: Bearer <master>
+
+{
+  "slug": "customer-a",
+  "name": "Customer A"
+}
+```
+
+Then create a scoped client using `/v1/admin/tenants/{tenantId}/clients`.
+
+### 2. Create project and keywords
 
 ```http
 POST /v1/projects
+Authorization: Bearer <tenant-client-key>
 Content-Type: application/json
-Authorization: Bearer ...
 
 {
   "name": "小米汽车",
+  "external_id": "project_9081",
   "target_brand": "小米",
   "keywords": [
     "20万新能源SUV推荐",
@@ -82,58 +131,123 @@ Authorization: Bearer ...
 }
 ```
 
-Keywords are optional here; they can also be added later with `POST /v1/projects/{projectId}/keywords`.
-
-### 2. Inspect available execution accounts
+### 3. Register an execution account alias
 
 ```http
-GET /v1/accounts
-Authorization: Bearer ...
+POST /v1/accounts
+Authorization: Bearer <tenant-client-key>
+Content-Type: application/json
+
+{
+  "account_id": "doubao-primary",
+  "provider": "doubao",
+  "label": "客户主账号"
+}
 ```
 
-The response includes account health and an `executable` flag. It never includes cookies, Playwright `storageState`, session tokens or browser profile contents.
+The external `account_id` is the only identifier your product needs to store.
 
-### 3. Create a batch
+### 4. Connect/login the provider account
+
+```http
+POST /v1/accounts/doubao-primary/auth-sessions
+Authorization: Bearer <tenant-client-key>
+Content-Type: application/json
+
+{
+  "ttl_minutes": 10
+}
+```
+
+OneGl starts a temporary isolated browser session. The API returns an auth-session UUID and a screenshot endpoint. Your product backend can proxy that PNG into its own account-connect UI:
+
+```http
+GET /v1/auth-sessions/{id}/screenshot
+GET /v1/auth-sessions/{id}
+```
+
+The login session only opens the provider's normal login surface and returns screenshots/status. It does not expose arbitrary click/type endpoints, cookies or Playwright `storageState`.
+
+When OneGl detects a healthy logged-in session, it writes the account's storage state into OneGl's local account directory and closes the temporary browser. Verification/access-restriction states fail closed; OneGl does not solve or bypass them.
+
+### 5. Create and start a batch
 
 ```http
 POST /v1/batches
+Authorization: Bearer <tenant-client-key>
 Content-Type: application/json
-Authorization: Bearer ...
 
 {
-  "project_id": 1,
-  "size": 2,
+  "project_id": 123,
+  "size": 20,
   "method": "stratified",
-  "accounts": ["account_01"],
+  "accounts": ["doubao-primary"],
   "repeats": 3,
   "start": true
 }
 ```
 
-`start: true` creates and immediately enqueues the batch. If omitted, call `POST /v1/batches/{batchId}/start` later.
+The service resolves the tenant-facing account alias to its internal OneGl account key and then reuses the normal sampling, BullMQ and Worker execution path. Existing hourly/daily limits, cooldowns, verification handling and retry/idempotency rules remain the source of truth.
 
-### 4. Poll progress
-
-```http
-GET /v1/batches/123
-Authorization: Bearer ...
-```
-
-For a first integration, polling this endpoint is sufficient. A webhook layer can be added later without changing the execution model.
-
-### 5. Read runs and report
+### 6. Progress and report
 
 ```http
-GET /v1/batches/123/runs
-GET /v1/batches/123/report
-GET /v1/runs/run_b123_i1
+GET /v1/batches/{batchId}
+GET /v1/batches/{batchId}/runs
+GET /v1/batches/{batchId}/report
+GET /v1/runs/{runId}
 ```
 
-The batch report is backed by the same database/reporting logic used by the existing OneGl dashboard and CLI.
+All ownership checks are tenant-scoped.
 
-## API boundaries
+## Webhooks
 
-The service intentionally does **not** expose endpoints such as:
+Create an endpoint:
+
+```http
+POST /v1/webhooks
+Authorization: Bearer <tenant-client-key>
+Content-Type: application/json
+
+{
+  "url": "https://product.example.com/webhooks/onegl",
+  "event_types": [
+    "batch.completed",
+    "batch.partial",
+    "batch.failed",
+    "batch.aborted",
+    "account.verification_required",
+    "account.rate_limited"
+  ]
+}
+```
+
+The response includes a derived `signing_secret`. Store it in the product backend; it is not persisted as endpoint plaintext in the database.
+
+Run `npm run webhook:worker` to deliver durable queued events. Terminal batch transitions and important account-risk transitions are inserted into `service_webhook_events` by PostgreSQL triggers, so a temporary API or worker restart does not lose the event.
+
+Webhook headers:
+
+```text
+X-OneGl-Event
+X-OneGl-Event-Id
+X-OneGl-Timestamp
+X-OneGl-Signature: v1=<hex HMAC-SHA256>
+```
+
+Verification input is:
+
+```text
+<timestamp>.<raw request body>
+```
+
+using the endpoint `signing_secret` as the HMAC-SHA256 key. Consumers should reject stale timestamps and deduplicate by event ID.
+
+Delivery retries use bounded exponential-style backoff and retain delivery attempts/status in PostgreSQL.
+
+## Security boundaries
+
+The API intentionally does not expose:
 
 ```text
 click-new-chat
@@ -142,18 +256,13 @@ click-send
 solve-captcha
 set-cookie
 get-storage-state
+arbitrary browser navigation
 ```
 
-External callers operate OneGl through domain resources, not through raw browser actions. Verification, login expiry and access restrictions continue to use OneGl's fail-closed account safety model and require manual handling where appropriate.
+Customer-facing product code should call OneGl only from its backend. Browser/mobile clients should never receive OneGl tenant API keys, the master key, provider cookies or storage state.
 
-## Next service milestones
+## OpenAPI
 
-The current API is designed for a trusted first-party product backend. Before opening it to unrelated third parties, add:
+`GET /openapi.json` returns OpenAPI 3.1 and documents tenant administration, client keys, projects, account-connect sessions, batches, runs, reports and webhooks.
 
-1. tenant ownership / `tenant_id` isolation;
-2. per-client API keys and scopes;
-3. signed webhook delivery with replay protection;
-4. service-level request rate limits and audit records;
-5. remote account-connect sessions only if customer-owned Doubao accounts must be linked from the product UI.
-
-The execution worker and account safety controls should remain the single source of truth; future API features should orchestrate those primitives rather than duplicate them.
+This can be used to generate a TypeScript/Python/Go SDK for the product backend.
