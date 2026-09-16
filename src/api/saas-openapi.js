@@ -68,7 +68,7 @@ const idempotencyHeader = {
 };
 
 const paginationParameters = [
-  { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200, default: 50 } },
+  { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500, default: 100 } },
   { name: "cursor", in: "query", description: "Opaque next_cursor returned by the previous page.", schema: { type: "string" } },
 ];
 
@@ -371,6 +371,18 @@ export function applySaasOpenApi(document) {
         created_at: { type: "string", format: "date-time" },
       },
     },
+    ScheduleExecutionItem: {
+      type: "object",
+      required: ["scheduled_for", "status", "execution_id", "batch_created"],
+      properties: {
+        scheduled_for: { type: "string", format: "date-time" },
+        status: { type: "string" },
+        execution_id: { anyOf: [executionId, { type: "null" }] },
+        batch_created: { type: "boolean" },
+        details: { type: ["object", "null"], additionalProperties: true },
+        error: { type: ["string", "null"] },
+      },
+    },
     SaasWebhookEvent: {
       type: "object",
       additionalProperties: false,
@@ -527,7 +539,11 @@ export function applySaasOpenApi(document) {
     },
     "/v1/schedules/{scheduleId}/executions": {
       parameters: [stringId("scheduleId", "sch")],
-      get: { summary: "List scheduled occurrences and linked execution IDs", responses: { 200: json("Schedule executions") } },
+      get: {
+        summary: "List scheduled occurrences and linked execution IDs",
+        parameters: paginationParameters,
+        responses: { 200: pageJson("Schedule executions", { $ref: "#/components/schemas/ScheduleExecutionItem" }) },
+      },
     },
   });
 
