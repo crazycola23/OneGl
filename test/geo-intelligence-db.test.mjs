@@ -6,6 +6,7 @@ import {
   deleteProjectCompetitor,
   listProjectCompetitors,
   loadBatchGeoIntelligence,
+  loadProjectGeoIntelligence,
   upsertProjectCompetitor,
 } from "../src/db/geo-intelligence.js";
 
@@ -100,19 +101,33 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     assert.equal((await listProjectCompetitors(pool, projectId)).length, 1);
 
     const intelligence = await loadBatchGeoIntelligence(pool, batchId);
+    assert.equal(intelligence.scope.type, "batch");
+    assert.equal(intelligence.ruleMode, "current-project-rules");
     assert.equal(intelligence.visibility.validRuns, 3);
     assert.equal(intelligence.visibility.brandMentions, 2);
     assert.equal(intelligence.visibility.rate, 2 / 3);
+    assert.equal(intelligence.visibility.series.length, 2);
     assert.equal(intelligence.providers.length, 1);
     assert.equal(intelligence.providers[0].access, "scraped");
     assert.equal(intelligence.competitors[0].name, "竞品B");
     assert.equal(intelligence.competitors[0].mentions, 2);
     assert.equal(intelligence.shareOfVoice.brandShare, 0.5);
+    assert.equal(intelligence.shareOfVoice.series.length, 2);
     assert.equal(intelligence.fanout.totalQueries, 3);
     assert.equal(intelligence.citations.total, 5);
     assert.equal(intelligence.citations.stability.transitions, 1);
     assert.ok(intelligence.citations.stability.stabilityScore >= 0);
     assert.ok(intelligence.citations.topDomains.some((row) => row.domain === "a.example"));
+
+    const projectWindow = await loadProjectGeoIntelligence(pool, projectId, {
+      days: 7,
+      now: new Date("2026-09-16T23:00:00Z"),
+    });
+    assert.equal(projectWindow.scope.type, "project-window");
+    assert.equal(projectWindow.scope.days, 7);
+    assert.equal(projectWindow.visibility.validRuns, 3);
+    assert.deepEqual(projectWindow.visibility.series.map((row) => row.date), ["2026-09-14", "2026-09-15"]);
+    assert.equal(projectWindow.citations.stability.transitions, 1);
 
     assert.equal(await deleteProjectCompetitor(pool, projectId, competitor.id), true);
     assert.deepEqual(await listProjectCompetitors(pool, projectId), []);
