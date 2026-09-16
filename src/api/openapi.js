@@ -17,7 +17,7 @@ export const openApiDocument = {
     title: "OneGl Service API",
     version: "0.3.0",
     description:
-      "Multi-tenant server-to-server API for OneGl GEO measurement and intelligence. Tenant-scoped API clients, signed webhooks, constrained account-connect sessions, competitor benchmarking, query fan-out and citation-stability analytics are supported. Browser cookies/storageState and arbitrary browser-control primitives are never exposed.",
+      "Multi-tenant server-to-server API for OneGl GEO measurement and intelligence. Tenant-scoped API clients, signed webhooks, constrained account-connect sessions, competitor benchmarking, query fan-out, longitudinal visibility/share-of-voice trends, and citation-stability analytics are supported. Browser cookies/storageState and arbitrary browser-control primitives are never exposed.",
   },
   servers: [{ url: "/" }],
   components: {
@@ -178,7 +178,7 @@ export const openApiDocument = {
       get: { summary: "List competitors used for share-of-voice analysis", responses: { 200: jsonResponse("Competitors") } },
       post: {
         summary: "Create or replace competitor matching rules",
-        description: "Competitor mentions are re-derived from stored historical answers, so new rules immediately apply to old runs.",
+        description: "Brand and competitor mentions are re-derived from stored historical answers using current project rules, so rule changes immediately apply to the intelligence view without rewriting captured evidence.",
         requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/CompetitorUpsert" } } } },
         responses: { 201: jsonResponse("Competitor") },
       },
@@ -186,6 +186,17 @@ export const openApiDocument = {
     "/v1/projects/{projectId}/competitors/{competitorId}": {
       parameters: [idParameter("projectId", "Project ID"), idParameter("competitorId", "Competitor ID")],
       delete: { summary: "Delete competitor matching rules", responses: { 200: jsonResponse("Deleted") } },
+    },
+    "/v1/projects/{projectId}/intelligence": {
+      parameters: [
+        idParameter("projectId", "Project ID"),
+        { name: "days", in: "query", description: "Rolling lookback in days", schema: { type: "integer", minimum: 1, maximum: 365, default: 30 } },
+      ],
+      get: {
+        summary: "Get longitudinal GEO intelligence for a project",
+        description: "Aggregates valid runs across batches in the rolling window. Preferred for citation stability and daily visibility/share-of-voice trends.",
+        responses: { 200: jsonResponse("Project GEO intelligence"), 404: { $ref: "#/components/responses/NotFound" } },
+      },
     },
 
     "/v1/accounts": {
@@ -262,7 +273,7 @@ export const openApiDocument = {
       get: {
         summary: "Get auditable GEO intelligence for a batch",
         description: "Returns visibility, provider/model breakdown, competitor share of voice, query fan-out, citation source stability, prompt gaps and deterministic opportunity candidates re-derived from stored evidence.",
-        responses: { 200: jsonResponse("GEO intelligence"), 404: { $ref: "#/components/responses/NotFound" } },
+        responses: { 200: jsonResponse("Batch GEO intelligence"), 404: { $ref: "#/components/responses/NotFound" } },
       },
     },
     "/v1/runs/{runId}": {
