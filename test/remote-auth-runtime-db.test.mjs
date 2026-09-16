@@ -39,10 +39,16 @@ test("remote auth state is durable across API nodes", { skip: !enabled }, async 
     assert.equal(runtime.browser_active, true);
 
     assert.equal(await cancelRemoteAuthSession({ pool, tenantId: tenant.id, id: auth.id }), true);
-    const after = await pool.query("SELECT status, cancel_requested_at, completed_at FROM service_auth_sessions WHERE id = $1", [auth.id]);
+    const after = await pool.query(
+      `SELECT status, cancel_requested_at, completed_at, screenshot, screenshot_at
+         FROM service_auth_sessions WHERE id = $1`,
+      [auth.id],
+    );
     assert.equal(after.rows[0].status, "cancelled");
     assert.ok(after.rows[0].cancel_requested_at);
     assert.ok(after.rows[0].completed_at);
+    assert.equal(after.rows[0].screenshot, null);
+    assert.equal(after.rows[0].screenshot_at, null);
   } finally {
     if (tenant?.id) await pool.query("DELETE FROM service_tenants WHERE id = $1", [tenant.id]).catch(() => undefined);
     if (account?.account_key) await pool.query("DELETE FROM accounts WHERE provider = 'doubao' AND account_key = $1", [account.account_key]).catch(() => undefined);
