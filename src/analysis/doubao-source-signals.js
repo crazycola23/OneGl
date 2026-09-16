@@ -98,7 +98,11 @@ export function summarizeDoubaoSourceSignals(rows = []) {
       priority: 1 - metrics.brandEvidenceRate,
       title: "检查高频豆包引用页中的品牌证据缺口",
       why: `已分析 ${total} 个豆包引用页，其中只有 ${Math.round((metrics.brandEvidenceRate ?? 0) * 100)}% 能观察到目标品牌证据。`,
-      evidence: { analyzedPages: total, brandEvidenceRate: metrics.brandEvidenceRate },
+      evidence: {
+        analyzedPages: total,
+        brandEvidenceRate: metrics.brandEvidenceRate,
+        brandEvidenceRuleMode: "capture-time-page-evidence",
+      },
       guardrail: "先核对具体页面与上下文，再决定内容或外联动作；该指标不证明品牌出现会导致被引用。",
     });
   }
@@ -116,6 +120,7 @@ export function summarizeDoubaoSourceSignals(rows = []) {
 
   return {
     ...metrics,
+    brandEvidenceRuleMode: "capture-time-page-evidence",
     evidenceQuality: total >= 10 && (metrics.analysisCoverageRate ?? 0) >= 0.6
       ? "strong-observational"
       : total >= 3
@@ -123,6 +128,6 @@ export function summarizeDoubaoSourceSignals(rows = []) {
         : "insufficient-data",
     patterns,
     opportunities,
-    attributionNote: "页面结构、品牌证据与豆包引用是在同一观测窗口中共同出现的证据；OneGl 不把这些相关性描述成豆包内部排序或引用公式。",
+    attributionNote: "页面结构、品牌证据与豆包引用是在同一观测窗口中共同出现的证据；页面品牌证据沿用采集当时的项目规则，OneGl 不把这些相关性描述成豆包内部排序或引用公式。",
   };
 }
