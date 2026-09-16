@@ -6,6 +6,7 @@ import { getRedis, isQueueConfigured, queuePrefix } from "../queue/connection.js
 import { isProductionRuntime } from "../system/readiness.js";
 import { classifyWorkerHeartbeat, readWorkerHeartbeat } from "../system/status.js";
 
+const API_VERSION = "0.7.0";
 const REQUEST_ID_PATTERN = /^req_[a-f0-9]{32}$/;
 const installedSymbol = Symbol.for("onegl.api.observability.installed");
 const originalCreateServerSymbol = Symbol.for("onegl.api.observability.originalCreateServer");
@@ -292,6 +293,7 @@ export function installApiObservability() {
       const started = process.hrtime.bigint();
       const id = requestId();
       res.setHeader("x-onegl-request-id", id);
+      res.setHeader("x-onegl-api-version", API_VERSION);
       let url;
       try {
         url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
