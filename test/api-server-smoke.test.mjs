@@ -68,16 +68,21 @@ test("api:serve exposes health/OpenAPI and protects v1 routes", async () => {
     const healthBody = await health.json();
     assert.equal(healthBody.service, "onegl-api");
     assert.equal(healthBody.database.ready, false);
-    assert.equal(healthBody.auth.configured, true);
+    assert.equal(healthBody.auth.master_configured, true);
+    assert.equal(healthBody.auth.client_keys_supported, true);
+    assert.equal(healthBody.remote_auth.enabled, true);
 
     const spec = await fetch(`${base}/openapi.json`);
     assert.equal(spec.status, 200);
     const specBody = await spec.json();
     assert.equal(specBody.openapi, "3.1.0");
     assert.ok(specBody.paths["/v1/batches"]);
+    assert.ok(specBody.paths["/v1/admin/tenants"]);
 
     const anonymous = await fetch(`${base}/v1/projects`);
-    assert.equal(anonymous.status, 401);
+    assert.equal(anonymous.status, 503);
+    const anonymousBody = await anonymous.json();
+    assert.equal(anonymousBody.error, "database_unavailable");
 
     const authenticated = await fetch(`${base}/v1/projects`, {
       headers: { authorization: "Bearer test-service-key" },
