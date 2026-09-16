@@ -93,7 +93,7 @@ service_tenants
   +-- service_auth_sessions
 ```
 
-Projects are internally namespaced while the API returns the tenant-facing display name. Account aliases are also mapped to opaque internal account keys, so one tenant cannot address another tenant's project, batch, run or account through the API.
+Projects are internally namespaced while the API returns the tenant-facing display name. Account aliases are mapped to opaque internal account keys, so one tenant cannot address another tenant's project, batch, run or account through the API.
 
 Existing pre-service projects/accounts are migrated into the `default` tenant.
 
@@ -187,7 +187,7 @@ Content-Type: application/json
 }
 ```
 
-The service resolves the tenant-facing account alias to its internal OneGl account key and then reuses the normal sampling, BullMQ and Worker execution path. Existing hourly/daily limits, cooldowns, verification handling and retry/idempotency rules remain the source of truth.
+The service resolves the tenant-facing account alias to its internal OneGl account key and reuses the normal sampling, BullMQ and Worker execution path. Existing hourly/daily limits, cooldowns, verification handling and retry/idempotency rules remain the source of truth.
 
 ### 6. Progress and report
 
@@ -256,13 +256,7 @@ X-OneGl-Timestamp
 X-OneGl-Signature: v1=<hex HMAC-SHA256>
 ```
 
-Verification input is:
-
-```text
-<timestamp>.<raw request body>
-```
-
-using the endpoint `signing_secret` as the HMAC-SHA256 key. Consumers should reject stale timestamps (for example older than five minutes) and deduplicate by `X-OneGl-Event-Id` before applying side effects.
+Verification input is `<timestamp>.<raw request body>` using the endpoint `signing_secret` as the HMAC-SHA256 key. Consumers should reject stale timestamps (for example older than five minutes) and deduplicate by `X-OneGl-Event-Id` before applying side effects.
 
 Delivery retries use bounded backoff and retain delivery attempts/status in PostgreSQL.
 
@@ -287,3 +281,13 @@ Customer-facing product code should call OneGl only from its backend. Browser/mo
 `GET /openapi.json` returns OpenAPI 3.1 and documents tenant administration, client keys, projects, account-connect sessions, batches, runs, reports and webhooks.
 
 This can be used to generate a TypeScript/Python/Go SDK for the product backend.
+
+## Implemented service-platform scope
+
+This branch now includes the full first service-platform layer discussed for external product integration:
+
+- multi-tenant project/account ownership;
+- tenant-scoped API clients with scopes and revocation;
+- signed durable webhooks with retry history;
+- constrained remote account-connect sessions;
+- existing OneGl risk controls and collector semantics reused without a second execution engine.
