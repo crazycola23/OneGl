@@ -15,9 +15,9 @@ export const openApiDocument = {
   openapi: "3.1.0",
   info: {
     title: "OneGl Service API",
-    version: "0.3.0",
+    version: "0.4.0",
     description:
-      "Multi-tenant server-to-server API for OneGl GEO measurement and intelligence. Tenant-scoped API clients, signed webhooks, constrained account-connect sessions, competitor benchmarking, query fan-out, longitudinal visibility/share-of-voice trends, and citation-stability analytics are supported. Browser cookies/storageState and arbitrary browser-control primitives are never exposed.",
+      "China-first server-to-server GEO measurement and intelligence API focused on Doubao Web. It supports tenant-scoped API clients, conservative account-connect sessions, recurring daily/weekly Doubao monitoring, signed webhooks, competitor benchmarking, query fan-out, longitudinal visibility/share-of-voice trends, citation stability, and observable cited-page content signals. Recurring monitoring only creates ordinary batches: the existing account pacing, quotas, cooldowns, verification fail-closed behavior and retry rules remain the execution source of truth. Browser cookies/storageState and arbitrary browser-control primitives are never exposed.",
   },
   servers: [{ url: "/" }],
   components: {
@@ -59,6 +59,22 @@ export const openApiDocument = {
           aliases: { type: "array", items: { type: "string" }, default: [] },
           domains: { type: "array", items: { type: "string" }, default: [] },
           exclude_patterns: { type: "array", items: { type: "string" }, default: [] },
+          enabled: { type: "boolean", default: true },
+        },
+      },
+      MonitorPlanCreate: {
+        type: "object",
+        required: ["name", "cadence", "accounts"],
+        properties: {
+          name: { type: "string", minLength: 1 },
+          cadence: { type: "string", enum: ["daily", "weekly"] },
+          time_zone: { type: "string", default: "Asia/Shanghai", examples: ["Asia/Shanghai"] },
+          local_time: { type: "string", pattern: "^(?:[01]\\d|2[0-3]):[0-5]\\d$", default: "09:00" },
+          weekday: { type: ["integer", "null"], minimum: 1, maximum: 7, description: "ISO weekday, Monday=1. Required for weekly cadence." },
+          size: { type: ["integer", "null"], minimum: 1, maximum: 10000, description: "Null means all currently enabled prompts." },
+          method: { type: "string", enum: ["stratified", "random"], default: "stratified" },
+          repeats: { type: "integer", minimum: 1, maximum: 100, default: 1 },
+          accounts: { type: "array", minItems: 1, maxItems: 100, items: { type: "string" } },
           enabled: { type: "boolean", default: true },
         },
       },
@@ -147,7 +163,7 @@ export const openApiDocument = {
     "/v1/providers": {
       get: {
         summary: "List configured provider adapter types",
-        description: "Reports provider/model/access identity. `scraped` and `api` measurements are intentionally distinguishable.",
+        description: "Doubao Web is the current product measurement surface. Provider identity remains explicit so measurements are auditable.",
         responses: { 200: jsonResponse("Provider adapters") },
       },
     },
@@ -187,14 +203,44 @@ export const openApiDocument = {
       parameters: [idParameter("projectId", "Project ID"), idParameter("competitorId", "Competitor ID")],
       delete: { summary: "Delete competitor matching rules", responses: { 200: jsonResponse("Deleted") } },
     },
+    "/v1/projects/{projectId}/monitor-plans": {
+      parameters: [idParameter("projectId", "Project ID")],
+      get: {
+        summary: "List recurring Doubao monitoring plans",
+        responses: { 200: jsonResponse("Monitoring plans") },
+      },
+      post: {
+        summary: "Create a daily or weekly Doubao monitoring plan",
+        description: "A due occurrence creates an ordinary sampling batch. The monitor worker does not override account quotas, cooldowns, verification/access blocks or safe retry rules.",
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/MonitorPlanCreate" } } } },
+        responses: { 201: jsonResponse("Monitoring plan"), 409: { $ref: "#/components/responses/Conflict" } },
+      },
+    },
+    "/v1/monitor-plans/{monitorPlanId}": {
+      parameters: [idParameter("monitorPlanId", "Monitoring plan ID")],
+      get: { summary: "Get a recurring Doubao monitoring plan", responses: { 200: jsonResponse("Monitoring plan") } },
+      patch: {
+        summary: "Update/pause/resume a recurring Doubao monitoring plan",
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: true } } } },
+        responses: { 200: jsonResponse("Updated monitoring plan") },
+      },
+      delete: { summary: "Delete monitoring plan; historical batches remain", responses: { 200: jsonResponse("Deleted") } },
+    },
+    "/v1/monitor-plans/{monitorPlanId}/executions": {
+      parameters: [
+        idParameter("monitorPlanId", "Monitoring plan ID"),
+        { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200, default: 50 } },
+      ],
+      get: { summary: "List scheduled monitoring occurrences and linked batches", responses: { 200: jsonResponse("Monitoring executions") } },
+    },
     "/v1/projects/{projectId}/intelligence": {
       parameters: [
         idParameter("projectId", "Project ID"),
         { name: "days", in: "query", description: "Rolling lookback in days", schema: { type: "integer", minimum: 1, maximum: 365, default: 30 } },
       ],
       get: {
-        summary: "Get longitudinal GEO intelligence for a project",
-        description: "Aggregates valid runs across batches in the rolling window. Preferred for citation stability and daily visibility/share-of-voice trends.",
+        summary: "Get longitudinal Doubao GEO intelligence for a project",
+        description: "Aggregates valid Doubao runs across batches in the rolling window. Includes daily visibility/share-of-voice trends, query fan-out, citation stability, and sourceContent: observable structures and brand evidence from actually cited pages when page evidence has been collected. Source-content traits are reported as correlations, not as Doubao ranking/citation causes.",
         responses: { 200: jsonResponse("Project GEO intelligence"), 404: { $ref: "#/components/responses/NotFound" } },
       },
     },
@@ -271,8 +317,8 @@ export const openApiDocument = {
     "/v1/batches/{batchId}/intelligence": {
       parameters: [idParameter("batchId", "Batch ID")],
       get: {
-        summary: "Get auditable GEO intelligence for a batch",
-        description: "Returns visibility, provider/model breakdown, competitor share of voice, query fan-out, citation source stability, prompt gaps and deterministic opportunity candidates re-derived from stored evidence.",
+        summary: "Get auditable Doubao GEO intelligence for a batch",
+        description: "Returns visibility, competitor share of voice, query fan-out, citation source stability, prompt gaps, deterministic opportunity candidates, and observable cited-page sourceContent. Source-content traits are explicitly non-causal.",
         responses: { 200: jsonResponse("Batch GEO intelligence"), 404: { $ref: "#/components/responses/NotFound" } },
       },
     },
