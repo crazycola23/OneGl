@@ -87,6 +87,15 @@ ALTER TABLE sampling_batches DROP CONSTRAINT IF EXISTS sampling_batches_status_c
 ALTER TABLE sampling_batches ADD CONSTRAINT sampling_batches_status_check
   CHECK (status IN ('pending', 'queued', 'running', 'paused', 'completed', 'partial', 'failed', 'aborted'));
 
+-- Platform connections are login-bound. Registering an account should never make it executable
+-- before a real login/storage state has been saved by the auth flow.
+ALTER TABLE accounts ALTER COLUMN status SET DEFAULT 'login_required';
+UPDATE accounts
+   SET status = 'login_required', updated_at = now()
+ WHERE provider = 'doubao'
+   AND storage_state_present = false
+   AND status = 'unknown';
+
 DO $$
 DECLARE target_role text := 'onegl';
 BEGIN
