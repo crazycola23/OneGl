@@ -16,7 +16,7 @@
     "serve": "node src/server.js",
     "api:serve": "node src/api-entry.js",
     "webhook:worker": "node src/webhook-worker-entry.js",
-    "monitor:worker": "node src/monitor-worker.js",
+    "monitor:worker": "node src/monitor-worker-entry.js",
     "runtime:check": "node tools/runtime-check.js",
     "storage:rotate": "node tools/storage-state-rotate.js",
     "check": "node --check src/*.js && node -e \"JSON.parse(require('fs').readFileSync('validation/phase0-prompts.json','utf8'))\"",
