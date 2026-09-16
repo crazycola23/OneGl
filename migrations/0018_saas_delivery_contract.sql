@@ -78,6 +78,50 @@ CREATE TRIGGER trg_onegl_saas_execution_event
 AFTER UPDATE OF status ON sampling_batches
 FOR EACH ROW EXECUTE FUNCTION onegl_saas_execution_event();
 
+-- SaaS only needs one action-required event type; the legacy account.* events remain available.
+CREATE OR REPLACE FUNCTION onegl_saas_account_action_event() RETURNS trigger AS $$
+DECLARE
+  v_tenant_id bigint;
+  v_external_id text;
+BEGIN
+  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN
+    RETURN NEW;
+  END IF;
+  IF NEW.status NOT IN ('login_required', 'session_expired', 'verification_required', 'access_restricted', 'disabled', 'paused') THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT sab.tenant_id, sab.external_id INTO v_tenant_id, v_external_id
+    FROM service_account_bindings sab
+   WHERE sab.provider = NEW.provider AND sab.account_key = NEW.account_key;
+  IF v_tenant_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  INSERT INTO service_webhook_events (tenant_id, event_key, event_type, payload)
+  VALUES (
+    v_tenant_id,
+    'account-action:' || NEW.provider || ':' || NEW.account_key || ':' || NEW.status || ':' || NEW.updated_at::text,
+    'account.action_required',
+    jsonb_build_object(
+      'provider', NEW.provider,
+      'account_id', v_external_id,
+      'status', NEW.status,
+      'reason', NEW.status,
+      'cooldown_until', NEW.cooldown_until,
+      'last_error_code', NEW.last_error_code
+    )
+  );
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_onegl_saas_account_action_event ON accounts;
+CREATE TRIGGER trg_onegl_saas_account_action_event
+AFTER UPDATE OF status ON accounts
+FOR EACH ROW EXECUTE FUNCTION onegl_saas_account_action_event();
+
 -- Emit account.ready when a previously blocked account becomes executable again.
 CREATE OR REPLACE FUNCTION onegl_saas_account_ready_event() RETURNS trigger AS $$
 DECLARE
