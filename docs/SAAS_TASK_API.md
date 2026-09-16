@@ -226,7 +226,7 @@ This keeps historical reports reproducible.
 POST /v1/tasks/{task_id}/executions
 ```
 
-For the normal case, send an empty object or no body. Saved Task settings are used:
+For the normal case, send an empty object or no body. Saved Task settings are used and the new Execution is started immediately:
 
 ```json
 {}
@@ -239,15 +239,13 @@ Optional per-execution overrides:
   "account_ids": ["doubao-main"],
   "platforms": ["doubao"],
   "sampling": {
-    "method": "stratified",
-    "repeats": 1
+    "repeats": 2
   },
-  "seed": null,
-  "start": true
+  "seed": null
 }
 ```
 
-`start` should normally be omitted or `true`. `false` is an advanced control that creates the execution resources without immediate enqueueing.
+Each sampling field is independently optional. For example, overriding only `repeats` keeps the Task's saved sampling method.
 
 Accepted response:
 
