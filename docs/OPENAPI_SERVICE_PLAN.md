@@ -262,7 +262,7 @@ Verification input is:
 <timestamp>.<raw request body>
 ```
 
-using the endpoint `signing_secret` as the HMAC-SHA256 key. Consumers should reject stale timestamps and deduplicate by event ID.
+using the endpoint `signing_secret` as the HMAC-SHA256 key. Consumers should reject stale timestamps (for example older than five minutes) and deduplicate by `X-OneGl-Event-Id` before applying side effects.
 
 Delivery retries use bounded backoff and retain delivery attempts/status in PostgreSQL.
 
