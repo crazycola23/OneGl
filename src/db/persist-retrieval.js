@@ -102,7 +102,10 @@ export async function persistRetrievalEvidence({ client, runId, run }) {
         SET network_evidence_state = $2,
             network_evidence_diagnostics = $3::jsonb,
             search_query_count = $4,
-            retrieved_source_count = $5
+            retrieved_source_count = $5,
+            provider_access = $6,
+            model = $7,
+            model_version = $8
       WHERE id = $1`,
     [
       runId,
@@ -110,6 +113,9 @@ export async function persistRetrievalEvidence({ client, runId, run }) {
       JSON.stringify(Array.isArray(run?.networkEvidenceDiagnostics) ? run.networkEvidenceDiagnostics : []),
       queryRows.length,
       sourceRows.length,
+      run?.providerAccess ?? run?.provider_access ?? "scraped",
+      run?.model ?? run?.provider ?? "doubao",
+      run?.modelVersion ?? run?.model_version ?? null,
     ],
   );
 
