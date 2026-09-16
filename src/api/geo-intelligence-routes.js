@@ -4,6 +4,7 @@ import {
   deleteProjectCompetitor,
   listProjectCompetitors,
   loadBatchGeoIntelligence,
+  loadProjectGeoIntelligence,
   upsertProjectCompetitor,
 } from "../db/geo-intelligence.js";
 import { listProviderAdapters } from "../providers/index.js";
@@ -12,6 +13,16 @@ function positiveId(raw, name) {
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
     throw new ApiHttpError(400, "invalid_request", `${name} must be a positive integer`);
+  }
+  return value;
+}
+
+function intelligenceDays(url) {
+  const raw = url.searchParams.get("days");
+  if (raw == null || raw === "") return 30;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 365) {
+    throw new ApiHttpError(400, "invalid_request", "days must be an integer between 1 and 365");
   }
   return value;
 }
@@ -55,6 +66,18 @@ export async function handleGeoIntelligenceRoute({ req, res, url, db, auth, tena
       }
       return true;
     }
+  }
+
+  const projectIntelligence = pathname.match(/^\/v1\/projects\/(\d+)\/intelligence$/);
+  if (req.method === "GET" && projectIntelligence) {
+    requireScope(auth, "reports:read");
+    const projectId = positiveId(projectIntelligence[1], "project_id");
+    const project = await getTenantProject(db, tenant.id, projectId);
+    if (!project) throw new ApiHttpError(404, "project_not_found", `project ${projectId} was not found`);
+    const data = await loadProjectGeoIntelligence(db, projectId, { days: intelligenceDays(url) });
+    if (!data) throw new ApiHttpError(404, "project_not_found", `project ${projectId} was not found`);
+    sendJson(res, 200, { data });
+    return true;
   }
 
   const competitor = pathname.match(/^\/v1\/projects\/(\d+)\/competitors\/(\d+)$/);
