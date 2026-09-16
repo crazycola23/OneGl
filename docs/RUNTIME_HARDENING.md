@@ -53,11 +53,29 @@ Consequences for a horizontally routed API deployment:
 
 A graceful API-owner shutdown marks its still-active auth sessions failed with a runtime-owner-shutdown reason. It does not pretend the user cancelled them.
 
-## 4. Safety boundary remains unchanged
+## 4. Browser storageState at rest
+
+OneGl can encrypt persisted Doubao browser `storageState` with AES-256-GCM using `ONEGL_STORAGE_STATE_KEY`.
+
+The encryption envelope is authenticated with account-bound AAD, so moving an encrypted state file from one account path to another is rejected. The key is never written to the database, data directory or repository. In production it should be injected by the deployment secret manager.
+
+With a key configured:
+
+- Playwright receives a decrypted in-memory storageState object, never the encrypted file path;
+- saves are written atomically to `*.storage.json.enc` with mode `0600`;
+- a legacy plaintext `*.storage.json` is migrated once, then removed;
+- if the encrypted copy exists and the key is missing/wrong, OneGl fails closed instead of falling back to plaintext;
+- OneGl refuses to overwrite an encrypted state with plaintext just because the key disappeared.
+
+Set `ONEGL_REQUIRE_STORAGE_STATE_ENCRYPTION=true` in production to make browser/auth startup fail before opening a provider session if a valid key is not configured.
+
+See `docs/STORAGE_STATE_SECURITY.md` for key format, migration and rotation guidance.
+
+## 5. Safety boundary remains unchanged
 
 Runtime hardening is not an evasion layer. OneGl still does not expose arbitrary browser-control endpoints, solve CAPTCHA/verification challenges, spoof fingerprints, rotate proxies to evade limits, or continue execution through access restrictions. Verification and access restrictions remain fail-closed/manual states.
 
-## 5. Production configuration
+## 6. Production configuration
 
 Recommended baseline:
 
@@ -67,10 +85,14 @@ ONEGL_ACCOUNT_LOCK_RETRY_MS=15000
 ONEGL_REMOTE_AUTH_OWNER_TIMEOUT_MS=30000
 ONEGL_WEBHOOK_TIMEOUT_MS=10000
 ONEGL_WEBHOOK_MAX_ATTEMPTS=5
+ONEGL_STORAGE_STATE_KEY=base64:<32-random-bytes>
+ONEGL_REQUIRE_STORAGE_STATE_ENCRYPTION=true
 ```
 
-Keep the Service API behind TLS/private networking and use HTTPS webhook destinations. All collector worker processes that are intended to share concurrency limits must use the same PostgreSQL database.
+Keep the Service API behind TLS/private networking and use HTTPS webhook destinations. All collector worker processes that are intended to share concurrency limits must use the same PostgreSQL database. Every process that reads/writes the same auth data directory must receive the same storage-state encryption key.
 
-## 6. Remaining secret-at-rest work
+## 7. Remaining secret work
 
-This hardening does not by itself encrypt browser `storageState` or deployment secrets at rest. Production deployments should still protect the OneGl data directory, database backups and environment/secret-manager material. A dedicated storageState/secret encryption layer is a separate hardening step.
+Browser storageState is now protected at rest when encryption is configured, but this is not a general-purpose secret vault. Deployment secrets such as database credentials, API master keys, webhook signing roots and the storage-state encryption key itself should remain in the deployment platform's secret manager and should not be persisted into OneGl's database or repository.
+
+A future KMS/HSM integration can replace environment-delivered key material without changing the encrypted storage-state file contract.
