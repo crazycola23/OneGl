@@ -16,7 +16,9 @@ function jsonArray(value) {
 function competitorRules(row) {
   return compileBrandRules({
     name: row.name,
-    aliases: [...jsonArray(row.aliases), ...jsonArray(row.domains)],
+    // Domains describe source ownership/attribution. They are intentionally not
+    // answer-text aliases: an answer containing a URL must not become a competitor mention.
+    aliases: jsonArray(row.aliases),
     productAliases: [],
     excludePatterns: jsonArray(row.exclude_patterns),
   });
@@ -111,14 +113,15 @@ async function loadBatchRuns(pool, batchId) {
   return rows;
 }
 
-async function loadProjectRuns(pool, projectId, since) {
+async function loadProjectRuns(pool, projectId, since, until) {
   const { rows } = await pool.query(
     `${RUN_SELECT}
       WHERE p.project_id = $1
         AND r.created_at >= $2
+        AND r.created_at <= $3
         AND ${VALID_RUN}
       ORDER BY r.id`,
-    [projectId, since],
+    [projectId, since, until],
   );
   return rows;
 }
@@ -362,7 +365,7 @@ export async function loadBatchGeoIntelligence(pool, batchId) {
 }
 
 /**
- * Re-derives project intelligence over a rolling time window across every batch.
+ * Re-derives project intelligence over a rolling time window across all valid project runs.
  * This is the preferred surface for longitudinal citation stability: a single batch
  * often completes within one day and therefore cannot produce a meaningful daily
  * transition score.
@@ -373,7 +376,7 @@ export async function loadProjectGeoIntelligence(pool, projectId, { days = 30, n
   if (!project) return null;
   const until = new Date(now);
   const since = new Date(until.getTime() - normalizedDays * 86_400_000);
-  const runs = await loadProjectRuns(pool, projectId, since);
+  const runs = await loadProjectRuns(pool, projectId, since, until);
   return buildIntelligence(pool, project, runs, {
     type: "project-window",
     days: normalizedDays,
