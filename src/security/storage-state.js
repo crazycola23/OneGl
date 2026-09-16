@@ -12,9 +12,14 @@ async function exists(path) {
   try {
     await stat(path);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
   }
+}
+
+async function removeIfExists(path) {
+  if (await exists(path)) await unlink(path);
 }
 
 function boolValue(value, fallback = false) {
@@ -53,6 +58,13 @@ function scopeFor(config) {
 
 function aadFor(scope) {
   return Buffer.from(`${FORMAT}:v${VERSION}:${scope}`, "utf8");
+}
+
+function pathsFor(config) {
+  const plaintextPath = config.authStatePlaintextPath ?? config.authStatePath;
+  const encryptedPath = config.authStateEncryptedPath ?? `${plaintextPath}.enc`;
+  if (!plaintextPath || !encryptedPath) throw new Error("storage state paths are not configured");
+  return { plaintextPath, encryptedPath };
 }
 
 export function encryptStorageState(state, key, scope) {
@@ -105,7 +117,9 @@ export function decryptStorageState(envelope, key, expectedScope) {
 }
 
 async function atomicWrite(path, data) {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const directory = dirname(path);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await chmod(directory, 0o700);
   const temporary = `${path}.tmp-${process.pid}-${crypto.randomUUID()}`;
   try {
     await writeFile(temporary, data, { encoding: "utf8", mode: 0o600, flag: "wx" });
@@ -132,6 +146,10 @@ function encryptionConfig(config) {
   return { key, required };
 }
 
+export function assertStorageStateEncryptionReady(config = {}) {
+  return encryptionConfig(config);
+}
+
 export function storageStateEncryptionStatus(config = {}) {
   const rawKey = config.storageStateKey ?? process.env.ONEGL_STORAGE_STATE_KEY ?? null;
   const required =
@@ -149,8 +167,7 @@ export function storageStateEncryptionStatus(config = {}) {
 }
 
 export async function loadStoredStorageState(config) {
-  const encryptedPath = config.authStateEncryptedPath ?? `${config.authStatePath}.enc`;
-  const plaintextPath = config.authStatePath;
+  const { plaintextPath, encryptedPath } = pathsFor(config);
   const scope = scopeFor(config);
   const { key, required } = encryptionConfig(config);
 
@@ -161,17 +178,27 @@ export async function loadStoredStorageState(config) {
       );
     }
     const envelope = JSON.parse(await readFile(encryptedPath, "utf8"));
+    const state = decryptStorageState(envelope, key, scope);
+    // A previous migration could have written the encrypted file and then crashed before unlink.
+    // Never silently leave a directly reusable plaintext cookie jar next to a valid encrypted copy.
+    await removeIfExists(plaintextPath);
     return {
       present: true,
       encrypted: true,
       migrated: false,
-      state: decryptStorageState(envelope, key, scope),
+      state,
       path: encryptedPath,
     };
   }
 
   if (!(await exists(plaintextPath))) {
-    return { present: false, encrypted: Boolean(key), migrated: false, state: null, path: key ? encryptedPath : plaintextPath };
+    return {
+      present: false,
+      encrypted: Boolean(key),
+      migrated: false,
+      state: null,
+      path: key ? encryptedPath : plaintextPath,
+    };
   }
 
   if (required && !key) {
@@ -180,29 +207,33 @@ export async function loadStoredStorageState(config) {
 
   const state = JSON.parse(await readFile(plaintextPath, "utf8"));
   if (!key) {
+    await chmod(plaintextPath, 0o600);
     return { present: true, encrypted: false, migrated: false, state, path: plaintextPath };
   }
 
   const envelope = encryptStorageState(state, key, scope);
   await atomicWrite(encryptedPath, `${JSON.stringify(envelope)}\n`);
-  await unlink(plaintextPath);
+  await removeIfExists(plaintextPath);
   return { present: true, encrypted: true, migrated: true, state, path: encryptedPath };
 }
 
 export async function saveStoredStorageState(config, state) {
-  const encryptedPath = config.authStateEncryptedPath ?? `${config.authStatePath}.enc`;
-  const plaintextPath = config.authStatePath;
+  const { plaintextPath, encryptedPath } = pathsFor(config);
   const scope = scopeFor(config);
   const { key } = encryptionConfig(config);
 
   if (key) {
     const envelope = encryptStorageState(state, key, scope);
     await atomicWrite(encryptedPath, `${JSON.stringify(envelope)}\n`);
-    await unlink(plaintextPath).catch(() => undefined);
+    await removeIfExists(plaintextPath);
     return { encrypted: true, path: encryptedPath };
   }
 
+  if (await exists(encryptedPath)) {
+    throw new Error(
+      `refusing to downgrade encrypted storage state at ${encryptedPath} to plaintext without ONEGL_STORAGE_STATE_KEY`,
+    );
+  }
   await atomicWrite(plaintextPath, `${JSON.stringify(state)}\n`);
-  await unlink(encryptedPath).catch(() => undefined);
   return { encrypted: false, path: plaintextPath };
 }
