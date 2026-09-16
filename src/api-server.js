@@ -5,7 +5,10 @@ import http from "node:http";
 import { parseBatchCreate, parseKeywordsCreate, parseLimit, parseProjectCreate } from "./api/contracts.js";
 import { handleGeoIntelligenceRoute } from "./api/geo-intelligence-routes.js";
 import { ApiHttpError, errorPayload, readJsonBody, sendBuffer, sendJson } from "./api/http.js";
+import { handleMonitoringRoute } from "./api/monitoring-routes.js";
 import { openApiDocument } from "./api/openapi.js";
+import { applySaasOpenApi } from "./api/saas-openapi.js";
+import { handleTaskRoute } from "./api/task-routes.js";
 import {
   DEFAULT_SCOPES,
   accountExternalIdMap,
@@ -53,6 +56,8 @@ import { addKeywords, countActiveKeywords, listProjectKeywords } from "./project
 import { batchProgress, enqueueBatch, stopBatch } from "./queue/batches.js";
 import { isQueueConfigured } from "./queue/connection.js";
 import { createSamplingBatch } from "./sampling/batch.js";
+
+applySaasOpenApi(openApiDocument);
 
 const API_HOST = process.env.ONEGL_API_HOST?.trim() || "127.0.0.1";
 const API_PORT = parsePort(process.env.ONEGL_API_PORT, 3200);
@@ -301,6 +306,8 @@ async function routeApi(req, res, url) {
   const tenant = await resolveTenant(db, auth, req);
   const pathname = url.pathname;
 
+  if (await handleTaskRoute({ req, res, url, db, auth, tenant })) return;
+  if (await handleMonitoringRoute({ req, res, url, db, auth, tenant })) return;
   if (await handleGeoIntelligenceRoute({ req, res, url, db, auth, tenant })) return;
 
   if (req.method === "GET" && pathname === `${API_PREFIX}/projects`) {

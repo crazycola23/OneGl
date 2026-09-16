@@ -11,11 +11,21 @@ import {
 import { countActiveKeywords } from "./project/keywords.js";
 import { enqueueBatch } from "./queue/batches.js";
 import { createSamplingBatch } from "./sampling/batch.js";
+import { ensureScheduledTaskExecutionForBatch } from "./tasks/service.js";
 
 if (!isDatabaseConfigured()) throw new Error("DATABASE_URL is required for monitor:worker");
 
 const pool = createPool();
 const tickMs = Math.max(5_000, Number(process.env.ONEGL_MONITOR_TICK_MS) || 30_000);
+const MANUAL_ACCOUNT_STATES = new Set([
+  "login_required",
+  "session_expired",
+  "verification_required",
+  "access_restricted",
+  "disabled",
+  "paused",
+  "unknown",
+]);
 let stopping = false;
 let ticking = false;
 
@@ -59,8 +69,18 @@ async function resolvedAccounts(context) {
   for (const externalId of externalIds) {
     const accountKey = byExternal.get(externalId);
     const availability = await accountAvailability(pool, accountKey);
+    const state = availability.state;
     configured.push({ externalId, accountKey });
-    if (availability.kind === AVAILABILITY.PERMANENT) {
+
+    // A schedule must require an actual saved provider login, not merely a registered account row.
+    // This also protects legacy/manual state mutations where accountAvailability alone could treat an
+    // account with no cooldown as temporarily executable even though its provider status says login.
+    if (!state?.storage_state_present || MANUAL_ACCOUNT_STATES.has(state?.status)) {
+      blocked.push({
+        account_id: externalId,
+        reason: state?.storage_state_present ? `account status is ${state?.status ?? "unknown"}` : "provider login is required",
+      });
+    } else if (availability.kind === AVAILABILITY.PERMANENT) {
       blocked.push({ account_id: externalId, reason: availability.reason });
     } else if (availability.kind === AVAILABILITY.TEMPORARY) {
       delayed.push({ account_id: externalId, reason: availability.reason, retry_at: availability.retryAt });
@@ -118,9 +138,21 @@ async function executeOccurrence(execution) {
       batch = { id: created.batchId, status: "pending" };
     }
 
+    const serviceExecution = await ensureScheduledTaskExecutionForBatch(pool, {
+      monitorPlanId: Number(context.plan_id),
+      batchId: batch.id,
+    });
+    let reportId = null;
+    if (serviceExecution) {
+      const { rows } = await pool.query("SELECT public_id FROM service_reports WHERE execution_id = $1", [serviceExecution.id]);
+      reportId = rows[0]?.public_id ?? null;
+    }
+
     const started = await enqueueBatch(pool, batch.id, { log: () => undefined });
     const details = {
       batch_id: batch.id,
+      execution_id: serviceExecution?.public_id ?? null,
+      report_id: reportId,
       started: started.started,
       start_reason: started.reason ?? null,
       sample_size: sampleSize,

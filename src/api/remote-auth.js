@@ -1,7 +1,7 @@
 import { loadConfig } from "../config.js";
 import { launchBrowserSession } from "../browser.js";
 import { inspectSession, openDoubao } from "../doubao.js";
-import { markStorageStatePresent } from "../accounts/safety.js";
+import { markStorageStatePresent, recordAccountFailure } from "../accounts/safety.js";
 import { updateAuthSessionRow } from "./service-store.js";
 
 const runtimes = new Map();
@@ -50,6 +50,37 @@ async function finish(runtime, status, details = {}) {
   }).catch(() => undefined);
 }
 
+async function markLoginConnected(runtime) {
+  await markStorageStatePresent(runtime.pool, runtime.accountKey, true, runtime.provider);
+  // A successful login proves the provider session is valid, but must not erase an unrelated
+  // safety cooldown/rate-limit window. Clear only manual login/session/verification blocks when
+  // no active cooldown is in force.
+  await runtime.pool.query(
+    `UPDATE accounts
+        SET status = CASE
+              WHEN cooldown_until IS NOT NULL AND cooldown_until > now() THEN status
+              ELSE 'healthy'
+            END,
+            paused_at = CASE
+              WHEN cooldown_until IS NOT NULL AND cooldown_until > now() THEN paused_at
+              ELSE NULL
+            END,
+            pause_reason = CASE
+              WHEN cooldown_until IS NOT NULL AND cooldown_until > now() THEN pause_reason
+              ELSE NULL
+            END,
+            consecutive_failures = CASE
+              WHEN cooldown_until IS NOT NULL AND cooldown_until > now() THEN consecutive_failures
+              ELSE 0
+            END,
+            last_health_status = 'healthy',
+            last_health_checked_at = now(),
+            updated_at = now()
+      WHERE provider = $2 AND account_key = $1`,
+    [runtime.accountKey, runtime.provider],
+  );
+}
+
 /**
  * Remote auth is intentionally constrained: OneGl may open the provider's ordinary login
  * surface, but it does not expose arbitrary click/type/browser-control endpoints. The product UI
@@ -95,7 +126,7 @@ async function capture(runtime) {
 
     if (state.state === "healthy") {
       await runtime.session.saveAuth();
-      await markStorageStatePresent(runtime.pool, runtime.accountKey, true, runtime.provider);
+      await markLoginConnected(runtime);
       await finish(runtime, "connected", {
         provider: runtime.provider,
         account_id: runtime.externalId,
@@ -105,6 +136,11 @@ async function capture(runtime) {
     }
 
     if (state.state === "verification_required") {
+      await recordAccountFailure(runtime.pool, {
+        accountKey: runtime.accountKey,
+        provider: runtime.provider,
+        errorCode: "DOUBAO_VERIFICATION_REQUIRED",
+      }).catch(() => undefined);
       await finish(runtime, "verification_required", {
         provider: runtime.provider,
         account_id: runtime.externalId,
@@ -113,6 +149,11 @@ async function capture(runtime) {
       return;
     }
     if (state.state === "access_restricted") {
+      await recordAccountFailure(runtime.pool, {
+        accountKey: runtime.accountKey,
+        provider: runtime.provider,
+        errorCode: "DOUBAO_ACCESS_RESTRICTED",
+      }).catch(() => undefined);
       await finish(runtime, "access_restricted", {
         provider: runtime.provider,
         account_id: runtime.externalId,

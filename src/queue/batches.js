@@ -135,7 +135,7 @@ export async function stopBatch(pool, batchId, { log = console.log } = {}) {
   const { rowCount } = await pool.query(
     `UPDATE sampling_batches
         SET status = 'aborted', aborted_at = now()
-      WHERE id = $1 AND status IN ('queued', 'running')`,
+      WHERE id = $1 AND status IN ('queued', 'running', 'paused')`,
     [batchId],
   );
 
@@ -204,8 +204,8 @@ export async function refreshBatchProgress(pool, batchId) {
   let status = row.status;
   let finished = false;
 
-  // 人工中止的批次保持 aborted，不被终态判定覆盖。
-  if (status !== "aborted") {
+  // 人工中止与暂停都由控制面保持，不被单个正在执行任务的收尾覆盖。
+  if (!["aborted", "paused"].includes(status)) {
     finished = outcome.settled;
     status = outcome.settled ? outcome.status : "running";
   }
