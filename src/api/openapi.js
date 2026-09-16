@@ -15,9 +15,9 @@ export const openApiDocument = {
   openapi: "3.1.0",
   info: {
     title: "OneGl Service API",
-    version: "0.2.0",
+    version: "0.3.0",
     description:
-      "Multi-tenant server-to-server API for OneGl GEO measurement. Tenant-scoped API clients, signed webhooks and constrained account-connect sessions are supported. Browser cookies/storageState and arbitrary browser-control primitives are never exposed.",
+      "Multi-tenant server-to-server API for OneGl GEO measurement and intelligence. Tenant-scoped API clients, signed webhooks, constrained account-connect sessions, competitor benchmarking, query fan-out and citation-stability analytics are supported. Browser cookies/storageState and arbitrary browser-control primitives are never exposed.",
   },
   servers: [{ url: "/" }],
   components: {
@@ -49,6 +49,17 @@ export const openApiDocument = {
         properties: {
           keywords: { type: "array", minItems: 1, maxItems: 5000, items: { type: "string" } },
           category: { type: ["string", "null"] },
+        },
+      },
+      CompetitorUpsert: {
+        type: "object",
+        required: ["name"],
+        properties: {
+          name: { type: "string", minLength: 1, maxLength: 200 },
+          aliases: { type: "array", items: { type: "string" }, default: [] },
+          domains: { type: "array", items: { type: "string" }, default: [] },
+          exclude_patterns: { type: "array", items: { type: "string" }, default: [] },
+          enabled: { type: "boolean", default: true },
         },
       },
       AccountCreate: {
@@ -133,6 +144,14 @@ export const openApiDocument = {
       delete: { summary: "Revoke API client (master key)", responses: { 200: jsonResponse("Revoked") } },
     },
 
+    "/v1/providers": {
+      get: {
+        summary: "List configured provider adapter types",
+        description: "Reports provider/model/access identity. `scraped` and `api` measurements are intentionally distinguishable.",
+        responses: { 200: jsonResponse("Provider adapters") },
+      },
+    },
+
     "/v1/projects": {
       get: { summary: "List tenant projects", responses: { 200: jsonResponse("Projects") } },
       post: {
@@ -153,6 +172,20 @@ export const openApiDocument = {
         requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/KeywordCreate" } } } },
         responses: { 201: jsonResponse("Keyword import result") },
       },
+    },
+    "/v1/projects/{projectId}/competitors": {
+      parameters: [idParameter("projectId", "Project ID")],
+      get: { summary: "List competitors used for share-of-voice analysis", responses: { 200: jsonResponse("Competitors") } },
+      post: {
+        summary: "Create or replace competitor matching rules",
+        description: "Competitor mentions are re-derived from stored historical answers, so new rules immediately apply to old runs.",
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/CompetitorUpsert" } } } },
+        responses: { 201: jsonResponse("Competitor") },
+      },
+    },
+    "/v1/projects/{projectId}/competitors/{competitorId}": {
+      parameters: [idParameter("projectId", "Project ID"), idParameter("competitorId", "Competitor ID")],
+      delete: { summary: "Delete competitor matching rules", responses: { 200: jsonResponse("Deleted") } },
     },
 
     "/v1/accounts": {
@@ -223,6 +256,14 @@ export const openApiDocument = {
     "/v1/batches/{batchId}/report": {
       parameters: [idParameter("batchId", "Batch ID")],
       get: { summary: "Get batch analytics report", responses: { 200: jsonResponse("Report") } },
+    },
+    "/v1/batches/{batchId}/intelligence": {
+      parameters: [idParameter("batchId", "Batch ID")],
+      get: {
+        summary: "Get auditable GEO intelligence for a batch",
+        description: "Returns visibility, provider/model breakdown, competitor share of voice, query fan-out, citation source stability, prompt gaps and deterministic opportunity candidates re-derived from stored evidence.",
+        responses: { 200: jsonResponse("GEO intelligence"), 404: { $ref: "#/components/responses/NotFound" } },
+      },
     },
     "/v1/runs/{runId}": {
       parameters: [{ name: "runId", in: "path", required: true, schema: { type: "string", pattern: "^run_[A-Za-z0-9_-]+$" } }],
