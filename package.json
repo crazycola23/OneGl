@@ -19,6 +19,8 @@
     "monitor:worker": "node src/monitor-worker-entry.js",
     "runtime:check": "node tools/runtime-check.js",
     "storage:rotate": "node tools/storage-state-rotate.js",
+    "audit:list": "node tools/audit-log.js",
+    "ops:summary": "node tools/ops-summary.js",
     "check": "node --check src/*.js && node -e \"JSON.parse(require('fs').readFileSync('validation/phase0-prompts.json','utf8'))\"",
     "validate:scaffold": "node src/validate.js scaffold",
     "validate:evaluate": "node src/validate.js evaluate",
