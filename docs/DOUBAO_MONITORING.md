@@ -118,6 +118,8 @@ Setting `enabled: false` pauses future materialization without deleting historic
 
 Each scheduled occurrence is persisted in `service_monitor_executions` before a batch is created. `(plan_id, scheduled_for)` is unique, and `sampling_batches.monitor_execution_id` is unique, so retries or scheduler restarts do not intentionally create duplicate batches for the same occurrence.
 
+OneGl deliberately does **not** backfill every missed period after scheduler downtime. If a daily plan was offline for several days, recovery materializes at most one overdue occurrence and then advances `next_run_at` to the next future wall-clock slot. Running several “historical” batches today would still measure today's Doubao behavior, so treating them as missing historical observations would corrupt the trend and could create a needless burst of work.
+
 ## Webhook events
 
 The scheduler queues service webhook events that can be consumed by the main product:
