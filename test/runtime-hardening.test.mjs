@@ -39,6 +39,19 @@ test("outbound URL guard rejects credentials and requires HTTPS by default", () 
   assert.equal(parseOutboundUrl("https://example.com/hook#fragment").hash, "");
 });
 
+test("literal loopback URLs are rejected including alternate IPv4 spellings", async () => {
+  for (const raw of [
+    "https://127.0.0.1/hook",
+    "https://2130706433/hook",
+    "https://0x7f000001/hook",
+    "https://0177.0.0.1/hook",
+    "https://[::1]/hook",
+    "https://[::ffff:127.0.0.1]/hook",
+  ]) {
+    await assert.rejects(() => validatePublicOutboundUrl(raw), /non-public address/, raw);
+  }
+});
+
 test("DNS validation fails closed when any answer is non-public", async () => {
   const mixedLookup = async () => [
     { address: "8.8.8.8", family: 4 },
