@@ -50,6 +50,35 @@ async function finish(runtime, status, details = {}) {
   }).catch(() => undefined);
 }
 
+/**
+ * Remote auth is intentionally constrained: OneGl may open the provider's ordinary login
+ * surface, but it does not expose arbitrary click/type/browser-control endpoints. The product UI
+ * can display screenshots (typically the provider QR/login modal) and poll auth state.
+ */
+async function openLoginSurface(page) {
+  const state = await inspectSession(page).catch(() => ({ state: "unknown" }));
+  if (state.state === "healthy") return;
+
+  const candidates = [
+    page.getByRole("button", { name: "登录", exact: true }),
+    page.getByText("登录", { exact: true }),
+  ];
+  for (const locator of candidates) {
+    try {
+      const count = Math.min(await locator.count(), 5);
+      for (let index = 0; index < count; index += 1) {
+        const candidate = locator.nth(index);
+        if (!await candidate.isVisible().catch(() => false)) continue;
+        await candidate.click();
+        await page.waitForTimeout(800);
+        return;
+      }
+    } catch {
+      // Try the next semantic login control. Never fall back to arbitrary coordinates/selectors.
+    }
+  }
+}
+
 async function capture(runtime) {
   if (!runtime.session?.page || runtime.finished || runtime.polling) return;
   runtime.polling = true;
@@ -146,6 +175,7 @@ export async function startRemoteAuthSession({ pool, tenantId, authRow, account 
   try {
     runtime.session = await launchBrowserSession(config, { ignoreStoredAuth: true });
     await openDoubao(runtime.session.page, config);
+    await openLoginSurface(runtime.session.page);
     await capture(runtime);
     if (!runtime.finished) {
       runtime.timer = setInterval(() => capture(runtime), pollMs);
