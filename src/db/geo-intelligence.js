@@ -123,6 +123,11 @@ async function loadProjectRuns(pool, projectId, since) {
   return rows;
 }
 
+function dayKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
 async function buildIntelligence(pool, project, runs, scope) {
   const projectId = Number(project.project_id);
   const competitors = (await listProjectCompetitors(pool, projectId)).filter((row) => row.enabled);
@@ -137,14 +142,27 @@ async function buildIntelligence(pool, project, runs, scope) {
   const promptStats = new Map();
   const providerStats = new Map();
   const promptRunCounts = new Map();
+  const dailyStats = new Map();
+  const brandMentionByRunId = new Map();
   let brandMentions = 0;
 
   for (const run of runs) {
     const answer = String(run.answer ?? "");
-    const brandMentioned = typeof run.brand_mentioned === "boolean"
-      ? run.brand_mentioned
-      : detectBrandMention(answer, brandRules).mentioned;
+    // Intelligence intentionally re-derives both brand and competitor mentions
+    // from the same current rule set. Stored brand_mentioned remains the immutable
+    // capture-time audit result used by legacy reports.
+    const brandMentioned = detectBrandMention(answer, brandRules).mentioned;
+    brandMentionByRunId.set(String(run.id), brandMentioned);
     if (brandMentioned) brandMentions += 1;
+
+    const date = dayKey(run.created_at);
+    const daily = date
+      ? (dailyStats.get(date) ?? { date, runs: 0, brandMentions: 0, competitorMentions: 0 })
+      : null;
+    if (daily) {
+      daily.runs += 1;
+      if (brandMentioned) daily.brandMentions += 1;
+    }
 
     const promptId = String(run.prompt_id);
     promptRunCounts.set(promptId, (promptRunCounts.get(promptId) ?? 0) + 1);
@@ -161,8 +179,10 @@ async function buildIntelligence(pool, project, runs, scope) {
     for (const entry of competitorEntries) {
       if (!detectBrandMention(answer, entry.rules).mentioned) continue;
       entry.mentions += 1;
+      if (daily) daily.competitorMentions += 1;
       prompt.competitors.set(entry.row.name, (prompt.competitors.get(entry.row.name) ?? 0) + 1);
     }
+    if (daily) dailyStats.set(date, daily);
     promptStats.set(promptId, prompt);
 
     const providerKey = `${run.provider}::${run.model}::${run.provider_access}::${run.model_version ?? "unknown"}`;
@@ -180,8 +200,8 @@ async function buildIntelligence(pool, project, runs, scope) {
   }
 
   const runIds = runs.map((run) => Number(run.id));
-  const { rows: queryRows } = await pool.query(
-    `SELECT r.prompt_id, p.prompt, q.query_text AS query, r.brand_mentioned
+  const { rows: queryRowsRaw } = await pool.query(
+    `SELECT r.id AS run_id, r.prompt_id, p.prompt, q.query_text AS query
        FROM run_search_queries q
        JOIN runs r ON r.id = q.run_id
        JOIN prompts p ON p.id = r.prompt_id
@@ -189,6 +209,10 @@ async function buildIntelligence(pool, project, runs, scope) {
       ORDER BY r.id, q.query_position`,
     [runIds],
   );
+  const queryRows = queryRowsRaw.map((row) => ({
+    ...row,
+    brand_mentioned: brandMentionByRunId.get(String(row.run_id)) ?? false,
+  }));
   const fanout = computeQueryFanout(queryRows, { promptRunCounts });
 
   const { rows: dailyDomains } = await pool.query(
@@ -251,10 +275,33 @@ async function buildIntelligence(pool, project, runs, scope) {
   }).sort((a, b) => (b.gap ?? -2) - (a.gap ?? -2) || b.validRuns - a.validRuns);
 
   const visibilityRate = runs.length ? brandMentions / runs.length : null;
-  const shareOfVoice = computeShareOfVoice(
+  const visibilitySeries = [...dailyStats.values()]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((row) => ({
+      date: row.date,
+      runs: row.runs,
+      brandMentions: row.brandMentions,
+      rate: row.runs ? row.brandMentions / row.runs : null,
+    }));
+
+  const shareOfVoiceBase = computeShareOfVoice(
     { name: project.target_brand ?? project.project_name, mentions: brandMentions },
     competitorEntries.map((entry) => ({ name: entry.row.name, mentions: entry.mentions })),
   );
+  const shareOfVoice = {
+    ...shareOfVoiceBase,
+    series: [...dailyStats.values()]
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((row) => {
+        const total = row.brandMentions + row.competitorMentions;
+        return {
+          date: row.date,
+          brandMentions: row.brandMentions,
+          competitorMentions: row.competitorMentions,
+          share: total ? row.brandMentions / total : null,
+        };
+      }),
+  };
   const providers = [...providerStats.values()].map((row) => ({
     ...row,
     visibilityRate: row.runs ? row.brandMentions / row.runs : null,
@@ -276,10 +323,12 @@ async function buildIntelligence(pool, project, runs, scope) {
       name: project.project_name,
       targetBrand: project.target_brand,
     },
+    ruleMode: "current-project-rules",
     visibility: {
       validRuns: runs.length,
       brandMentions,
       rate: visibilityRate,
+      series: visibilitySeries,
     },
     providers,
     shareOfVoice,
