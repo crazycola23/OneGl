@@ -45,7 +45,7 @@ That gives the product two useful semantics:
 
 ## Competitors and Share of Voice
 
-Competitors are configured per project with a name plus optional aliases, domains and exclusion patterns. They can be added through project JSON or the Service API.
+Competitors are configured per project with a name plus optional aliases, domains and exclusion patterns. They can be added through project JSON or the Service API. `aliases` participate in answer-text mention matching; `domains` are source-ownership metadata and are deliberately **not** treated as answer-text aliases, so a cited URL alone cannot create a competitor mention.
 
 Share of Voice uses comparable entity-mention units:
 
@@ -101,7 +101,7 @@ A single Batch often finishes in one day, so a batch-level stability metric may 
 GET /v1/projects/{projectId}/intelligence?days=30
 ```
 
-It aggregates valid Runs across batches and includes daily `visibility.series` and `shareOfVoice.series`. The lookback accepts `1..365` days and defaults to 30.
+It aggregates all valid project Runs inside the explicit `[from, to]` time window and includes daily `visibility.series` and `shareOfVoice.series`. The lookback accepts `1..365` days and defaults to 30.
 
 ## Deterministic Opportunities
 
