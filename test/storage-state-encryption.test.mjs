@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { loadConfig } from "../src/config.js";
 import {
   assertStorageStateEncryptionReady,
   decryptStorageState,
@@ -44,6 +45,17 @@ function configFor(root, { accountKey = "account_a", key = KEY_A, required = fal
   };
 }
 
+test("config exposes encrypted auth path when a key is present", () => {
+  const config = loadConfig({
+    dataDir: "/tmp/onegl-test-data",
+    accountKey: "account_a",
+    storageStateKey: KEY_A,
+  });
+  assert.match(config.authStatePlaintextPath, /account_a\.storage\.json$/);
+  assert.match(config.authStateEncryptedPath, /account_a\.storage\.json\.enc$/);
+  assert.equal(config.authStatePath, config.authStateEncryptedPath);
+});
+
 test("AES-GCM storage state is authenticated and account-bound", () => {
   const keyA = parseStorageStateKey(KEY_A);
   const keyB = parseStorageStateKey(KEY_B);
@@ -59,21 +71,15 @@ test("AES-GCM storage state is authenticated and account-bound", () => {
     () => decryptStorageState(envelope, keyA, "provider=doubao;account=account_b"),
     /different account scope/,
   );
-  assert.notEqual(envelope.ciphertext.includes("super-secret-cookie-value"), true);
+  assert.equal(envelope.ciphertext.includes("super-secret-cookie-value"), false);
 });
 
 test("legacy plaintext state is migrated once and plaintext is removed", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "onegl-storage-state-"));
   try {
     const config = configFor(root);
-    await writeFile(config.authStatePlaintextPath, JSON.stringify(SAMPLE_STATE), {
-      recursive: false,
-    }).catch(async (error) => {
-      if (error?.code !== "ENOENT") throw error;
-      const { mkdir } = await import("node:fs/promises");
-      await mkdir(path.dirname(config.authStatePlaintextPath), { recursive: true });
-      await writeFile(config.authStatePlaintextPath, JSON.stringify(SAMPLE_STATE));
-    });
+    await mkdir(path.dirname(config.authStatePlaintextPath), { recursive: true });
+    await writeFile(config.authStatePlaintextPath, JSON.stringify(SAMPLE_STATE));
 
     const loaded = await loadStoredStorageState(config);
     assert.equal(loaded.present, true);
