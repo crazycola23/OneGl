@@ -166,7 +166,8 @@ export async function bindProject(pool, { tenantId, projectId, displayName, exte
 }
 
 export function internalProjectName(tenant, displayName) {
-  return `${tenant.slug}::${String(displayName).trim()}`;
+  const trimmed = String(displayName).trim();
+  return tenant.slug === "default" ? trimmed : `${tenant.slug}::${trimmed}`;
 }
 
 export async function listTenantProjects(pool, tenantId) {
