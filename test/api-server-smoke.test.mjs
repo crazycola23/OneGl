@@ -65,6 +65,7 @@ test("api:serve exposes health/OpenAPI and protects v1 routes", async () => {
 
     const health = await fetch(`${base}/healthz`);
     assert.equal(health.status, 200);
+    assert.equal(health.headers.get("x-onegl-api-version"), "0.7.0");
     const healthBody = await health.json();
     assert.equal(healthBody.service, "onegl-api");
     assert.equal(healthBody.database.ready, false);
@@ -74,9 +75,10 @@ test("api:serve exposes health/OpenAPI and protects v1 routes", async () => {
 
     const spec = await fetch(`${base}/openapi.json`);
     assert.equal(spec.status, 200);
+    assert.equal(spec.headers.get("x-onegl-api-version"), "0.7.0");
     const specBody = await spec.json();
     assert.equal(specBody.openapi, "3.1.0");
-    assert.equal(specBody.info.version, "0.6.0");
+    assert.equal(specBody.info.version, "0.7.0");
     assert.ok(specBody.paths["/v1/tasks"]);
     assert.ok(specBody.paths["/v1/tasks/{taskId}/executions"]);
     assert.ok(specBody.paths["/v1/executions/{executionId}"]);
@@ -87,6 +89,8 @@ test("api:serve exposes health/OpenAPI and protects v1 routes", async () => {
     assert.ok(specBody.components.schemas.ExecutionResource);
     assert.ok(specBody.components.schemas.ResultResource);
     assert.ok(specBody.components.schemas.ReportResource);
+    assert.ok(specBody.components.schemas.PageMeta);
+    assert.ok(specBody.components.schemas.SaasWebhookEvent);
     assert.ok(specBody.paths["/v1/batches"]);
     assert.ok(specBody.paths["/v1/admin/tenants"]);
     assert.ok(specBody.paths["/v1/projects/{projectId}/monitor-plans"]);
