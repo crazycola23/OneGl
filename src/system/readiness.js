@@ -1,11 +1,11 @@
 import { readdir } from "node:fs/promises";
-import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { databaseReady } from "../db/dashboard.js";
 import { checkRedis, isQueueConfigured } from "../queue/connection.js";
 import { storageStateEncryptionStatus } from "../security/storage-state.js";
 
-const MIGRATIONS_DIR = path.resolve("migrations");
+const MIGRATIONS_DIR = fileURLToPath(new URL("../../migrations/", import.meta.url));
 
 function boolValue(value, fallback = false) {
   if (value == null || value === "") return fallback;
