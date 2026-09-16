@@ -60,6 +60,7 @@ import { addKeywords, countActiveKeywords, listProjectKeywords } from "./project
 import { batchProgress, enqueueBatch, stopBatch } from "./queue/batches.js";
 import { isQueueConfigured } from "./queue/connection.js";
 import { createSamplingBatch } from "./sampling/batch.js";
+import { readinessReport } from "./system/readiness.js";
 
 applySaasOpenApi(openApiDocument);
 
@@ -602,12 +603,17 @@ export function createApiServer() {
     try {
       const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
       if (req.method === "GET" && url.pathname === "/healthz") return sendJson(res, 200, await healthPayload());
+      if (req.method === "GET" && url.pathname === "/readyz") {
+        const readiness = await readinessReport({ pool, role: "api" });
+        return sendJson(res, readiness.ready ? 200 : 503, readiness);
+      }
       if (req.method === "GET" && url.pathname === "/openapi.json") return sendJson(res, 200, openApiDocument);
       if (url.pathname === "/") {
         return sendJson(res, 200, {
           service: "onegl-api",
           version: openApiDocument.info.version,
           health: "/healthz",
+          readiness: "/readyz",
           openapi: "/openapi.json",
         });
       }
@@ -636,6 +642,7 @@ const server = createApiServer();
 server.listen(API_PORT, API_HOST, () => {
   console.log(`OneGl Service API: http://${API_HOST}:${API_PORT}`);
   console.log(`  OpenAPI: http://${API_HOST}:${API_PORT}/openapi.json`);
+  console.log(`  Readiness: http://${API_HOST}:${API_PORT}/readyz`);
   console.log(`  Master API key: ${process.env.ONEGL_API_KEY ? "configured" : "MISSING ONEGL_API_KEY"}`);
   console.log(`  Webhook signing: ${process.env.ONEGL_WEBHOOK_SIGNING_KEY ? "configured" : "MISSING ONEGL_WEBHOOK_SIGNING_KEY"}`);
   console.log("  Use a TLS reverse proxy or private network when exposing this service across hosts.");
