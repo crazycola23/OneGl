@@ -3,10 +3,12 @@ import { spawn } from "node:child_process";
 import test from "node:test";
 
 function startApiProcess(port) {
-  const child = spawn(process.execPath, ["src/api-server.js"], {
+  const child = spawn(process.execPath, ["src/api-entry.js"], {
     cwd: process.cwd(),
     env: {
       ...process.env,
+      NODE_ENV: "test",
+      ONEGL_PRODUCTION: "false",
       ONEGL_API_HOST: "127.0.0.1",
       ONEGL_API_PORT: String(port),
       ONEGL_API_KEY: "test-service-key",
@@ -56,7 +58,7 @@ async function stopProcess(child) {
   });
 }
 
-test("api:serve exposes health/OpenAPI and protects v1 routes", async () => {
+test("api:serve exposes liveness/readiness/OpenAPI and protects v1 routes", async () => {
   const port = 33000 + (process.pid % 1000);
   const processInfo = startApiProcess(port);
   try {
@@ -72,6 +74,20 @@ test("api:serve exposes health/OpenAPI and protects v1 routes", async () => {
     assert.equal(healthBody.auth.master_configured, true);
     assert.equal(healthBody.auth.client_keys_supported, true);
     assert.equal(healthBody.remote_auth.enabled, true);
+
+    const readiness = await fetch(`${base}/readyz`);
+    assert.equal(readiness.status, 503);
+    assert.equal(readiness.headers.get("x-onegl-api-version"), "0.7.0");
+    const readinessBody = await readiness.json();
+    assert.equal(readinessBody.service, "onegl-api");
+    assert.equal(readinessBody.ready, false);
+    assert.equal(readinessBody.status, "not_ready");
+    assert.equal(readinessBody.checks.database.ready, false);
+    assert.equal(readinessBody.checks.queue.ready, false);
+
+    const root = await fetch(base);
+    const rootBody = await root.json();
+    assert.equal(rootBody.readiness, "/readyz");
 
     const spec = await fetch(`${base}/openapi.json`);
     assert.equal(spec.status, 200);

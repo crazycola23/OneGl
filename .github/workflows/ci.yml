@@ -26,6 +26,15 @@ jobs:
           --health-interval=5s
           --health-timeout=5s
           --health-retries=10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -80,6 +89,12 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
         run: node --test test/runtime-hardening.test.mjs test/remote-auth-runtime-db.test.mjs
+
+      - name: Production readiness integration
+        env:
+          DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
+          REDIS_URL: redis://127.0.0.1:6379
+        run: node --test test/production-readiness-db.test.mjs
 
       - name: Install test browser
         run: npx playwright-core install --with-deps chromium

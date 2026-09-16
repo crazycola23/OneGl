@@ -52,8 +52,18 @@ export function parseStorageStateKey(raw) {
   return key;
 }
 
+export function storageStateKeyId(keyOrRaw) {
+  const key = Buffer.isBuffer(keyOrRaw) ? keyOrRaw : parseStorageStateKey(keyOrRaw);
+  if (!key || key.length !== 32) throw new Error("storage state key id requires a 32-byte key");
+  return crypto.createHash("sha256").update(key).digest("hex").slice(0, 16);
+}
+
+export function storageStateScope(accountKey = null, provider = "doubao") {
+  return `provider=${provider};account=${accountKey ?? "default"}`;
+}
+
 function scopeFor(config) {
-  return `provider=doubao;account=${config.accountKey ?? "default"}`;
+  return storageStateScope(config.accountKey ?? null, config.provider ?? "doubao");
 }
 
 function aadFor(scope) {
@@ -75,12 +85,11 @@ export function encryptStorageState(state, key, scope) {
   const plaintext = Buffer.from(JSON.stringify(state), "utf8");
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const tag = cipher.getAuthTag();
-  const keyId = crypto.createHash("sha256").update(key).digest("hex").slice(0, 16);
   return {
     format: FORMAT,
     version: VERSION,
     algorithm: ALGORITHM,
-    key_id: keyId,
+    key_id: storageStateKeyId(key),
     scope,
     iv: iv.toString("base64url"),
     tag: tag.toString("base64url"),
@@ -179,8 +188,6 @@ export async function loadStoredStorageState(config) {
     }
     const envelope = JSON.parse(await readFile(encryptedPath, "utf8"));
     const state = decryptStorageState(envelope, key, scope);
-    // A previous migration could have written the encrypted file and then crashed before unlink.
-    // Never silently leave a directly reusable plaintext cookie jar next to a valid encrypted copy.
     await removeIfExists(plaintextPath);
     return {
       present: true,
@@ -236,4 +243,48 @@ export async function saveStoredStorageState(config, state) {
   }
   await atomicWrite(plaintextPath, `${JSON.stringify(state)}\n`);
   return { encrypted: false, path: plaintextPath };
+}
+
+export async function rotateEncryptedStorageStateFile({
+  encryptedPath,
+  accountKey = null,
+  provider = "doubao",
+  oldKey: oldKeyRaw,
+  newKey: newKeyRaw,
+  dryRun = false,
+}) {
+  const oldKey = parseStorageStateKey(oldKeyRaw);
+  const newKey = parseStorageStateKey(newKeyRaw);
+  if (!oldKey || !newKey) throw new Error("storage state rotation requires both old and new keys");
+  const oldKeyId = storageStateKeyId(oldKey);
+  const newKeyId = storageStateKeyId(newKey);
+  if (oldKeyId === newKeyId) throw new Error("old and new storage state keys are identical");
+
+  const envelope = JSON.parse(await readFile(encryptedPath, "utf8"));
+  const scope = storageStateScope(accountKey, provider);
+  if (envelope.key_id === newKeyId) {
+    decryptStorageState(envelope, newKey, scope);
+    return {
+      path: encryptedPath,
+      scope,
+      old_key_id: oldKeyId,
+      new_key_id: newKeyId,
+      rotated: false,
+      already_rotated: true,
+    };
+  }
+
+  const state = decryptStorageState(envelope, oldKey, scope);
+  if (!dryRun) {
+    const nextEnvelope = encryptStorageState(state, newKey, scope);
+    await atomicWrite(encryptedPath, `${JSON.stringify(nextEnvelope)}\n`);
+  }
+  return {
+    path: encryptedPath,
+    scope,
+    old_key_id: oldKeyId,
+    new_key_id: newKeyId,
+    rotated: !dryRun,
+    already_rotated: false,
+  };
 }
