@@ -29,6 +29,7 @@ test("SaaS OpenAPI exposes stable v0.7 production contract", () => {
     "ReportListItem",
     "TaskScheduleCreate",
     "ScheduleResource",
+    "ScheduleExecutionItem",
     "SaasError",
     "PageMeta",
     "SaasWebhookEvent",
@@ -49,6 +50,7 @@ test("SaaS OpenAPI exposes stable v0.7 production contract", () => {
     "/v1/tasks/{taskId}/reports",
     "/v1/tasks/{taskId}/schedules",
     "/v1/schedules/{scheduleId}",
+    "/v1/schedules/{scheduleId}/executions",
   ]) {
     assert.ok(document.paths[path], `missing path ${path}`);
   }
@@ -82,7 +84,7 @@ test("core SaaS single-resource responses remain data envelopes", () => {
   }
 });
 
-test("history lists use opaque cursor pagination", () => {
+test("history lists use opaque cursor pagination without shrinking v0.6 limits", () => {
   const document = contract();
   for (const [path, method] of [
     ["/v1/tasks", "get"],
@@ -90,9 +92,13 @@ test("history lists use opaque cursor pagination", () => {
     ["/v1/executions/{executionId}/results", "get"],
     ["/v1/tasks/{taskId}/reports", "get"],
     ["/v1/tasks/{taskId}/schedules", "get"],
+    ["/v1/schedules/{scheduleId}/executions", "get"],
   ]) {
     const operation = document.paths[path][method];
+    const limit = operation.parameters.find((parameter) => parameter.name === "limit");
     assert.ok(operation.parameters.some((parameter) => parameter.name === "cursor"));
+    assert.equal(limit.schema.default, 100);
+    assert.equal(limit.schema.maximum, 500);
     const schema = operation.responses[200].content["application/json"].schema;
     assert.deepEqual(schema.required, ["data", "meta"]);
     assert.equal(schema.properties.meta.$ref, "#/components/schemas/PageMeta");
