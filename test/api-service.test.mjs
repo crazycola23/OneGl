@@ -5,6 +5,7 @@ import test from "node:test";
 import { parseBatchCreate, parseKeywordsCreate, parseLimit, parseProjectCreate } from "../src/api/contracts.js";
 import { ApiHttpError, readJsonBody } from "../src/api/http.js";
 import { openApiDocument } from "../src/api/openapi.js";
+import { applySaasOpenApi } from "../src/api/saas-openapi.js";
 import {
   DEFAULT_SCOPES,
   hashServiceKey,
@@ -12,6 +13,8 @@ import {
   requireScope,
   webhookSecretFor,
 } from "../src/api/service-store.js";
+
+applySaasOpenApi(openApiDocument);
 
 test("tenant client keys are stored as hashes and scopes are enforced", () => {
   const plaintext = "onegl_client_secret_example";
@@ -103,27 +106,25 @@ test("JSON reader rejects invalid and oversized request bodies", async () => {
   );
 });
 
-test("OpenAPI documents Doubao monitoring and intelligence without raw browser controls", () => {
+test("OpenAPI documents SaaS tasks plus Doubao monitoring without raw browser controls", () => {
   assert.equal(openApiDocument.openapi, "3.1.0");
-  assert.equal(openApiDocument.info.version, "0.4.0");
+  assert.equal(openApiDocument.info.version, "0.5.0");
   assert.ok(openApiDocument.paths["/v1/admin/tenants"]);
-  assert.ok(openApiDocument.paths["/v1/admin/tenants/{tenantId}/clients"]);
   assert.ok(openApiDocument.paths["/v1/providers"]);
-  assert.ok(openApiDocument.paths["/v1/projects"]);
-  assert.ok(openApiDocument.paths["/v1/projects/{projectId}/competitors"]);
   assert.ok(openApiDocument.paths["/v1/projects/{projectId}/monitor-plans"]);
-  assert.ok(openApiDocument.paths["/v1/monitor-plans/{monitorPlanId}"]);
-  assert.ok(openApiDocument.paths["/v1/monitor-plans/{monitorPlanId}/executions"]);
+  assert.ok(openApiDocument.paths["/v1/tasks"]);
+  assert.ok(openApiDocument.paths["/v1/tasks/{taskId}"]);
+  assert.ok(openApiDocument.paths["/v1/tasks/{taskId}/executions"]);
+  assert.ok(openApiDocument.paths["/v1/executions/{executionId}"]);
+  assert.ok(openApiDocument.paths["/v1/executions/{executionId}/pause"]);
+  assert.ok(openApiDocument.paths["/v1/executions/{executionId}/resume"]);
+  assert.ok(openApiDocument.paths["/v1/executions/{executionId}/cancel"]);
+  assert.ok(openApiDocument.paths["/v1/results/{resultId}"]);
+  assert.ok(openApiDocument.paths["/v1/reports/{reportId}"]);
+  assert.ok(openApiDocument.paths["/v1/tasks/{taskId}/schedules"]);
+  assert.ok(openApiDocument.paths["/v1/schedules/{scheduleId}/executions"]);
   assert.ok(openApiDocument.paths["/v1/projects/{projectId}/intelligence"]);
   assert.match(openApiDocument.paths["/v1/projects/{projectId}/intelligence"].get.description, /sourceContent/);
-  assert.ok(openApiDocument.paths["/v1/accounts/{accountId}/auth-sessions"]);
-  assert.ok(openApiDocument.paths["/v1/auth-sessions/{authSessionId}/screenshot"]);
-  assert.ok(openApiDocument.paths["/v1/batches/{batchId}/start"]);
-  assert.ok(openApiDocument.paths["/v1/batches/{batchId}/report"]);
-  assert.ok(openApiDocument.paths["/v1/batches/{batchId}/intelligence"]);
-  assert.ok(openApiDocument.paths["/v1/webhooks"]);
-  assert.ok(openApiDocument.paths["/v1/webhooks/test"]);
-  assert.ok(openApiDocument.paths["/v1/runs/{runId}"]);
   assert.equal(openApiDocument.paths["/click-new-chat"], undefined);
   assert.equal(openApiDocument.paths["/type-prompt"], undefined);
   assert.equal(openApiDocument.paths["/solve-captcha"], undefined);
