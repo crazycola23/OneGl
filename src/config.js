@@ -46,13 +46,29 @@ export function loadConfig(overrides = {}) {
     throw new Error("ONEGL_BROWSER must be camoufox, chromium, or firefox");
   }
 
+  const authStatePlaintextPath =
+    accountKey === null
+      ? path.join(dataDir, "auth", "doubao.storage.json")
+      : path.join(dataDir, "auth", "accounts", `${accountKey}.storage.json`);
+  const authStateEncryptedPath = `${authStatePlaintextPath}.enc`;
+  const storageStateKey =
+    overrides.storageStateKey ?? process.env.ONEGL_STORAGE_STATE_KEY ?? null;
+
   return {
     dataDir,
     accountKey,
+    // Keep both paths explicit: authStatePlaintextPath is only for legacy migration / optional
+    // local plaintext mode. authStatePath is the effective destination displayed to operators.
+    authStatePlaintextPath,
+    authStateEncryptedPath,
     authStatePath:
-      accountKey === null
-        ? path.join(dataDir, "auth", "doubao.storage.json")
-        : path.join(dataDir, "auth", "accounts", `${accountKey}.storage.json`),
+      storageStateKey == null || String(storageStateKey).trim() === ""
+        ? authStatePlaintextPath
+        : authStateEncryptedPath,
+    storageStateKey,
+    requireStorageStateEncryption:
+      overrides.requireStorageStateEncryption ??
+      boolEnv(process.env.ONEGL_REQUIRE_STORAGE_STATE_ENCRYPTION, false),
     doubaoUrl:
       overrides.doubaoUrl ??
       process.env.DOUBAO_URL ??
