@@ -82,7 +82,8 @@ test("batch contract validates method, limits and account list", () => {
   assert.throws(() => parseBatchCreate({ project_id: 1, accounts: [], method: "random" }), ApiHttpError);
   assert.throws(() => parseBatchCreate({ project_id: 1, accounts: ["a"], method: "nope" }), ApiHttpError);
   assert.equal(parseLimit("", 7, 20), 7);
-  assert.equal(parseLimit("99", 7, 20), 20);
+  assert.equal(parseLimit("20", 7, 20), 20);
+  assert.throws(() => parseLimit("99", 7, 20), ApiHttpError);
 });
 
 test("JSON reader rejects invalid and oversized request bodies", async () => {
