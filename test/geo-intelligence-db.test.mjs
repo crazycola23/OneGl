@@ -47,7 +47,11 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     for (const [index, row] of [
       { answer: "品牌A和竞品B都值得考虑", brand: true, day: "2026-09-14T10:00:00Z" },
       { answer: "竞品B的表现更突出", brand: false, day: "2026-09-15T10:00:00Z" },
-      { answer: "品牌A的空间表现不错", brand: true, day: "2026-09-15T12:00:00Z" },
+      {
+        answer: "品牌A的空间表现不错，可参考 competitor-b.example 的公开资料",
+        brand: true,
+        day: "2026-09-15T12:00:00Z",
+      },
     ].entries()) {
       const inserted = await pool.query(
         `INSERT INTO runs
@@ -61,6 +65,17 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
       );
       runRows.push(inserted.rows[0].id);
     }
+
+    // A valid run after the requested project-window end must not leak into that window.
+    await pool.query(
+      `INSERT INTO runs
+         (prompt_id, provider, provider_access, model, status, started_at, finished_at, answer,
+          captured_citation_count, citation_diagnostics, local_run_id,
+          conversation_reset_confirmed, brand_mentioned, matched_terms, attempt, created_at)
+       VALUES ($1, 'doubao', 'scraped', 'doubao', 'success', $2, $2, '品牌A未来观察',
+               0, '[]'::jsonb, $3, true, true, '[]'::jsonb, 1, $2)`,
+      [promptId, "2026-09-20T10:00:00Z", `run_geo_${suffix}_future`],
+    );
 
     await pool.query(
       `INSERT INTO run_search_queries (run_id, query_position, query_text) VALUES
@@ -110,6 +125,8 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     assert.equal(intelligence.providers.length, 1);
     assert.equal(intelligence.providers[0].access, "scraped");
     assert.equal(intelligence.competitors[0].name, "竞品B");
+    // The third answer contains the competitor's configured domain, but no competitor alias.
+    // Domains are source metadata and must not be counted as answer-text competitor mentions.
     assert.equal(intelligence.competitors[0].mentions, 2);
     assert.equal(intelligence.shareOfVoice.brandShare, 0.5);
     assert.equal(intelligence.shareOfVoice.series.length, 2);
@@ -125,6 +142,7 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     });
     assert.equal(projectWindow.scope.type, "project-window");
     assert.equal(projectWindow.scope.days, 7);
+    // The future 2026-09-20 run must be excluded by the explicit upper bound.
     assert.equal(projectWindow.visibility.validRuns, 3);
     assert.deepEqual(projectWindow.visibility.series.map((row) => row.date), ["2026-09-14", "2026-09-15"]);
     assert.equal(projectWindow.citations.stability.transitions, 1);
