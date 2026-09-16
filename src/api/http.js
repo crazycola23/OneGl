@@ -17,6 +17,16 @@ export function sendJson(res, status, payload) {
   res.end(body);
 }
 
+export function sendBuffer(res, status, body, contentType = "application/octet-stream") {
+  res.writeHead(status, {
+    "content-type": contentType,
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  res.end(body);
+}
+
 export async function readJsonBody(req, { maxBytes = 1024 * 1024 } = {}) {
   const chunks = [];
   let size = 0;
