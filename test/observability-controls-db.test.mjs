@@ -110,6 +110,7 @@ test("API observability persists tenant/client audit, rate-limits across Redis, 
       });
       const id = response.headers.get("x-onegl-request-id");
       assert.match(id, /^req_[a-f0-9]{32}$/);
+      assert.equal(response.headers.get("x-onegl-api-version"), "0.7.0");
       requestIds.push(id);
       if (index < 2) {
         assert.equal(response.status, 200);
