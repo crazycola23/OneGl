@@ -5,6 +5,7 @@ import http from "node:http";
 import { parseBatchCreate, parseKeywordsCreate, parseLimit, parseProjectCreate } from "./api/contracts.js";
 import { handleGeoIntelligenceRoute } from "./api/geo-intelligence-routes.js";
 import { ApiHttpError, errorPayload, readJsonBody, sendBuffer, sendJson } from "./api/http.js";
+import { beginSaasIdempotency, completeSaasIdempotency } from "./api/idempotency.js";
 import { handleMonitoringRoute } from "./api/monitoring-routes.js";
 import { openApiDocument } from "./api/openapi.js";
 import { applySaasOpenApi } from "./api/saas-openapi.js";
@@ -305,6 +306,24 @@ async function routeApi(req, res, url) {
 
   const tenant = await resolveTenant(db, auth, req);
   const pathname = url.pathname;
+  const idempotency = await beginSaasIdempotency(db, { tenantId: Number(tenant.id), req, pathname });
+  if (idempotency?.replay) {
+    res.setHeader("idempotency-replayed", "true");
+    return sendJson(res, idempotency.responseStatus, idempotency.responseBody);
+  }
+  if (idempotency) {
+    res.__oneglIdempotencyContext = idempotency;
+    res.__oneglBeforeJsonSend = async (status, payload) => {
+      try {
+        await completeSaasIdempotency(db, idempotency, status, payload);
+        idempotency.completed = true;
+      } catch (error) {
+        console.error(`[idempotency] failed to persist response: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        res.__oneglBeforeJsonSend = null;
+      }
+    };
+  }
 
   if (await handleTaskRoute({ req, res, url, db, auth, tenant })) return;
   if (await handleMonitoringRoute({ req, res, url, db, auth, tenant })) return;
@@ -564,6 +583,7 @@ async function routeApi(req, res, url) {
 
 export function createApiServer() {
   return http.createServer(async (req, res) => {
+    res.setHeader("x-onegl-api-version", openApiDocument.info.version);
     try {
       const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
       if (req.method === "GET" && url.pathname === "/healthz") return sendJson(res, 200, await healthPayload());
@@ -582,6 +602,16 @@ export function createApiServer() {
       return await routeApi(req, res, url);
     } catch (error) {
       const response = errorPayload(error);
+      const context = res.__oneglIdempotencyContext;
+      res.__oneglBeforeJsonSend = null;
+      if (context && !context.completed && pool) {
+        try {
+          await completeSaasIdempotency(pool, context, response.status, response.body);
+          context.completed = true;
+        } catch (idempotencyError) {
+          console.error(`[idempotency] failed to persist error response: ${idempotencyError instanceof Error ? idempotencyError.message : String(idempotencyError)}`);
+        }
+      }
       return sendJson(res, response.status, response.body);
     }
   });
