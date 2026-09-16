@@ -1,29 +1,76 @@
-# OneGl SaaS Task API
+# OneGl SaaS Task API Contract v0.6
 
-This is the recommended integration surface for a product/SaaS backend. The SaaS owns end-user login, billing and UI. OneGl owns AI-platform login state, execution, evidence capture, progress and reports.
+This is the stable server-to-server contract for integrating a SaaS product with OneGl.
 
-The first executable platform is `doubao`. The contract already carries a `platforms` array so later Chinese providers can be added without changing the Task/Execution/Result/Report model. Unsupported providers are rejected rather than silently ignored.
+The SaaS owns end-user login, billing, permissions and product UI. OneGl owns AI-platform login state, browser execution, evidence capture, progress, results and GEO reports.
 
-## Stable IDs the SaaS should persist
+The first executable platform is `doubao`. The contract already uses `platforms` and platform-scoped results so more Chinese AI platforms can be added later without changing the Task → Execution → Result → Report model.
 
-| Resource | Public ID | Meaning |
+## 0. Contract rules
+
+All calls are server-to-server. Never put a OneGl API key in browser/mobile code.
+
+Recommended authentication:
+
+```http
+Authorization: Bearer <tenant-api-key>
+Content-Type: application/json
+```
+
+Successful JSON responses use one envelope:
+
+```json
+{
+  "data": {}
+}
+```
+
+Errors use one shape:
+
+```json
+{
+  "error": "account_action_required",
+  "message": "one or more platform accounts require manual attention",
+  "details": {
+    "accounts": [
+      {
+        "account_id": "doubao-main",
+        "status": "login_required",
+        "cooldown_until": null
+      }
+    ]
+  }
+}
+```
+
+Callers should branch on `error`, not parse the English `message` string.
+
+All timestamps are ISO-8601 timestamps returned by PostgreSQL/Node and should be treated as absolute instants.
+
+### Stable IDs the SaaS should persist
+
+| Object | ID | Meaning |
 | --- | --- | --- |
-| Platform account | caller-defined `account_id` | AI-platform connection/login alias |
-| Task | `tsk_...` | reusable questions + platform configuration |
-| Execution | `exe_...` | one immutable run/re-run of a task |
-| Result | `res_...` | one question/platform execution unit |
-| Report | `rpt_...` | queryable report for one execution |
-| Schedule | `sch_...` | daily/weekly recurring task schedule |
+| Platform account | caller-owned `account_id` | AI-platform login alias |
+| Task | `tsk_...` | reusable question/platform configuration |
+| Execution | `exe_...` | one immutable measurement run |
+| Result | `res_...` | one question/platform result |
+| Report | `rpt_...` | report resource for one execution |
+| Schedule | `sch_...` | recurring task schedule |
 
-Internal PostgreSQL IDs, BullMQ job IDs, browser cookies and storageState are not part of this contract.
+Do **not** persist internal PostgreSQL IDs, sampling batch IDs, BullMQ job IDs, run tokens, browser cookies or storageState as part of the SaaS contract.
 
-## 1. Connect a platform account
+---
 
-Register the connection alias:
+## 1. Platform account and login
+
+### 1.1 Register an account alias
 
 ```http
 POST /v1/accounts
 ```
+
+Request:
 
 ```json
 {
@@ -33,33 +80,73 @@ POST /v1/accounts
 }
 ```
 
-A newly registered account is **not executable**. Its login state is `login_required` until the normal OneGl auth flow successfully saves platform login state.
+Response:
 
-Start a restricted login session:
+```json
+{
+  "data": {
+    "account_id": "doubao-main",
+    "provider": "doubao",
+    "label": "主豆包账号"
+  }
+}
+```
+
+Registering an account does not mean it is logged in. A new account starts as `login_required`.
+
+### 1.2 Start login
 
 ```http
 POST /v1/accounts/doubao-main/auth-sessions
 ```
 
-Poll that auth session and proxy its screenshot from the SaaS backend. OneGl never returns browser cookies/storageState to the SaaS frontend.
+Typical request:
 
-Account/list status remains available from:
-
-```http
-GET /v1/accounts
+```json
+{
+  "ttl_minutes": 10
+}
 ```
 
-If login expires, verification is required, or access is restricted, execution fails closed and returns an account-action-required error instead of bypassing the provider restriction.
+The SaaS backend then polls the auth-session resource and proxies the screenshot endpoint to its frontend. OneGl never returns raw cookies/storageState.
 
-## 2. Create a reusable task
+Useful routes:
+
+```http
+GET  /v1/auth-sessions/{auth_session_id}
+GET  /v1/auth-sessions/{auth_session_id}/screenshot
+POST /v1/auth-sessions/{auth_session_id}/cancel
+GET  /v1/accounts
+```
+
+Account states that require the user/operator to act include:
+
+```text
+login_required
+session_expired
+verification_required
+access_restricted
+paused
+disabled
+```
+
+Temporary safety states such as cooldown/rate limiting are handled by OneGl's execution safety layer rather than bypassed.
+
+---
+
+## 2. Create a Task
+
+A Task is reusable configuration and history identity. It is not a single run.
 
 ```http
 POST /v1/tasks
 ```
 
+Recommended request:
+
 ```json
 {
-  "external_id": "saas-project-1024",
+  "external_id": "saas_project_1024",
   "name": "小米汽车 GEO 监测",
   "target_brand": "小米汽车",
   "questions": [
@@ -75,32 +162,103 @@ POST /v1/tasks
 }
 ```
 
-The response contains a stable `task_id`. Store it in the SaaS.
+Field meaning:
 
-A Task is configuration/history identity, not an individual measurement. Once a task has execution history, fields that change measurement meaning (questions/platforms/accounts/sampling) are locked. To make a new version, clone it:
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `external_id` | no | caller-owned reference from your SaaS |
+| `name` | yes | user-facing task name |
+| `target_brand` | no | brand to detect/analyze |
+| `questions` | yes | questions sent to the selected AI platform |
+| `platforms` | no | defaults to `["doubao"]` |
+| `account_ids` | no at creation | saved account aliases; at least one is required to execute |
+| `sampling.method` | no | `stratified` or `random`, default `stratified` |
+| `sampling.repeats` | no | times each selected question is measured, default `1` |
+
+Response:
+
+```json
+{
+  "data": {
+    "task_id": "tsk_0123456789abcdef0123456789abcdef",
+    "external_id": "saas_project_1024",
+    "name": "小米汽车 GEO 监测",
+    "target_brand": "小米汽车",
+    "questions": [
+      "20万左右新能源SUV推荐",
+      "国产新能源车哪个品牌值得买"
+    ],
+    "platforms": ["doubao"],
+    "account_ids": ["doubao-main"],
+    "sampling": {
+      "method": "stratified",
+      "repeats": 1
+    },
+    "revision": 1,
+    "state": "active",
+    "execution_count": 0,
+    "latest_execution_id": null,
+    "created_at": "2026-09-16T09:30:00.000Z",
+    "updated_at": "2026-09-16T09:30:00.000Z"
+  }
+}
+```
+
+Your SaaS should persist `task_id` immediately.
+
+### Task editing rule
+
+Before a Task has execution history, it may be edited.
+
+Once it has execution history, fields that change measurement meaning — questions, platforms, accounts and sampling configuration — are locked. Clone instead:
 
 ```http
 POST /v1/tasks/{task_id}/clone
 ```
 
-This prevents historical reports from silently changing meaning.
+This keeps historical reports reproducible.
 
-## 3. Execute or re-execute
+---
+
+## 3. Execute or re-execute a Task
 
 ```http
 POST /v1/tasks/{task_id}/executions
 ```
 
-An empty JSON object uses the saved task configuration. Every call creates a new immutable `execution_id`, a new `report_id`, and stable result IDs. Re-running never overwrites a previous measurement.
+For the normal case, send an empty object or no body. Saved Task settings are used:
 
-Typical accepted response:
+```json
+{}
+```
+
+Optional per-execution overrides:
+
+```json
+{
+  "account_ids": ["doubao-main"],
+  "platforms": ["doubao"],
+  "sampling": {
+    "method": "stratified",
+    "repeats": 1
+  },
+  "seed": null,
+  "start": true
+}
+```
+
+`start` should normally be omitted or `true`. `false` is an advanced control that creates the execution resources without immediate enqueueing.
+
+Accepted response:
 
 ```json
 {
   "data": {
-    "execution_id": "exe_...",
-    "task_id": "tsk_...",
-    "report_id": "rpt_...",
+    "execution_id": "exe_0123456789abcdef0123456789abcdef",
+    "task_id": "tsk_0123456789abcdef0123456789abcdef",
+    "task_name": "小米汽车 GEO 监测",
+    "report_id": "rpt_0123456789abcdef0123456789abcdef",
+    "trigger": "manual",
     "status": "queued",
     "progress": {
       "total": 2,
@@ -110,36 +268,93 @@ Typical accepted response:
       "remaining": 2,
       "percent": 0
     },
-    "report_url": "/v1/reports/rpt_...",
-    "results_url": "/v1/executions/exe_.../results"
+    "created_at": "2026-09-16T09:31:00.000Z",
+    "started_at": null,
+    "finished_at": null,
+    "report_url": "/v1/reports/rpt_0123456789abcdef0123456789abcdef",
+    "results_url": "/v1/executions/exe_0123456789abcdef0123456789abcdef/results"
   }
 }
 ```
 
-If an account needs login/manual action, OneGl rejects execution creation with `account_action_required`. Temporary cooldown/hour/day ceilings are still handled by the existing conservative worker policy.
+The SaaS should persist `execution_id` and `report_id` immediately.
 
-## 4. Poll progress
+Every POST creates a new execution. Re-execution never overwrites old results:
 
-The SaaS can poll:
+```text
+tsk_A
+├─ exe_1 → rpt_1
+├─ exe_2 → rpt_2
+└─ exe_3 → rpt_3
+```
+
+If the account is not logged in or requires manual action, execution creation fails closed with `account_action_required`.
+
+---
+
+## 4. Poll execution progress
 
 ```http
 GET /v1/executions/{execution_id}
 ```
 
-Useful execution states are based on OneGl measurement state, not raw BullMQ states. Current Doubao execution can return states such as:
+Response:
 
-- `pending`
-- `queued`
-- `running`
-- `paused`
-- `completed`
-- `partial`
-- `failed`
-- `cancelled`
+```json
+{
+  "data": {
+    "execution_id": "exe_0123456789abcdef0123456789abcdef",
+    "task_id": "tsk_0123456789abcdef0123456789abcdef",
+    "task_name": "小米汽车 GEO 监测",
+    "report_id": "rpt_0123456789abcdef0123456789abcdef",
+    "trigger": "manual",
+    "status": "running",
+    "progress": {
+      "total": 20,
+      "completed": 7,
+      "failed": 1,
+      "skipped": 0,
+      "remaining": 12,
+      "percent": 40
+    },
+    "created_at": "2026-09-16T09:31:00.000Z",
+    "started_at": "2026-09-16T09:31:04.000Z",
+    "finished_at": null
+  }
+}
+```
 
-`progress` contains total/completed/failed/skipped/remaining/percent so the SaaS does not need to understand OneGl's internal queues.
+Execution status values:
 
-## 5. Pause, resume, cancel
+```text
+pending
+queued
+running
+paused
+completed
+partial
+failed
+cancelled
+```
+
+Suggested SaaS behavior:
+
+| Status | UI behavior |
+| --- | --- |
+| `pending` | waiting to start |
+| `queued` | queued |
+| `running` | show live progress |
+| `paused` | show resume button |
+| `completed` | open report |
+| `partial` | open report + show partial warning |
+| `failed` | show failure state; keep any finished results |
+| `cancelled` | show cancelled; keep finished results |
+
+The SaaS can poll every few seconds while the status is non-terminal. Webhooks can later replace/reduce polling for completion notifications.
+
+---
+
+## 5. Pause, resume and cancel
 
 ```http
 POST /v1/executions/{execution_id}/pause
@@ -147,55 +362,195 @@ POST /v1/executions/{execution_id}/resume
 POST /v1/executions/{execution_id}/cancel
 ```
 
-Pause removes remaining queued work for that execution. A prompt already actively executing is allowed to finish safely. Resume queues only unfinished assignments; successful historical results are not asked again. Cancel retains already-finished results and stops remaining queued work.
+Rules:
 
-## 6. Query individual question results
+- Pause removes remaining queued work. A prompt already active is allowed to finish safely.
+- Resume only queues unfinished assignments; successful results are not asked again.
+- Cancel keeps already-finished results and stops remaining queued work.
+- Invalid transitions return `invalid_execution_state` rather than silently succeeding.
 
-List result IDs:
+---
+
+## 6. List Result IDs
 
 ```http
 GET /v1/executions/{execution_id}/results
 ```
 
-Then query one result:
+Response:
+
+```json
+{
+  "data": [
+    {
+      "result_id": "res_0123456789abcdef0123456789abcdef",
+      "question": "20万左右新能源SUV推荐",
+      "platform": "doubao",
+      "status": "success",
+      "brand_mentioned": true,
+      "mention_count": 2,
+      "finished_at": "2026-09-16T09:32:10.000Z",
+      "result_url": "/v1/results/res_0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
+```
+
+Result status values currently follow the capture-result vocabulary:
+
+```text
+pending
+running
+success
+partial
+failed
+```
+
+`execution.status=completed` describes the whole execution. `result.status=success` describes one captured question result.
+
+---
+
+## 7. Query one Result
 
 ```http
 GET /v1/results/{result_id}
 ```
 
-A finished result returns the question, platform, answer/brand signal and captured citations. A result that has not run yet returns `pending` rather than inventing an answer.
+Pending result:
 
-## 7. Query reports
+```json
+{
+  "data": {
+    "result_id": "res_0123456789abcdef0123456789abcdef",
+    "task_id": "tsk_0123456789abcdef0123456789abcdef",
+    "execution_id": "exe_0123456789abcdef0123456789abcdef",
+    "platform": "doubao",
+    "question": "20万左右新能源SUV推荐",
+    "status": "pending",
+    "citations": []
+  }
+}
+```
 
-By stable report ID:
+Finished result:
+
+```json
+{
+  "data": {
+    "result_id": "res_0123456789abcdef0123456789abcdef",
+    "task_id": "tsk_0123456789abcdef0123456789abcdef",
+    "execution_id": "exe_0123456789abcdef0123456789abcdef",
+    "platform": "doubao",
+    "question": "20万左右新能源SUV推荐",
+    "status": "success",
+    "answer": {
+      "text": "……豆包回答正文……",
+      "brand_mentioned": true,
+      "mention_count": 2
+    },
+    "citations": [
+      {
+        "source_position": 1,
+        "citation_marker": null,
+        "relation_status": "matched",
+        "captured_from": "DOM",
+        "visible_to_user": true,
+        "source_type": "visible",
+        "answer_text": null,
+        "tracked_article_id": null,
+        "canonical_url": "https://example.com/article",
+        "original_url": "https://example.com/article?from=doubao",
+        "title": "文章标题",
+        "domain": "example.com",
+        "normalized_domain": "example.com"
+      }
+    ],
+    "started_at": "2026-09-16T09:31:05.000Z",
+    "finished_at": "2026-09-16T09:32:10.000Z"
+  }
+}
+```
+
+If a result has not executed yet, OneGl returns `pending` and an empty citation array rather than inventing answer data.
+
+---
+
+## 8. Query reports
+
+### By report ID
 
 ```http
 GET /v1/reports/{report_id}
 ```
 
-By execution:
+### By execution ID
 
 ```http
 GET /v1/executions/{execution_id}/report
 ```
 
-Historical reports for one task:
+### Historical reports for a Task
 
 ```http
 GET /v1/tasks/{task_id}/reports
 ```
 
-While execution is active, the report resource exists with `status: generating`. When the underlying measurement reaches a terminal state, the same `report_id` becomes `ready` and exposes OneGl's auditable report/source/intelligence data.
+While execution is active:
 
-This means the SaaS can create its own report-list page using only saved `task_id`/`report_id` values.
+```json
+{
+  "data": {
+    "report_id": "rpt_0123456789abcdef0123456789abcdef",
+    "task_id": "tsk_0123456789abcdef0123456789abcdef",
+    "execution_id": "exe_0123456789abcdef0123456789abcdef",
+    "status": "generating",
+    "execution_status": "running",
+    "report_url": "/v1/reports/rpt_0123456789abcdef0123456789abcdef",
+    "summary": null,
+    "sources": null,
+    "intelligence": null,
+    "created_at": "2026-09-16T09:31:00.000Z"
+  }
+}
+```
 
-## 8. Recurring schedules
+At a terminal execution state, the same `report_id` becomes ready:
 
-Create:
+```json
+{
+  "data": {
+    "report_id": "rpt_0123456789abcdef0123456789abcdef",
+    "task_id": "tsk_0123456789abcdef0123456789abcdef",
+    "execution_id": "exe_0123456789abcdef0123456789abcdef",
+    "status": "ready",
+    "execution_status": "completed",
+    "report_url": "/v1/reports/rpt_0123456789abcdef0123456789abcdef",
+    "summary": {},
+    "sources": {},
+    "intelligence": {},
+    "created_at": "2026-09-16T09:31:00.000Z"
+  }
+}
+```
+
+Report status is deliberately simple:
+
+```text
+generating
+ready
+```
+
+A `ready` report can still have `execution_status=partial`, `failed`, or `cancelled`; it means the execution has reached a terminal state and the report reflects all evidence that exists.
+
+---
+
+## 9. Recurring schedules
 
 ```http
 POST /v1/tasks/{task_id}/schedules
 ```
+
+Daily example:
 
 ```json
 {
@@ -210,9 +565,25 @@ POST /v1/tasks/{task_id}/schedules
 }
 ```
 
-Weekly schedules additionally use ISO weekday `1..7`.
+Weekly example:
 
-Manage/query:
+```json
+{
+  "name": "每周一监测",
+  "schedule": {
+    "cadence": "weekly",
+    "time_zone": "Asia/Shanghai",
+    "local_time": "09:00",
+    "weekday": 1
+  },
+  "account_ids": ["doubao-main"],
+  "enabled": true
+}
+```
+
+`weekday` uses ISO weekday numbering: Monday=`1`, Sunday=`7`.
+
+Manage schedules:
 
 ```http
 GET    /v1/tasks/{task_id}/schedules
@@ -222,29 +593,98 @@ DELETE /v1/schedules/{schedule_id}
 GET    /v1/schedules/{schedule_id}/executions
 ```
 
-Scheduled occurrences reuse the ordinary OneGl batch + worker safety path and create stable `execution_id`/`report_id` resources when a batch is materialized. Scheduler downtime is not backfilled into fake historical measurements.
+Scheduled runs reuse the ordinary OneGl batch/worker safety path and produce stable `execution_id`, `result_id` and `report_id` resources.
 
-## Recommended SaaS workflow
+---
+
+## 10. Error codes the SaaS should handle
+
+| HTTP | `error` | SaaS action |
+| --- | --- | --- |
+| 400 | `invalid_request` | request/form bug; show validation message |
+| 401 | `unauthorized` | server API key missing/invalid |
+| 401 | `api_key_expired` | rotate/reissue backend API key |
+| 403 | `insufficient_scope` | backend credential configuration error |
+| 403 | `tenant_disabled` | tenant is disabled |
+| 404 | `task_not_found` | remove stale task reference |
+| 404 | `execution_not_found` | remove stale execution reference |
+| 404 | `result_not_found` | remove stale result reference |
+| 404 | `report_not_found` | remove stale report reference |
+| 404 | `schedule_not_found` | remove stale schedule reference |
+| 409 | `account_action_required` | send user to platform login/account handling |
+| 409 | `task_locked` | clone Task before changing measurement-shaping fields |
+| 409 | `invalid_execution_state` | refresh execution and update available controls |
+| 409 | `question_pool_empty` | Task has no active questions |
+| 409 | `task_conflict` | caller `external_id` conflicts with an existing Task |
+| 422 | `account_required` | select/login at least one platform account |
+| 422 | `unknown_accounts` | account alias is not registered for tenant |
+| 422 | `unsupported_platform` | selected platform is not implemented yet |
+| 503 | `database_unavailable` | backend/service incident; retry later |
+
+For `account_action_required`, prefer structured `details.accounts[]` over parsing message text.
+
+---
+
+## 11. Recommended SaaS data model
+
+Your SaaS can keep a thin mapping table such as:
+
+```text
+saas_user / workspace
+    ↓
+onegl_account_id
+onegl_task_id
+onegl_execution_id
+onegl_report_id
+onegl_result_id
+onegl_schedule_id
+```
+
+A practical history model is:
+
+```text
+Task: 小米汽车 GEO 监测
+│
+├─ Execution 2026-09-16
+│    ├─ Result A
+│    ├─ Result B
+│    └─ Report A
+│
+├─ Execution 2026-09-17
+│    ├─ Result A
+│    ├─ Result B
+│    └─ Report B
+│
+└─ Schedule: 每日 09:00
+```
+
+The SaaS should not need to know how OneGl stores projects, sampling batches, BullMQ queues or browser sessions internally.
+
+---
+
+## 12. Recommended end-to-end workflow
 
 ```text
 User signs into SaaS
         ↓
-SaaS checks AI-platform accounts
+SaaS GET /v1/accounts
         ↓
-User completes Doubao login if required
+No valid Doubao login?
+        ↓ yes
+Create/poll auth session
         ↓
-SaaS POST /v1/tasks
-        ↓ store task_id
-SaaS POST /v1/tasks/{task_id}/executions
-        ↓ store execution_id + report_id
-SaaS polls GET /v1/executions/{execution_id}
+POST /v1/tasks
+        ↓ persist task_id
+POST /v1/tasks/{task_id}/executions
+        ↓ persist execution_id + report_id
+GET /v1/executions/{execution_id} every few seconds
         ↓
-completed / partial / failed / cancelled
+terminal state
         ↓
-GET /v1/reports/{report_id}
 GET /v1/executions/{execution_id}/results
+GET /v1/reports/{report_id}
         ↓
-SaaS renders report/history or links into its own report UI
+SaaS renders history/report
 ```
 
-All calls must be server-to-server. Do not put OneGl API keys in browser/mobile client code.
+This is the intended public integration surface. Legacy `/projects`, `/batches` and `/runs` remain useful for OneGl administration and lower-level integrations, but a product SaaS should prefer the Task API above.
