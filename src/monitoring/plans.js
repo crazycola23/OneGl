@@ -89,7 +89,7 @@ function isoWeekday(dateParts) {
   return value === 0 ? 7 : value;
 }
 
-/** Return the first occurrence strictly after `now` unless today's wall-clock slot is still ahead. */
+/** Return the first configured wall-clock occurrence after `now`. */
 export function nextScheduledAt(schedule, now = new Date()) {
   const timeZone = validateMonitorTimeZone(schedule.timeZone ?? schedule.time_zone);
   const cadence = String(schedule.cadence ?? "daily").trim().toLowerCase();
@@ -198,7 +198,7 @@ export async function getMonitorPlan(pool, tenantId, planId) {
 
 export async function createMonitorPlan(pool, { tenantId, projectId, input, now = new Date() }) {
   const normalized = normalizeMonitorPlanInput(input);
-  const nextRunAt = normalized.enabled ? nextScheduledAt(normalized, now) : nextScheduledAt(normalized, now);
+  const nextRunAt = nextScheduledAt(normalized, now);
   const { rows } = await pool.query(
     `INSERT INTO service_monitor_plans
        (tenant_id, project_id, name, cadence, time_zone, local_hour, local_minute, weekday,
@@ -260,7 +260,14 @@ export async function listMonitorExecutions(pool, tenantId, planId, limit = 50) 
   }));
 }
 
-/** Atomically turns due schedules into durable execution rows and advances each schedule. */
+/**
+ * Atomically turns due schedules into durable execution rows and advances each schedule.
+ *
+ * Downtime is intentionally not backfilled. If a daily plan was offline for five days,
+ * OneGl creates one overdue occurrence when it comes back and moves `next_run_at` to the
+ * next future wall-clock slot. Running five historical batches today would not reconstruct
+ * historical Doubao answers; it would only create a burst and corrupt the trend semantics.
+ */
 export async function materializeDueMonitorExecutions(pool, { now = new Date(), limit = 20 } = {}) {
   const client = await pool.connect();
   try {
@@ -276,7 +283,7 @@ export async function materializeDueMonitorExecutions(pool, { now = new Date(), 
     const created = [];
     for (const plan of rows) {
       const scheduledFor = new Date(plan.next_run_at);
-      const nextRunAt = nextScheduledAt(plan, new Date(scheduledFor.getTime() + 1000));
+      const nextRunAt = nextScheduledAt(plan, now);
       const inserted = await client.query(
         `INSERT INTO service_monitor_executions (plan_id, tenant_id, project_id, scheduled_for)
          VALUES ($1, $2, $3, $4)
