@@ -29,7 +29,11 @@ function citationCompleteRun(run) {
 function queryEvidenceUsable(run) {
   // API adapters can provide first-party query observations without browser-network capture.
   if (run?.provider_access === "api") return true;
-  return new Set(["found", "none"]).has(run?.network_evidence_state);
+  // Playwright's browser response body is buffered rather than a trustworthy live SSE
+  // transport. For scraped runs, an empty capture cannot distinguish "no search happened"
+  // from "the completion body never became observable". Fail closed: only positive,
+  // structured retrieval evidence is eligible for query-fanout metrics.
+  return run?.network_evidence_state === "found";
 }
 
 export async function listProjectCompetitors(pool, projectId) {
