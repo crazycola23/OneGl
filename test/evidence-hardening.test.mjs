@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { runOnePrompt } from "../src/collect/runner.js";
 import { loadConfig } from "../src/config.js";
 import { executeDoubaoPrompt } from "../src/doubao.js";
 import { ErrorCode } from "../src/errors.js";
@@ -86,4 +87,75 @@ test("verified reference-block citation results are not downgraded", () => {
     citationSelectorUsed: '[data-plugin-identifier*="block_type:10025"]',
   };
   assert.equal(hardenDoubaoCitationFallback(raw), raw);
+});
+
+test("a completed local observation retries persistence without entering provider collection", async () => {
+  const previous = {
+    id: "run_batch_9_1",
+    status: "success",
+    dbStatus: "failed",
+    provider: "doubao",
+    project: "svc:t1:test:nonce",
+    prompt: "新能源 SUV 推荐",
+    accountKey: "acct_primary",
+    samplingBatchId: 9,
+    runToken: "batch:9:1",
+    jobId: "job-9-1",
+    attempt: 1,
+    startedAt: "2026-09-17T00:00:00.000Z",
+    completedAt: "2026-09-17T00:00:10.000Z",
+    answer: "已经采集完成的答案",
+    citationState: "none_visible",
+    expectedCitationCount: 0,
+    citations: [],
+    citationDiagnostics: [],
+    conversationResetConfirmed: true,
+  };
+
+  let readCount = 0;
+  let createCount = 0;
+  const store = {
+    async readRun(runId) {
+      readCount += 1;
+      assert.equal(runId, previous.id);
+      return { ...previous };
+    },
+    async updateRun(runId, patch) {
+      assert.equal(runId, previous.id);
+      return { ...previous, ...patch };
+    },
+    async createRun() {
+      createCount += 1;
+      throw new Error("provider collection path must not be entered");
+    },
+  };
+  const pool = {
+    async connect() {
+      throw new Error("postgres temporarily unavailable");
+    },
+  };
+
+  const outcome = await runOnePrompt({
+    page: null,
+    store,
+    config: { provider: "doubao" },
+    prompt: previous.prompt,
+    project: previous.project,
+    pool,
+    runId: previous.id,
+    validation: { caseId: previous.runToken },
+    context: {
+      accountKey: previous.accountKey,
+      samplingBatchId: previous.samplingBatchId,
+      runToken: previous.runToken,
+      jobId: previous.jobId,
+      attempt: 2,
+    },
+  });
+
+  assert.equal(outcome.persistenceReplay, true);
+  assert.equal(outcome.ok, true);
+  assert.ok(outcome.persistError);
+  assert.equal(readCount, 1);
+  assert.equal(createCount, 0);
 });
