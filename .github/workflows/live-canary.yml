@@ -22,8 +22,6 @@ jobs:
       ONEGL_BROWSER: firefox
       ONEGL_HEADLESS: "true"
       ONEGL_REQUIRE_STORAGE_STATE_ENCRYPTION: "true"
-      ONEGL_STORAGE_STATE_KEY: ${{ secrets.ONEGL_CANARY_STORAGE_STATE_KEY }}
-      ONEGL_CANARY_STORAGE_STATE_ENVELOPE: ${{ secrets.ONEGL_CANARY_STORAGE_STATE_ENVELOPE }}
       ONEGL_CANARY_PROMPT: ${{ vars.ONEGL_CANARY_PROMPT }}
       ONEGL_NETWORK_EVIDENCE: "false"
       DOUBAO_TIMEOUT_MS: "120000"
@@ -44,19 +42,19 @@ jobs:
       - name: Install Firefox
         run: npx playwright-core install --with-deps firefox
 
-      - name: Validate canary secrets
-        shell: bash
-        run: |
-          test -n "$ONEGL_STORAGE_STATE_KEY" || { echo "ONEGL_CANARY_STORAGE_STATE_KEY is not configured" >&2; exit 1; }
-          test -n "$ONEGL_CANARY_STORAGE_STATE_ENVELOPE" || { echo "ONEGL_CANARY_STORAGE_STATE_ENVELOPE is not configured" >&2; exit 1; }
-
       - name: Restore encrypted canary session
         shell: bash
+        env:
+          ONEGL_CANARY_STORAGE_STATE_ENVELOPE: ${{ secrets.ONEGL_CANARY_STORAGE_STATE_ENVELOPE }}
         run: |
+          test -n "$ONEGL_CANARY_STORAGE_STATE_ENVELOPE" || { echo "ONEGL_CANARY_STORAGE_STATE_ENVELOPE is not configured" >&2; exit 1; }
           install -d -m 700 .onegl/auth/accounts
           printf '%s\n' "$ONEGL_CANARY_STORAGE_STATE_ENVELOPE" > .onegl/auth/accounts/canary.storage.json.enc
           chmod 600 .onegl/auth/accounts/canary.storage.json.enc
-          unset ONEGL_CANARY_STORAGE_STATE_ENVELOPE
 
       - name: Run live compatibility canary
-        run: node tools/live-canary.js
+        env:
+          ONEGL_STORAGE_STATE_KEY: ${{ secrets.ONEGL_CANARY_STORAGE_STATE_KEY }}
+        run: |
+          test -n "$ONEGL_STORAGE_STATE_KEY" || { echo "ONEGL_CANARY_STORAGE_STATE_KEY is not configured" >&2; exit 1; }
+          node tools/live-canary.js
