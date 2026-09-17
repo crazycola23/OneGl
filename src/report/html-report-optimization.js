@@ -38,11 +38,16 @@ function promptOpportunitySection(detail) {
 
   const rows = opportunity.rows.map((row) => {
     const citationDensity = row.citationDensity == null ? "N/A" : Number(row.citationDensity).toFixed(2);
+    const citationCoverage = opportunityPct(row.citationEvidenceRate);
+    const citationCoverageHint = row.validRuns > 0
+      ? `${opportunityEsc(row.citationValidRuns)} / ${opportunityEsc(row.validRuns)}`
+      : "N/A";
     return `<tr>
       <td><span class="opportunity-priority ${opportunityEsc(opportunityTone(row.key))}">${opportunityEsc(row.priority)}</span></td>
       <td><b>${opportunityEsc(row.prompt)}</b><div class="opportunity-sub">${opportunityEsc(row.category)}</div></td>
       <td class="num">${opportunityEsc(row.validRuns)} / ${opportunityEsc(row.totalRuns)}</td>
       <td>${opportunityPct(row.mentionRate)}</td>
+      <td>${citationCoverage}<div class="opportunity-sub">${citationCoverageHint} Run</div></td>
       <td>${opportunityEsc(citationDensity)}</td>
       <td><b>${opportunityEsc(row.label)}</b><div class="opportunity-sub">${opportunityEsc(row.action)}</div></td>
     </tr>`;
@@ -50,7 +55,7 @@ function promptOpportunitySection(detail) {
 
   const warning = opportunity.truncated
     ? `<div class="callout" style="margin-bottom:14px"><b>机会表不是完整问题池。</b>批次分配 ${opportunityEsc(opportunity.assignmentCount)} 个 Run，但当前 batch detail 只返回 ${opportunityEsc(opportunity.observedRuns)} 个 Run。下表只能用于局部诊断。</div>`
-    : `<div class="callout" style="margin-bottom:14px">按真实 Run 聚合，不构造未经验证的 Query → Source 归因。排序优先看“数据是否有效、品牌是否被提及及其稳定性”；可见引用密度只是上下文，不是质量分。</div>`;
+    : `<div class="callout" style="margin-bottom:14px">按真实 Run 聚合，不构造未经验证的 Query → Source 归因。排序优先看“数据是否有效、品牌是否被提及及其稳定性”；引用密度只统计 citation-valid Run，并单独展示引用证据覆盖。</div>`;
 
   return `<section class="section prompt-opportunities">
     <h2>Prompt 优化机会矩阵</h2>
@@ -58,7 +63,7 @@ function promptOpportunitySection(detail) {
     ${warning}
     <div class="panel"><div class="panel-body">
       <div class="table-wrap"><table>
-        <thead><tr><th>优先级</th><th>Prompt / 分类</th><th>有效 / 总 Run</th><th>品牌提及率</th><th>平均可见引用</th><th>状态 / 下一步</th></tr></thead>
+        <thead><tr><th>优先级</th><th>Prompt / 分类</th><th>有效 / 总 Run</th><th>品牌提及率</th><th>引用证据覆盖</th><th>平均可见引用</th><th>状态 / 下一步</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
     </div></div>

@@ -10,6 +10,7 @@ function run(prompt, overrides = {}) {
     status: "success",
     conversation_reset_confirmed: true,
     brand_mentioned: false,
+    citation_state: "found",
     captured_citation_count: 2,
     ...overrides,
   };
@@ -49,8 +50,78 @@ test("引用数据缺失保持 N/A 语义，不自动记成 0 引用", () => {
     runs: [run("引用未知", { captured_citation_count: null })],
   };
   const [row] = buildPromptOpportunities(detail).rows;
+  assert.equal(row.citationValidRuns, 1);
   assert.equal(row.citationComparableRuns, 0);
+  assert.equal(row.citationEvidenceRate, 1);
   assert.equal(row.citationDensity, null);
+});
+
+test("旧快照 success Run 缺 citation_state 时仍可用 captured count 兼容", () => {
+  const detail = {
+    report: { runs: { assignmentsRun: 1 } },
+    runs: [run("旧快照", { citation_state: null, captured_citation_count: 3 })],
+  };
+  const [row] = buildPromptOpportunities(detail).rows;
+  assert.equal(row.citationValidRuns, 1);
+  assert.equal(row.citationComparableRuns, 1);
+  assert.equal(row.citationEvidenceRate, 1);
+  assert.equal(row.citationDensity, 3);
+});
+
+test("新 citation contract 缺 citation_state 时 fail closed，不用 captured count 掩盖", () => {
+  const detail = {
+    report: {
+      runs: { assignmentsRun: 1 },
+      citations: { validRuns: 1, coverage: 1 },
+    },
+    runs: [run("新合同异常", { citation_state: null, captured_citation_count: 3 })],
+  };
+  const [row] = buildPromptOpportunities(detail).rows;
+  assert.equal(row.validRuns, 1);
+  assert.equal(row.citationValidRuns, 0);
+  assert.equal(row.citationComparableRuns, 0);
+  assert.equal(row.citationEvidenceRate, 0);
+  assert.equal(row.citationDensity, null);
+  assert.match(row.action, /引用证据覆盖 0\.0%/);
+});
+
+test("partial citation parse failure 只参与品牌回答口径，不污染 Prompt 引用密度", () => {
+  const detail = {
+    report: { runs: { assignmentsRun: 2 } },
+    runs: [
+      run("同一问题", { brand_mentioned: true, captured_citation_count: 2 }),
+      run("同一问题", {
+        status: "partial",
+        citation_state: "parse_failed",
+        brand_mentioned: true,
+        captured_citation_count: 20,
+      }),
+    ],
+  };
+
+  const [row] = buildPromptOpportunities(detail).rows;
+  assert.equal(row.validRuns, 2);
+  assert.equal(row.mentionedRuns, 2);
+  assert.equal(row.mentionRate, 1);
+  assert.equal(row.citationValidRuns, 1);
+  assert.equal(row.citationComparableRuns, 1);
+  assert.equal(row.citationEvidenceRate, 0.5);
+  assert.equal(row.visibleCitations, 2);
+  assert.equal(row.citationDensity, 2);
+  assert.match(row.action, /引用证据覆盖 50\.0%/);
+  assert.match(row.action, /不要把引用密度变化解释成业务变化/);
+});
+
+test("none_visible 是 citation-valid 的 0 引用证据", () => {
+  const detail = {
+    report: { runs: { assignmentsRun: 1 } },
+    runs: [run("明确无引用", { citation_state: "none_visible", captured_citation_count: 0 })],
+  };
+  const [row] = buildPromptOpportunities(detail).rows;
+  assert.equal(row.citationValidRuns, 1);
+  assert.equal(row.citationComparableRuns, 1);
+  assert.equal(row.citationEvidenceRate, 1);
+  assert.equal(row.citationDensity, 0);
 });
 
 test("批次 API 只返回部分 Run 时明确标记 opportunity 表不完整", () => {
