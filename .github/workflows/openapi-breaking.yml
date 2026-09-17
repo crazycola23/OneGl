@@ -41,6 +41,7 @@ jobs:
         shell: bash
         run: |
           if git cat-file -e "origin/${{ github.base_ref }}:openapi.json" 2>/dev/null; then
+            git show "origin/${{ github.base_ref }}:openapi.json" > /tmp/base-openapi.json
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -51,6 +52,6 @@ jobs:
         if: steps.baseline.outputs.exists == 'true'
         uses: oasdiff/oasdiff-action/breaking@v0
         with:
-          base: 'origin/${{ github.base_ref }}:openapi.json'
+          base: '/tmp/base-openapi.json'
           revision: 'openapi.json'
           fail-on: ERR
