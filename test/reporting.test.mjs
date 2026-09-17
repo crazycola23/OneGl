@@ -137,6 +137,53 @@ test("未配置目标文章时保持 N/A，不把 0/0 解释成 0% 或压低准�
   assert.doesNotMatch(html, /(?:目标文章引用率|自有内容引用)<\/label><strong>0\.0%/);
 });
 
+test("引用证据覆盖与引用密度使用不同分母，低覆盖优先诊断为数据问题", () => {
+  const detail = fixture();
+  detail.report.runs = {
+    ...detail.report.runs,
+    assignmentsRun: 100,
+    valid: 100,
+    partial: 50,
+    failed: 0,
+  };
+  detail.report.citations = {
+    ...detail.report.citations,
+    total: 100,
+    validRuns: 50,
+    coverage: 0.5,
+  };
+  detail.runs = [{ expected_citation_count: 2, captured_citation_count: 2 }];
+
+  const evaluation = evaluateBatchDetail(detail);
+  assert.equal(evaluation.metrics.citationValidRuns, 50);
+  assert.equal(evaluation.metrics.citationEvidenceRate, 0.5);
+  assert.equal(evaluation.metrics.citationDensity, 2);
+  assert.ok(evaluation.recommendations.some((item) => /引用证据覆盖/.test(item.title)));
+  assert.ok(evaluation.caveats.some((item) => /引用证据覆盖 50\.0%/.test(item)));
+
+  const html = buildHtmlReportWithFactors(detail, evaluation, { generatedAt: "2026-09-14T07:00:00Z" });
+  assert.match(html, /当前首要瓶颈[\s\S]*引用证据覆盖/);
+  assert.match(html, /引用证据覆盖<\/label><strong>50\.0%/);
+  assert.match(html, /50 \/ 100 个 answer-valid Run/);
+  assert.match(html, /平均引用密度<\/label><strong>2\.00/);
+  assert.match(html, /每个引用有效 Run 的可见引用数/);
+});
+
+test("旧快照缺少 citation coverage 时保持未知而不是伪造 0%", () => {
+  const detail = fixture();
+  const evaluation = evaluateBatchDetail(detail);
+
+  assert.equal(evaluation.metrics.citationValidRuns, null);
+  assert.equal(evaluation.metrics.citationEvidenceRate, null);
+  assert.equal(evaluation.metrics.citationDensity, 140 / 92);
+
+  const html = buildHtmlReportWithFactors(detail, evaluation, { generatedAt: "2026-09-14T07:00:00Z" });
+  assert.match(html, /引用证据覆盖<\/label><strong>—<\/strong><small>旧快照未提供该口径/);
+  assert.doesNotMatch(html, /引用证据覆盖<\/label><strong>0\.0%/);
+  assert.match(html, /旧快照：每个有效 Run 的可见引用数/);
+  assert.match(html, /引用证据覆盖未知（旧快照未提供该口径）/);
+});
+
 test("调优摘要优先展示瓶颈、最弱意图、证据可行动性和下一轮动作", () => {
   const detail = fixture();
   const evaluation = evaluateBatchDetail(detail);
@@ -160,6 +207,7 @@ test("调优观测指标强制拆成 Outcome、Diagnostic、Evidence 三层", ()
   assert.match(html, /Diagnostic · 损失定位/);
   assert.match(html, /Evidence · 可行动性/);
   assert.match(html, /平均引用密度/);
+  assert.match(html, /引用证据覆盖/);
   assert.match(html, /不是质量分/);
   assert.match(html, /缺失数据不按 0 分处理/);
 });

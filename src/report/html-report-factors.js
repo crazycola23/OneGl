@@ -109,6 +109,7 @@ function optimizationSummaryData(detail, evaluation) {
   const categoryGap = Number(metrics?.category?.gap);
   const promptCoverage = metrics.promptCoverage == null ? null : Number(metrics.promptCoverage);
   const trackedRate = metrics.trackedRate == null ? null : Number(metrics.trackedRate);
+  const citationEvidenceRate = metrics.citationEvidenceRate == null ? null : Number(metrics.citationEvidenceRate);
   const topShare = metrics?.source?.topDomainShare == null ? null : Number(metrics.source.topDomainShare);
   const gate = metrics?.factorEvidence?.gate ?? report?.citationFactors?.evidenceGate ?? null;
   const factorAvailable = Boolean(report?.citationFactors?.cohort?.candidates || metrics?.factorEvidence?.available);
@@ -118,7 +119,12 @@ function optimizationSummaryData(detail, evaluation) {
   let bottleneckTone = "good";
   let actionKeywords = [];
 
-  if (Number(metrics.dataQualityScore) < 80) {
+  if (citationEvidenceRate != null && Number.isFinite(citationEvidenceRate) && citationEvidenceRate < 0.8) {
+    bottleneck = "引用证据覆盖";
+    bottleneckEvidence = `只有 ${factorPct(citationEvidenceRate)} 的 answer-valid Run 具备完整引用证据；先修采集覆盖，再解释引用密度和来源变化。`;
+    bottleneckTone = "bad";
+    actionKeywords = ["引用证据", "数据可信度"];
+  } else if (Number(metrics.dataQualityScore) < 80) {
     bottleneck = "数据可信度";
     bottleneckEvidence = `数据质量 ${factorEsc(metrics.dataQualityScore)}/100；先修失败 Run、引用解析或页面证据，再解释业务结果。`;
     bottleneckTone = "bad";
@@ -155,7 +161,11 @@ function optimizationSummaryData(detail, evaluation) {
   let actionability = "待扩样";
   let actionabilityHint = `当前样本信心：${metrics.sampleConfidence ?? "未知"}`;
   let actionabilityTone = "warn";
-  if (Number(metrics.dataQualityScore) < 80) {
+  if (citationEvidenceRate != null && Number.isFinite(citationEvidenceRate) && citationEvidenceRate < 0.8) {
+    actionability = "先修引用证据";
+    actionabilityHint = `引用证据覆盖仅 ${factorPct(citationEvidenceRate)}，暂不把引用表现当成业务结果。`;
+    actionabilityTone = "bad";
+  } else if (Number(metrics.dataQualityScore) < 80) {
     actionability = "先修数据";
     actionabilityHint = "数据基础未过线，不建议据此改内容。";
     actionabilityTone = "bad";
@@ -217,6 +227,9 @@ function optimizationSummarySection(detail, evaluation) {
   const trackedHint = summary.trackedConfigured
     ? `${factorEsc(summary.trackedCited)} / ${factorEsc(summary.trackedTotal)} 篇目标文章`
     : "未配置目标文章，不计为 0%";
+  const citationCoverageSummary = metrics.citationEvidenceRate == null
+    ? "引用证据覆盖未知（旧快照未提供该口径）"
+    : `引用证据覆盖 ${factorPct(metrics.citationEvidenceRate)}（${factorEsc(metrics.citationValidRuns ?? "—")} / ${factorEsc(metrics.valid ?? 0)} Run）`;
   const action = summary.primaryAction;
 
   return `<section class="section optimization-summary">
@@ -235,7 +248,7 @@ function optimizationSummarySection(detail, evaluation) {
     </div>
     <div class="two" style="margin-top:14px">
       <div class="panel"><div class="panel-head"><strong>这批数据怎么读</strong></div><div class="panel-body">
-        <p><b>数据基础：</b>${factorEsc(metrics.valid ?? 0)} / ${factorEsc(metrics.assignments ?? 0)} Run 有效；数据质量 ${factorEsc(metrics.dataQualityScore ?? 0)}/100；样本信心 ${factorEsc(metrics.sampleConfidence ?? "未知")}。</p>
+        <p><b>数据基础：</b>${factorEsc(metrics.valid ?? 0)} / ${factorEsc(metrics.assignments ?? 0)} Run 有效；数据质量 ${factorEsc(metrics.dataQualityScore ?? 0)}/100；${factorEsc(citationCoverageSummary)}；样本信心 ${factorEsc(metrics.sampleConfidence ?? "未知")}。</p>
         <p><b>可见结果：</b>RUN 提及率 ${factorPct(metrics.runMentionRate)}；问题覆盖 ${factorPct(metrics.promptCoverage)}。</p>
         <p><b>解释边界：</b>优先把这些指标当成定位损失环节的观测数据，不把单批次相关性直接解释成豆包排序规则。</p>
       </div></div>
@@ -263,6 +276,12 @@ function optimizationMetricsSection(detail, evaluation) {
   const trackedHint = summary.trackedConfigured
     ? `${factorEsc(summary.trackedCited)} / ${factorEsc(summary.trackedTotal)} 篇目标文章`
     : "未配置目标文章";
+  const citationCoverageHint = metrics.citationEvidenceRate == null
+    ? "旧快照未提供该口径"
+    : `${factorEsc(metrics.citationValidRuns ?? "—")} / ${factorEsc(metrics.valid ?? 0)} 个 answer-valid Run`;
+  const densityHint = metrics.citationEvidenceRate == null
+    ? "旧快照：每个有效 Run 的可见引用数；不是质量分"
+    : "每个引用有效 Run 的可见引用数；不是质量分";
   const sourceLabel = metrics?.source?.concentrationLabel ?? "暂无引用数据";
   const topShare = metrics?.source?.topDomainShare;
   const factorAction = gate?.allowOptimizationAdvice === true
@@ -293,7 +312,7 @@ function optimizationMetricsSection(detail, evaluation) {
         <div class="kpi"><label>最弱问题意图</label><strong class="text-value">${weakest ? factorEsc(weakest.category) : "暂无分类"}</strong><small>${weakest ? `提及率 ${factorPct(weakest.mentionRate)}` : "需要配置问题分类"}</small></div>
         <div class="kpi"><label>意图差距</label><strong>${categoryGap == null ? "—" : factorPct(categoryGap)}</strong><small>最佳分类与最弱分类的提及率差</small></div>
         <div class="kpi"><label>来源集中度</label><strong class="text-value">${factorEsc(sourceLabel)}</strong><small>Top1 ${topShare == null ? "—" : factorPct(topShare)}</small></div>
-        <div class="kpi"><label>平均引用密度</label><strong>${Number.isFinite(Number(metrics.citationDensity)) ? Number(metrics.citationDensity).toFixed(2) : "—"}</strong><small>每个有效 Run 的可见引用数；不是质量分</small></div>
+        <div class="kpi"><label>平均引用密度</label><strong>${Number.isFinite(Number(metrics.citationDensity)) ? Number(metrics.citationDensity).toFixed(2) : "—"}</strong><small>${densityHint}</small></div>
       </div>
     </div>
 
@@ -301,6 +320,7 @@ function optimizationMetricsSection(detail, evaluation) {
       <div class="metric-group-head"><b>Evidence · 可行动性</b><span>缺失数据不按 0 分处理</span></div>
       <div class="grid">
         <div class="kpi"><label>有效样本率</label><strong>${factorPct(metrics.validRate)}</strong><small>${factorEsc(metrics.valid ?? 0)} / ${factorEsc(metrics.assignments ?? 0)} Run</small></div>
+        <div class="kpi"><label>引用证据覆盖</label><strong>${factorPct(metrics.citationEvidenceRate)}</strong><small>${citationCoverageHint}</small></div>
         <div class="kpi"><label>引用解析完整度</label><strong>${factorPct(metrics?.citationCompleteness?.rate)}</strong><small>${factorEsc(metrics?.citationCompleteness?.comparableRuns ?? 0)} 个可比较 Run</small></div>
         <div class="kpi"><label>页面证据覆盖</label><strong>${factorPct(factor.pageEvidenceRate)}</strong><small>${factor.available ? `${factorEsc(factor.pageEvidenceSuccessful ?? 0)} / ${factorEsc(factor.pageEvidenceArticles ?? 0)} 篇候选文章` : "暂无页面因子证据"}</small></div>
         <div class="kpi ${factorEsc(summary.actionabilityTone)}"><label>当前可行动性</label><strong class="text-value">${factorEsc(factorAction)}</strong><small>${factorEsc(summary.actionabilityHint)}</small></div>

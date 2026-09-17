@@ -212,15 +212,34 @@ function signalDescription(row) {
 
 function buildRecommendations(metrics) {
   const items = [];
+  const citationCoverageEvidence = metrics.citationEvidenceRate == null
+    ? ""
+    : `；引用证据覆盖 ${(metrics.citationEvidenceRate * 100).toFixed(1)}%`;
 
   if (metrics.dataQualityScore < 80) {
     items.push(
       priority(
         "P0",
         "先提升数据可信度，再放大战略结论",
-        `数据质量评分 ${metrics.dataQualityScore}/100；有效样本率 ${(metrics.validRate * 100).toFixed(1)}%。`,
+        `数据质量评分 ${metrics.dataQualityScore}/100；有效样本率 ${(metrics.validRate * 100).toFixed(1)}%${citationCoverageEvidence}。`,
         "优先处理失败 Run、未确认新会话和引用解析不完整；对无效样本补跑，不把失败样本混入业务结论。",
-        "目标：数据质量评分 ≥ 85，有效样本率 ≥ 90%",
+        "目标：数据质量评分 ≥ 85，有效样本率 ≥ 90%，引用证据覆盖 ≥ 90%",
+      ),
+    );
+  }
+
+  if (
+    metrics.citationEvidenceRate != null &&
+    metrics.citationEvidenceRate < 0.8 &&
+    metrics.dataQualityScore >= 80
+  ) {
+    items.push(
+      priority(
+        "P0",
+        "先补齐引用证据覆盖，再解释引用变化",
+        `只有 ${(metrics.citationEvidenceRate * 100).toFixed(1)}% 的 answer-valid Run 具备完整引用证据（${metrics.citationValidRuns}/${metrics.valid}）。`,
+        "优先补跑 citation parse/reconciliation 失败的 Run；在覆盖恢复前，不把引用数、来源分布或引用密度变化解释成豆包行为变化。",
+        "目标：引用证据覆盖 ≥ 90%，再比较引用密度和来源结构",
       ),
     );
   }
@@ -310,12 +329,12 @@ function buildRecommendations(metrics) {
     );
   }
 
-  if (metrics.citationDensity < 1) {
+  if (metrics.citationDensity != null && metrics.citationDensity < 1) {
     items.push(
       priority(
         "P2",
         "提高可引用信息密度与可验证性",
-        `平均每个有效 Run 仅 ${metrics.citationDensity.toFixed(2)} 条可见引用。`,
+        `平均每个引用有效 Run 仅 ${metrics.citationDensity.toFixed(2)} 条可见引用。`,
         "针对会触发联网检索的问题，提供带时间、数据来源、定义边界和明确实体名的内容块；优先观察引用数量与来源多样性是否同步改善。",
         "目标：引用密度提高，同时不牺牲来源多样性",
       ),
@@ -357,13 +376,41 @@ export function evaluateBatchDetail(detail) {
   const trackedRate = trackedConfigured
     ? optionalRate(tracked.citationRate, tracked.cited, tracked.total)
     : null;
-  const citationDensity = valid > 0 ? toNumber(citations.total) / valid : 0;
+
+  const citationValidRunsRaw = citations.validRuns == null || citations.validRuns === ""
+    ? null
+    : Number(citations.validRuns);
+  const citationValidRuns = Number.isFinite(citationValidRunsRaw)
+    ? Math.max(0, citationValidRunsRaw)
+    : null;
+  const explicitCitationCoverage = citations.coverage == null || citations.coverage === ""
+    ? null
+    : Number(citations.coverage);
+  const citationEvidenceRate = Number.isFinite(explicitCitationCoverage)
+    ? clamp(explicitCitationCoverage)
+    : citationValidRuns != null && valid > 0
+      ? clamp(citationValidRuns / valid)
+      : null;
+  const citationDensityDenominator = citationValidRuns ?? valid;
+  const citationDensity = citationDensityDenominator > 0
+    ? toNumber(citations.total) / citationDensityDenominator
+    : null;
 
   const completeness = citationCompleteness(detail);
   const completenessForScore = completeness.rate == null ? 1 : completeness.rate;
-  const dataQualityScore = score100(
-    0.6 * validRate + 0.25 * completenessForScore + 0.15 * clamp(1 - failureRate),
-  );
+  // Historical exports did not carry citation evidence coverage. Preserve their previous
+  // score exactly rather than interpreting a missing field as 0%. New reports add coverage
+  // as an independent quality dimension so collection gaps cannot masquerade as business loss.
+  const dataQualityScore = citationEvidenceRate == null
+    ? score100(
+      0.6 * validRate + 0.25 * completenessForScore + 0.15 * clamp(1 - failureRate),
+    )
+    : score100(
+      0.45 * validRate +
+      0.2 * completenessForScore +
+      0.15 * clamp(1 - failureRate) +
+      0.2 * citationEvidenceRate,
+    );
 
   const visibilityParts = [];
   if (promptCoverage != null) visibilityParts.push({ value: promptCoverage, weight: 0.55 });
@@ -407,6 +454,8 @@ export function evaluateBatchDetail(detail) {
     promptCoverage,
     trackedConfigured,
     trackedRate,
+    citationValidRuns,
+    citationEvidenceRate,
     citationDensity,
     citationCompleteness: completeness,
     dataQualityScore,
@@ -431,6 +480,11 @@ export function evaluateBatchDetail(detail) {
       : "当前样本量可用于稳定性观察，但跨时间、跨账号重复仍然重要。",
     "页面/产品行为可能变化，报告应同时保留批次种子、时间、账号和失败样本口径。",
   ];
+  if (citationEvidenceRate != null && citationEvidenceRate < 1) {
+    caveats.push(
+      `当前引用证据覆盖 ${(citationEvidenceRate * 100).toFixed(1)}%（${citationValidRuns}/${valid}）；引用密度和来源分布只代表引用有效 Run，不代表全部 answer-valid Run。`,
+    );
+  }
   if (factorEvidence.available) {
     caveats.push(
       "候选页面因子使用 OneGl 后续公开 HTTP 快照；FDR q-value 只降低多重比较中的偶然发现风险，不能替代跨批次复现、多变量控制和样本外验证。",
