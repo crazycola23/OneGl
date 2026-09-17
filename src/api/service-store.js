@@ -151,23 +151,39 @@ export async function revokeApiClient(pool, clientId) {
 }
 
 export async function bindProject(pool, { tenantId, projectId, displayName, externalId = null }) {
+  const owner = await pool.query(
+    "SELECT tenant_id FROM service_project_bindings WHERE project_id = $1",
+    [projectId],
+  );
+  if (owner.rows[0] && Number(owner.rows[0].tenant_id) !== Number(tenantId)) {
+    throw new ApiHttpError(409, "project_already_owned", "project is already bound to another tenant");
+  }
+
   const { rows } = await pool.query(
     `INSERT INTO service_project_bindings (project_id, tenant_id, display_name, external_id)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (project_id) DO UPDATE
-       SET tenant_id = EXCLUDED.tenant_id,
-           display_name = EXCLUDED.display_name,
+       SET display_name = EXCLUDED.display_name,
            external_id = EXCLUDED.external_id,
            updated_at = now()
+     WHERE service_project_bindings.tenant_id = EXCLUDED.tenant_id
      RETURNING project_id, tenant_id, display_name, external_id`,
     [projectId, tenantId, displayName, externalId],
   );
+  if (!rows[0]) {
+    throw new ApiHttpError(409, "project_already_owned", "project is already bound to another tenant");
+  }
   return rows[0];
 }
 
 export function internalProjectName(tenant, displayName) {
   const trimmed = String(displayName).trim();
-  return tenant.slug === "default" ? trimmed : `${tenant.slug}::${trimmed}`;
+  const digest = crypto.createHash("sha256").update(trimmed).digest("hex").slice(0, 16);
+  // Service-facing projects use opaque internal names. The customer-visible name lives
+  // in service_project_bindings; making the projects.name value unguessable prevents a
+  // tenant from deliberately colliding with another tenant's legacy/internal name.
+  const nonce = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+  return `svc:t${tenant.id}:${digest}:${nonce}`;
 }
 
 export async function listTenantProjects(pool, tenantId) {
