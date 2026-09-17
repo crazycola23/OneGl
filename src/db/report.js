@@ -10,14 +10,14 @@ import { loadBatch } from "../sampling/batch.js";
  * merged into a single score.
  */
 
-// A run is a valid observation when the answer was captured from a confirmed fresh
-// conversation. `partial` runs qualify: their answer is complete and real, only the
-// citation-count reconciliation failed, which is a citation-quality signal rather than
-// an answer-invalidating one. Failed runs never qualify, and neither does a run whose
-// conversation reset could not be confirmed, because its answer may have been shaped
-// by leftover history.
-const VALID_RUN =
+// Answer-valid and citation-valid are intentionally different. A partial run can still
+// contain a trustworthy answer, but its citation parse/reconciliation failed and must not
+// contribute to citation distributions, tracked-source rates, or source leaderboards.
+const ANSWER_VALID_RUN =
   "r.status IN ('success', 'partial') AND r.conversation_reset_confirmed IS TRUE";
+const CITATION_VALID_RUN =
+  "r.status = 'success' AND r.conversation_reset_confirmed IS TRUE AND r.citation_state IN ('found', 'none_visible')";
+const VISIBLE_CITATION = "c.source_type = 'visible' AND c.visible_to_user IS TRUE";
 
 function pct(numerator, denominator) {
   if (!denominator) return "n/a";
@@ -55,14 +55,15 @@ export async function buildBatchReport(pool, batchId) {
     await pool.query(
       `SELECT
          count(*)                                        AS assignments_run,
-         count(*) FILTER (WHERE ${VALID_RUN})            AS valid_runs,
+         count(*) FILTER (WHERE ${ANSWER_VALID_RUN})     AS valid_runs,
+         count(*) FILTER (WHERE ${CITATION_VALID_RUN})   AS citation_valid_runs,
          count(*) FILTER (WHERE r.status = 'partial')    AS partial_runs,
          count(*) FILTER (WHERE r.status = 'failed')     AS failed_runs,
          count(*) FILTER (
            WHERE r.status IN ('success', 'partial')
              AND r.conversation_reset_confirmed IS NOT TRUE
          )                                              AS unconfirmed_reset,
-         count(*) FILTER (WHERE ${VALID_RUN} AND r.brand_mentioned) AS runs_mentioned
+         count(*) FILTER (WHERE ${ANSWER_VALID_RUN} AND r.brand_mentioned) AS runs_mentioned
        FROM runs r
       WHERE r.sampling_batch_id = $1`,
       [batchId],
@@ -74,7 +75,7 @@ export async function buildBatchReport(pool, batchId) {
       `SELECT count(DISTINCT r.prompt_id) AS prompts_total,
               count(DISTINCT r.prompt_id) FILTER (WHERE r.brand_mentioned) AS prompts_mentioned
          FROM runs r
-        WHERE r.sampling_batch_id = $1 AND ${VALID_RUN}`,
+        WHERE r.sampling_batch_id = $1 AND ${ANSWER_VALID_RUN}`,
       [batchId],
     )
   ).rows;
@@ -87,7 +88,9 @@ export async function buildBatchReport(pool, batchId) {
          FROM citations c
          JOIN articles a ON a.id = c.article_id
          JOIN runs r ON r.id = c.run_id
-        WHERE r.sampling_batch_id = $1`,
+        WHERE r.sampling_batch_id = $1
+          AND ${CITATION_VALID_RUN}
+          AND ${VISIBLE_CITATION}`,
       [batchId],
     )
   ).rows;
@@ -98,7 +101,10 @@ export async function buildBatchReport(pool, batchId) {
          SELECT c.tracked_article_id
            FROM citations c
            JOIN runs r ON r.id = c.run_id
-          WHERE r.sampling_batch_id = $1 AND c.tracked_article_id IS NOT NULL
+          WHERE r.sampling_batch_id = $1
+            AND ${CITATION_VALID_RUN}
+            AND ${VISIBLE_CITATION}
+            AND c.tracked_article_id IS NOT NULL
        )
        SELECT (SELECT count(*) FROM tracked_articles WHERE project_id = $2 AND enabled) AS tracked_total,
               (SELECT count(DISTINCT tracked_article_id) FROM batch_citations) AS tracked_cited`,
@@ -113,6 +119,8 @@ export async function buildBatchReport(pool, batchId) {
            FROM citations c
            JOIN runs r ON r.id = c.run_id
           WHERE r.sampling_batch_id = $1
+            AND ${CITATION_VALID_RUN}
+            AND ${VISIBLE_CITATION}
        )
        SELECT t.canonical_url, t.title, t.normalized_domain AS domain,
               count(bc.id)                  AS citations,
@@ -138,6 +146,8 @@ export async function buildBatchReport(pool, batchId) {
          JOIN articles a ON a.id = c.article_id
          JOIN runs r ON r.id = c.run_id
         WHERE r.sampling_batch_id = $1
+          AND ${CITATION_VALID_RUN}
+          AND ${VISIBLE_CITATION}
         GROUP BY a.id
         ORDER BY citations DESC, a.canonical_url
         LIMIT 10`,
@@ -155,6 +165,8 @@ export async function buildBatchReport(pool, batchId) {
          JOIN articles a ON a.id = c.article_id
          JOIN runs r ON r.id = c.run_id
         WHERE r.sampling_batch_id = $1
+          AND ${CITATION_VALID_RUN}
+          AND ${VISIBLE_CITATION}
         GROUP BY 1
         ORDER BY citations DESC, domain
         LIMIT 10`,
@@ -178,7 +190,7 @@ export async function buildBatchReport(pool, batchId) {
          JOIN assignment a
            ON a.prompt_id = r.prompt_id
           AND a.account_key IS NOT DISTINCT FROM r.account_key
-        WHERE r.sampling_batch_id = $1 AND ${VALID_RUN}
+        WHERE r.sampling_batch_id = $1 AND ${ANSWER_VALID_RUN}
         GROUP BY 1
         ORDER BY valid_runs DESC, category`,
       [batchId],
@@ -191,9 +203,9 @@ export async function buildBatchReport(pool, batchId) {
               count(*) AS valid_runs,
               count(*) FILTER (WHERE r.brand_mentioned) AS mentioned,
               count(DISTINCT r.prompt_id) AS prompts,
-              sum(r.captured_citation_count) AS citations
+              COALESCE(sum(r.captured_citation_count) FILTER (WHERE ${CITATION_VALID_RUN}), 0) AS citations
          FROM runs r
-        WHERE r.sampling_batch_id = $1 AND ${VALID_RUN}
+        WHERE r.sampling_batch_id = $1 AND ${ANSWER_VALID_RUN}
         GROUP BY 1
         ORDER BY valid_runs DESC, account`,
       [batchId],
@@ -213,6 +225,7 @@ export async function buildBatchReport(pool, batchId) {
 
   const citationFactors = await optionalCitationFactors(pool, batchId);
   const validRuns = num(runs.valid_runs);
+  const citationValidRuns = num(runs.citation_valid_runs);
 
   return {
     batch,
@@ -233,6 +246,8 @@ export async function buildBatchReport(pool, batchId) {
         : null,
     },
     citations: {
+      validRuns: citationValidRuns,
+      coverage: validRuns ? citationValidRuns / validRuns : null,
       total: num(citations.citations),
       articles: num(citations.articles),
       domains: num(citations.domains),
@@ -295,6 +310,7 @@ export function printBatchReport(report, { log = console.log } = {}) {
 
   log("");
   log("引用统计");
+  log(`  引用有效运行            : ${citations.validRuns}/${runs.valid} (${pct(citations.validRuns, runs.valid)})`);
   log(
     `  可见引用 / 唯一文章 / 唯一域名 : ${citations.total} / ${citations.articles} / ${citations.domains}`,
   );
