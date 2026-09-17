@@ -8,11 +8,12 @@ function validObservedRun(run) {
   return ["success", "partial"].includes(run?.status) && run?.conversation_reset_confirmed === true;
 }
 
-function citationValidObservedRun(run) {
+function citationValidObservedRun(run, { allowLegacyFallback = false } = {}) {
   if (run?.status !== "success" || run?.conversation_reset_confirmed !== true) return false;
   const state = run?.citation_state ?? run?.citationState;
   if (state == null || state === "") {
-    return numberOrNull(run?.captured_citation_count ?? run?.capturedCitationCount) != null;
+    return allowLegacyFallback &&
+      numberOrNull(run?.captured_citation_count ?? run?.capturedCitationCount) != null;
   }
   return ["found", "none_visible"].includes(state);
 }
@@ -70,6 +71,8 @@ function promptState(row) {
 export function buildPromptOpportunities(detail, { maxRows = 30 } = {}) {
   const runs = Array.isArray(detail?.runs) ? detail.runs : [];
   const assignmentCount = Number(detail?.report?.runs?.assignmentsRun ?? runs.length ?? 0);
+  const citations = detail?.report?.citations ?? {};
+  const modernCitationContract = citations.validRuns != null || citations.coverage != null;
   const groups = new Map();
 
   for (const run of runs) {
@@ -95,7 +98,7 @@ export function buildPromptOpportunities(detail, { maxRows = 30 } = {}) {
       row.validRuns += 1;
       if (run?.brand_mentioned === true) row.mentionedRuns += 1;
     }
-    if (citationValidObservedRun(run)) {
+    if (citationValidObservedRun(run, { allowLegacyFallback: !modernCitationContract })) {
       row.citationValidRuns += 1;
       const captured = numberOrNull(run?.captured_citation_count ?? run?.capturedCitationCount);
       if (captured != null && captured >= 0) {
