@@ -1,4 +1,5 @@
-const VALID_RUN_SQL = "r.status IN ('success', 'partial') AND r.conversation_reset_confirmed IS TRUE";
+const ANSWER_VALID_RUN_SQL = "r.status IN ('success', 'partial') AND r.conversation_reset_confirmed IS TRUE";
+const CITATION_VALID_RUN_SQL = "r.status = 'success' AND r.conversation_reset_confirmed IS TRUE AND r.citation_state IN ('found', 'none_visible')";
 
 function num(value) {
   return Number(value ?? 0);
@@ -233,6 +234,8 @@ export async function buildBrandSourceIntelligence(pool, batchId) {
     pool.query(
       `SELECT r.id,
               r.local_run_id,
+              r.status,
+              r.citation_state,
               pr.prompt,
               COALESCE(sbp.category, pr.category, 'uncategorized') AS category,
               r.brand_mentioned,
@@ -288,11 +291,15 @@ export async function buildBrandSourceIntelligence(pool, batchId) {
             ORDER BY sbp.selection_index
             LIMIT 1
          ) sbp ON true
-         LEFT JOIN citations c ON c.run_id = r.id AND c.visible_to_user IS NOT FALSE
+         LEFT JOIN citations c
+           ON c.run_id = r.id
+          AND c.source_type = 'visible'
+          AND c.visible_to_user IS TRUE
+          AND ${CITATION_VALID_RUN_SQL}
          LEFT JOIN articles a ON a.id = c.article_id
          LEFT JOIN article_page_observations apo
            ON apo.batch_id = r.sampling_batch_id AND apo.article_id = a.id
-        WHERE r.sampling_batch_id = $1 AND ${VALID_RUN_SQL}
+        WHERE r.sampling_batch_id = $1 AND ${ANSWER_VALID_RUN_SQL}
         GROUP BY r.id, pr.prompt, pr.category, sbp.category
         ORDER BY r.id`,
       [batchId],
@@ -303,6 +310,9 @@ export async function buildBrandSourceIntelligence(pool, batchId) {
   const runs = rows.map((row) => ({
     id: Number(row.id),
     localRunId: row.local_run_id,
+    status: row.status,
+    citationState: row.citation_state,
+    citationComplete: row.status === "success" && ["found", "none_visible"].includes(row.citation_state),
     prompt: row.prompt,
     category: row.category,
     aiBrandMentioned: row.brand_mentioned === true,
@@ -313,6 +323,7 @@ export async function buildBrandSourceIntelligence(pool, batchId) {
   const sources = buildSourceRows(runs);
   const brandEvidenceSources = sources.filter((row) => pageHasCurrentBrandEvidence(row.page));
   const analyzed = sources.filter((row) => pageHasAnalysis(row.page)).length;
+  const citationValidRuns = runs.filter((run) => run.citationComplete).length;
   const job = jobResult.rows[0] ?? null;
 
   return {
@@ -325,6 +336,9 @@ export async function buildBrandSourceIntelligence(pool, batchId) {
     brandEvidenceSources,
     structure: structureSummary(sources),
     coverage: {
+      answerValidRuns: runs.length,
+      citationValidRuns,
+      citationEvidenceRate: rate(citationValidRuns, runs.length),
       citedSources: sources.length,
       analyzedSources: analyzed,
       analysisRate: rate(analyzed, sources.length),
