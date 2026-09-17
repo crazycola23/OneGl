@@ -66,7 +66,6 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
       runRows.push(inserted.rows[0].id);
     }
 
-    // A valid run after the requested project-window end must not leak into that window.
     await pool.query(
       `INSERT INTO runs
          (prompt_id, provider, provider_access, model, status, started_at, finished_at, answer,
@@ -150,7 +149,7 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     assert.equal(await deleteProjectCompetitor(pool, projectId, competitor.id), true);
     assert.deepEqual(await listProjectCompetitors(pool, projectId), []);
   } finally {
-    if (projectId) await pool.query("DELETE FROM projects WHERE id = $1").catch(() => undefined);
+    if (projectId) await pool.query("DELETE FROM projects WHERE id = $1", [projectId]).catch(() => undefined);
     await pool.query("DELETE FROM articles WHERE canonical_url = ANY($1::text[])", [articleUrls]).catch(() => undefined);
     await pool.end();
   }
