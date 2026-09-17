@@ -24,7 +24,9 @@ function fakePool(runRows) {
           ],
         };
       }
-      assert.match(sql, /c\.visible_to_user IS NOT FALSE/);
+      assert.match(sql, /c\.source_type = 'visible'/);
+      assert.match(sql, /c\.visible_to_user IS TRUE/);
+      assert.match(sql, /r\.citation_state IN \('found', 'none_visible'\)/);
       return { rows: runRows };
     },
   };
@@ -40,6 +42,8 @@ test("同一 Prompt 多次 Run 时，示例回答优先选择真正含品牌的�
     {
       id: "1",
       local_run_id: "r1",
+      status: "success",
+      citation_state: "found",
       prompt: "本地调理机构怎么选",
       category: "推荐",
       brand_mentioned: false,
@@ -50,6 +54,8 @@ test("同一 Prompt 多次 Run 时，示例回答优先选择真正含品牌的�
     {
       id: "2",
       local_run_id: "r2",
+      status: "success",
+      citation_state: "found",
       prompt: "本地调理机构怎么选",
       category: "推荐",
       brand_mentioned: true,
@@ -66,6 +72,9 @@ test("同一 Prompt 多次 Run 时，示例回答优先选择真正含品牌的�
   assert.equal(result.queries[0].exampleAnswerContainsBrand, true);
   assert.equal(result.queries[0].exampleAnswer, "第二次回答明确推荐了测试品牌。");
   assert.equal(result.queries[0].topSources[0].url, "https://a.example/1");
+  assert.equal(result.coverage.answerValidRuns, 2);
+  assert.equal(result.coverage.citationValidRuns, 2);
+  assert.equal(result.coverage.citationEvidenceRate, 1);
   assert.equal(result.job.status, "completed");
 });
 
@@ -74,6 +83,8 @@ test("页面当前抓取失败时，不沿用旧 brand_mentioned 作为品牌证
     {
       id: "3",
       local_run_id: "r3",
+      status: "success",
+      citation_state: "found",
       prompt: "测试品牌怎么样",
       category: "品牌直问",
       brand_mentioned: true,
