@@ -53,7 +53,9 @@ export function applyCustomerDashboardOpenApi(document) {
           additionalProperties: false,
           required: [
             "valid_runs", "brand_mentions", "visibility_rate", "share_of_voice", "total_entity_mentions",
-            "visible_citations", "cited_domains", "citation_stability_score", "citation_landscape",
+            "citation_valid_runs", "citation_evidence_coverage_rate", "visible_citations", "cited_domains",
+            "citation_stability_score", "citation_landscape",
+            "query_fanout_evidence_status", "query_fanout_valid_runs", "query_fanout_evidence_coverage_rate",
             "query_fanout_total", "query_fanout_unique", "source_pages_analyzed",
             "source_analysis_coverage_rate", "source_evidence_quality",
           ],
@@ -63,10 +65,15 @@ export function applyCustomerDashboardOpenApi(document) {
             visibility_rate: ratio,
             share_of_voice: ratio,
             total_entity_mentions: { type: "integer", minimum: 0 },
+            citation_valid_runs: { type: "integer", minimum: 0 },
+            citation_evidence_coverage_rate: ratio,
             visible_citations: { type: "integer", minimum: 0 },
             cited_domains: { type: "integer", minimum: 0 },
             citation_stability_score: { type: ["number", "null"], minimum: 0, maximum: 100 },
             citation_landscape: { type: "string", enum: ["wide-open", "contested", "locked-in", "insufficient-data"] },
+            query_fanout_evidence_status: { type: "string", enum: ["available", "partial", "unavailable"] },
+            query_fanout_valid_runs: { type: "integer", minimum: 0 },
+            query_fanout_evidence_coverage_rate: ratio,
             query_fanout_total: { type: "integer", minimum: 0 },
             query_fanout_unique: { type: "integer", minimum: 0 },
             source_pages_analyzed: { type: "integer", minimum: 0 },
@@ -126,8 +133,10 @@ export function applyCustomerDashboardOpenApi(document) {
         citations: {
           type: "object",
           additionalProperties: false,
-          required: ["total", "unique_domains", "top_domains", "stability"],
+          required: ["valid_runs", "evidence_coverage_rate", "total", "unique_domains", "top_domains", "stability"],
           properties: {
+            valid_runs: { type: "integer", minimum: 0 },
+            evidence_coverage_rate: ratio,
             total: { type: "integer", minimum: 0 },
             unique_domains: { type: "integer", minimum: 0 },
             top_domains: {
@@ -161,8 +170,14 @@ export function applyCustomerDashboardOpenApi(document) {
         search_queries: {
           type: "object",
           additionalProperties: false,
-          required: ["total_queries", "unique_queries", "brand_mention_rate", "top_queries", "top_terms"],
+          required: [
+            "evidence_status", "valid_runs", "evidence_coverage_rate",
+            "total_queries", "unique_queries", "brand_mention_rate", "top_queries", "top_terms",
+          ],
           properties: {
+            evidence_status: { type: "string", enum: ["available", "partial", "unavailable"] },
+            valid_runs: { type: "integer", minimum: 0 },
+            evidence_coverage_rate: ratio,
             total_queries: { type: "integer", minimum: 0 },
             unique_queries: { type: "integer", minimum: 0 },
             brand_mention_rate: ratio,

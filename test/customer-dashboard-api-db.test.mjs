@@ -108,19 +108,20 @@ test("customer dashboard exposes front-end GEO metrics without internal IDs and 
 
     const runRows = [];
     for (const [index, row] of [
-      { answer: "品牌A和竞品B都值得考虑", brand: true, day: "2026-09-14T10:00:00Z" },
-      { answer: "竞品B更常被提到", brand: false, day: "2026-09-15T10:00:00Z" },
-      { answer: "品牌A的空间表现不错", brand: true, day: "2026-09-15T12:00:00Z" },
+      { answer: "品牌A和竞品B都值得考虑", brand: true, day: "2026-09-14T10:00:00Z", citations: 2 },
+      { answer: "竞品B更常被提到", brand: false, day: "2026-09-15T10:00:00Z", citations: 2 },
+      { answer: "品牌A的空间表现不错", brand: true, day: "2026-09-15T12:00:00Z", citations: 1 },
     ].entries()) {
       const inserted = await pool.query(
         `INSERT INTO runs
            (prompt_id, provider, provider_access, model, status, started_at, finished_at, answer,
-            captured_citation_count, citation_diagnostics, local_run_id, sampling_batch_id,
-            conversation_reset_confirmed, brand_mentioned, matched_terms, attempt, created_at)
+            citation_state, expected_citation_count, captured_citation_count, citation_diagnostics,
+            network_evidence_state, local_run_id, sampling_batch_id, conversation_reset_confirmed, brand_mentioned,
+            matched_terms, attempt, created_at)
          VALUES ($1, 'doubao', 'scraped', 'doubao', 'success', $2, $2, $3,
-                 0, '[]'::jsonb, $4, $5, true, $6, '[]'::jsonb, 1, $2)
+                 'found', $4, $4, '[]'::jsonb, 'found', $5, $6, true, $7, '[]'::jsonb, 1, $2)
          RETURNING id`,
-        [promptId, row.day, row.answer, `run_dashboard_${suffix}_${index}`, batchId, row.brand],
+        [promptId, row.day, row.answer, row.citations, `run_dashboard_${suffix}_${index}`, batchId, row.brand],
       );
       runRows.push(Number(inserted.rows[0].id));
     }
@@ -176,7 +177,11 @@ test("customer dashboard exposes front-end GEO metrics without internal IDs and 
     assert.equal(specResponse.status, 200);
     const spec = await specResponse.json();
     assert.ok(spec.paths["/v1/tasks/{taskId}/dashboard"]?.get);
-    assert.ok(spec.components.schemas.CustomerDashboardResource);
+    const schema = spec.components.schemas.CustomerDashboardResource;
+    assert.ok(schema);
+    assert.ok(schema.properties.overview.properties.citation_valid_runs);
+    assert.ok(schema.properties.overview.properties.query_fanout_evidence_status);
+    assert.ok(schema.properties.search_queries.properties.evidence_status);
 
     const dashboard = await request(base, `/v1/tasks/${taskId}/dashboard?days=7&question_limit=20`);
     assert.equal(dashboard.response.status, 200);
@@ -187,9 +192,17 @@ test("customer dashboard exposes front-end GEO metrics without internal IDs and 
     assert.equal(data.overview.brand_mentions, 2);
     assert.equal(data.overview.visibility_rate, 2 / 3);
     assert.equal(data.overview.share_of_voice, 0.5);
+    assert.equal(data.overview.citation_valid_runs, 3);
+    assert.equal(data.overview.citation_evidence_coverage_rate, 1);
     assert.equal(data.overview.visible_citations, 5);
     assert.equal(data.overview.cited_domains, 3);
+    assert.equal(data.overview.query_fanout_evidence_status, "available");
+    assert.equal(data.overview.query_fanout_valid_runs, 3);
+    assert.equal(data.overview.query_fanout_evidence_coverage_rate, 1);
     assert.equal(data.overview.query_fanout_total, 3);
+    assert.equal(data.search_queries.evidence_status, "available");
+    assert.equal(data.search_queries.valid_runs, 3);
+    assert.equal(data.search_queries.evidence_coverage_rate, 1);
     assert.equal(data.competitors[0].name, "竞品B");
     assert.equal(data.competitors[0].mentions, 2);
     assert.equal(data.citations.top_domains[0].domain, "dash-a.example");
@@ -201,6 +214,16 @@ test("customer dashboard exposes front-end GEO metrics without internal IDs and 
     for (const forbidden of ["project_id", "batch_id", "prompt_id", "storageState", "storage_state", "account_key"]) {
       assert.equal(serialized.includes(forbidden), false, `dashboard leaked ${forbidden}`);
     }
+
+    await pool.query("UPDATE runs SET network_evidence_state = 'disabled' WHERE id = ANY($1::bigint[])", [runRows]);
+    const unavailable = await request(base, `/v1/tasks/${taskId}/dashboard?days=7&question_limit=20`);
+    assert.equal(unavailable.response.status, 200);
+    assert.equal(unavailable.payload.data.overview.query_fanout_evidence_status, "unavailable");
+    assert.equal(unavailable.payload.data.overview.query_fanout_valid_runs, 0);
+    assert.equal(unavailable.payload.data.overview.query_fanout_evidence_coverage_rate, 0);
+    assert.equal(unavailable.payload.data.overview.query_fanout_total, 0);
+    assert.equal(unavailable.payload.data.search_queries.evidence_status, "unavailable");
+    assert.equal(unavailable.payload.data.search_queries.total_queries, 0);
 
     const invalid = await request(base, `/v1/tasks/${taskId}/dashboard?question_limit=0`);
     assert.equal(invalid.response.status, 400);

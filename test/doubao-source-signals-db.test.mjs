@@ -37,10 +37,10 @@ test("Doubao sourceContent uses only visible valid cited pages in the requested 
     const run = await pool.query(
       `INSERT INTO runs
          (prompt_id, provider, provider_access, model, status, started_at, finished_at, answer,
-          captured_citation_count, citation_diagnostics, local_run_id, sampling_batch_id,
+          captured_citation_count, citation_state, citation_diagnostics, local_run_id, sampling_batch_id,
           conversation_reset_confirmed, brand_mentioned, matched_terms, attempt, created_at)
        VALUES ($1, 'doubao', 'scraped', 'doubao', 'success', $2, $2, '品牌A值得考虑',
-               1, '[]'::jsonb, $3, $4, true, true, '["品牌A"]'::jsonb, 1, $2)
+               1, 'found', '[]'::jsonb, $3, $4, true, true, '["品牌A"]'::jsonb, 1, $2)
        RETURNING id`,
       [promptId, "2026-09-15T10:00:00Z", `run_source_${suffix}`, batchId],
     );

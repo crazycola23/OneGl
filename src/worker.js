@@ -16,7 +16,11 @@ import {
   safetyConfig,
 } from "./accounts/safety.js";
 import { launchBrowserSession } from "./browser.js";
-import { brandRulesFromConfig, runOnePrompt } from "./collect/runner.js";
+import {
+  brandRulesFromConfig,
+  replayPendingPersistence,
+  runOnePrompt,
+} from "./collect/runner.js";
 import { loadConfig } from "./config.js";
 import { createPool } from "./db/pool.js";
 import { openDoubao } from "./doubao.js";
@@ -252,6 +256,67 @@ async function handleJob(job, token) {
     return { skipped: true, reason: "already-succeeded" };
   }
 
+  // 关键词正文优先取批次内快照。必须在账号 gate 之前拿到，因为 DB-only replay
+  // 需要用同一份 prompt identity 验证本地证据，但绝不能因此启动浏览器或消耗配额。
+  const { rows: assignmentRows } = await pool.query(
+    `SELECT COALESCE(sbp.prompt_text, p.prompt) AS prompt, sbp.category
+       FROM sampling_batch_prompts sbp
+       LEFT JOIN prompts p ON p.id = sbp.prompt_id
+      WHERE sbp.batch_id = $1 AND sbp.selection_index = $2`,
+    [batchId, selectionIndex],
+  );
+  const promptText = assignmentRows[0]?.prompt;
+  if (!promptText) throw new UnrecoverableError(`批次 ${batchId} 缺少分配 ${selectionIndex} 的关键词`);
+  const validation = {
+    caseId: runToken,
+    targetScenario: assignmentRows[0]?.category ?? null,
+    tags: assignmentRows[0]?.category ? [assignmentRows[0].category] : [],
+  };
+
+  // Persistence recovery is infrastructure work, not provider work. It runs before
+  // account availability, distributed leases, random delay, daily quota accounting and
+  // browser startup. The dedicated helper can never fall through to provider collection.
+  const replay = await replayPendingPersistence({
+    store,
+    pool,
+    runId,
+    prompt: promptText,
+    project: projectName,
+    validation,
+    context: {
+      accountKey,
+      samplingBatchId: batchId,
+      runToken,
+      jobId: job.id,
+      attempt,
+    },
+  });
+  if (replay) {
+    await refreshBatchProgress(pool, batchId);
+    if (replay.persistError) {
+      log({
+        event: "job-db-replay-error",
+        batch_id: batchId,
+        run_id: runId,
+        account_key: accountKey,
+        error: replay.persistError.message,
+      });
+      throw new Error(`数据库重放失败：${replay.persistError.message}`);
+    }
+    log({
+      event: "job-persistence-replayed",
+      batch_id: batchId,
+      run_id: runId,
+      account_key: accountKey,
+      status: replay.saved.status,
+    });
+    return {
+      status: replay.saved.status,
+      citations: replay.saved.citations?.length ?? 0,
+      persistenceReplay: true,
+    };
+  }
+
   const availability = await accountAvailability(pool, accountKey, safety);
   if (!availability.available) {
     const plan = planUnavailableJob({
@@ -318,17 +383,6 @@ async function handleJob(job, token) {
     const session = await getSession(accountKey);
     const brandRules = await brandRulesFor(projectName);
 
-    // 关键词正文优先取批次内快照
-    const { rows: assignmentRows } = await pool.query(
-      `SELECT COALESCE(sbp.prompt_text, p.prompt) AS prompt, sbp.category
-         FROM sampling_batch_prompts sbp
-         LEFT JOIN prompts p ON p.id = sbp.prompt_id
-        WHERE sbp.batch_id = $1 AND sbp.selection_index = $2`,
-      [batchId, selectionIndex],
-    );
-    const promptText = assignmentRows[0]?.prompt;
-    if (!promptText) throw new UnrecoverableError(`批次 ${batchId} 缺少分配 ${selectionIndex} 的关键词`);
-
     const outcome = await runOnePrompt({
       page: session.page,
       store,
@@ -337,11 +391,7 @@ async function handleJob(job, token) {
       project: projectName,
       pool,
       runId,
-      validation: {
-        caseId: runToken,
-        targetScenario: assignmentRows[0]?.category ?? null,
-        tags: assignmentRows[0]?.category ? [assignmentRows[0].category] : [],
-      },
+      validation,
       context: {
         accountKey,
         samplingBatchId: batchId,
@@ -357,8 +407,9 @@ async function handleJob(job, token) {
     const durationMs = Date.now() - startedAt;
 
     if (outcome.persistError) {
-      // 采集拿到了结果但没写进数据库，属于可重试的情况
-      recordAccountFailureSafe(accountKey, code ?? "DATABASE_ERROR");
+      // Provider collection succeeded but OneGl infrastructure did not. Preserve provider
+      // health as successful, then let BullMQ retry only the immutable persistence replay.
+      if (outcome.ok) await recordAccountSuccess(pool, accountKey).catch(() => undefined);
       await refreshBatchProgress(pool, batchId);
       log({
         event: "job-db-error",
@@ -436,10 +487,6 @@ async function handleJob(job, token) {
     gate.release();
     await executionLease.release();
   }
-}
-
-function recordAccountFailureSafe(accountKey, errorCode) {
-  recordAccountFailure(pool, { accountKey, errorCode, config: safety }).catch(() => undefined);
 }
 
 async function startWorkerFor(accountKey) {

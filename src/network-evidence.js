@@ -14,8 +14,8 @@ const INTERNAL_RESPONSE_HOST = /(doubao\.com|zijieapi|bytedance|byteimg|feiliao)
  *
  * `im/conversation/batch_get` deliberately replays the whole conversation, so mining it
  * yields hundreds of candidates belonging to earlier, unrelated questions - the collector
- * previously treated that as a successful capture. Only the completion stream carries the
- * search blocks for the turn currently being run.
+ * previously treated that as a successful capture. Only the completion response is eligible
+ * for this turn's retrieval evidence.
  */
 const DEFAULT_EVIDENCE_ENDPOINTS = [/\/chat\/completion/i];
 
@@ -262,20 +262,15 @@ function mergeSource(target, source) {
 }
 
 /**
- * Incremental reader for a possibly-still-open response body.
+ * Read a bounded body supplied by an adapter.
  *
- * The previous implementation awaited `response.body()` for the *whole* response and gave
- * up after a timeout. On a streaming endpoint (`/chat/completion` answers over SSE) the
- * body is not complete until generation ends, and is sometimes never closed at all - so
- * every capture timed out and the retrieval layer stayed permanently empty.
- *
- * Reading chunk by chunk fixes that: bytes already received are parsed immediately, and the
- * only cost of an endless stream is that we stop accumulating once the cap is reached.
+ * Playwright `Response.body()` resolves to a complete Buffer; it is not a live readable
+ * stream. The async-iterable branch is retained only for alternate adapters/test doubles.
+ * This helper therefore does not claim incremental browser SSE observation.
  */
-async function readStreamIncrementally(body, { maxBytes, stopSignal, onChunk }) {
+async function readBodyBounded(body, { maxBytes, stopSignal, onChunk }) {
   if (!body) return { bytes: 0, truncated: false, ended: false, error: null };
 
-  // A non-streaming response (or a test double) hands back a Buffer; deliver it whole.
   if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
     const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
     if (buffer.length > maxBytes) return { bytes: buffer.length, truncated: true, ended: false, error: null };
@@ -299,18 +294,42 @@ async function readStreamIncrementally(body, { maxBytes, stopSignal, onChunk }) 
       onChunk(buffer);
     }
     ended = !truncated && !stopSignal?.stopped;
-  } catch (streamError) {
-    // "Premature close" is the normal shape of an aborted/abandoned stream, not a parser bug.
-    error = streamError?.message ?? String(streamError);
+  } catch (bodyError) {
+    error = bodyError?.message ?? String(bodyError);
   }
   return { bytes: total, truncated, ended, error };
+}
+
+function responseBodyWithTimeout(response, timeoutMs) {
+  const deadlineMs = Math.max(1, Number(timeoutMs) || DEFAULT_BODY_TIMEOUT_MS);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(value);
+    };
+    const timer = setTimeout(() => {
+      const error = new Error(`response body did not settle within ${deadlineMs}ms`);
+      error.code = "NETWORK_BODY_TIMEOUT";
+      finish(reject, error);
+    }, deadlineMs);
+
+    Promise.resolve()
+      .then(() => response.body())
+      .then(
+        (body) => finish(resolve, body),
+        (error) => finish(reject, error),
+      );
+  });
 }
 
 export function createNetworkEvidenceCollector(page, options = {}) {
   const enabled = options.enabled !== false;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
-  // Retained for callers/tests: this is how long stop() waits for in-flight stream reads
-  // to wind down before snapshotting. It is no longer a whole-body deadline.
+  // Whole-body deadline for Playwright capture. stop() also uses a bounded grace period so
+  // an in-flight response can never keep finalization open indefinitely.
   const bodyTimeoutMs = options.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
   // Turn scoping. A conversation is not an isolated event: the page loads the whole
   // history, and `/im/conversation/batch_get` replays every previous turn's search blocks
@@ -374,72 +393,55 @@ export function createNetworkEvidenceCollector(page, options = {}) {
 
   const captureResponse = async (response) => {
     if (!eligibleResponse(response)) return;
-    // Everything else on the page (settings, banners, conversation history, monitoring) is
-    // noise. Not reading it keeps the artifact small and, more importantly, keeps other
-    // turns' retrieval out of this turn's data.
     if (!isEvidenceEndpoint(response.url())) return;
 
+    const endpoint = endpointIdentity(response.url()) || "unknown";
     const headers = response.headers();
     const contentLength = Number(headers["content-length"] || 0);
     if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
-      diagnostics.push(`body-too-large:${endpointIdentity(response.url()) || "unknown"}`);
+      diagnostics.push(`body-too-large:${endpoint}`);
       return;
     }
 
     let body;
     try {
-      body = await response.body();
+      body = await responseBodyWithTimeout(response, bodyTimeoutMs);
     } catch (error) {
-      diagnostics.push(`body-unavailable:${endpointIdentity(response.url()) || "unknown"}`);
+      if (error?.code === "NETWORK_BODY_TIMEOUT") diagnostics.push(`body-timeout:${endpoint}`);
+      else diagnostics.push(`body-unavailable:${endpoint}`);
       return;
     }
 
-    // The stream is scanned as it arrives, and the same buffer is scanned once more at the
-    // end: a search block can straddle a chunk boundary, and the final parse is what catches
-    // it once more bytes have landed.
-    // Decode with a stateful decoder.
-    //
-    // Calling chunk.toString("utf8") per chunk corrupts any multi-byte character that
-    // straddles a chunk boundary: the decoder sees an incomplete sequence and emits a
-    // replacement character, and the information is gone. StringDecoder holds the partial
-    // bytes until the rest arrives, which is what makes Chinese titles survive the split.
+    // Decode the bounded body with StringDecoder so alternate iterable adapters can still
+    // preserve a multibyte UTF-8 sequence split across chunks. In normal Playwright use the
+    // input is one complete Buffer.
     const decoder = new StringDecoder("utf8");
     let buffered = "";
     let sawEvidence = false;
     const record = () => {
       if (!buffered) return;
       if (absorb(buffered)) sawEvidence = true;
-      // The buffer is dropped once a search block has been seen, so a long stream is not
-      // re-parsed from the beginning on every chunk.
       if (sawEvidence) buffered = "";
     };
 
-
-    const read = await readStreamIncrementally(body, {
+    const read = await readBodyBounded(body, {
       maxBytes: maxBodyBytes,
       stopSignal,
       onChunk: (chunk) => {
         buffered += decoder.write(chunk);
-        // Bound the working buffer: a stream can be far larger than one response.
         if (buffered.length > 4 * maxBodyBytes) buffered = buffered.slice(-2 * maxBodyBytes);
-        // Parse whenever a plausible block terminator has arrived, plus periodically so a
-        // chunk that never ends with one is still scanned.
         if (blockCount(buffered) || buffered.length > 16_384) record();
       },
     });
     buffered += decoder.end();
     record();
 
-    const endpoint = endpointIdentity(response.url()) || "unknown";
     if (read.truncated) diagnostics.push(`body-truncated:${endpoint}`);
     if (read.error && !/aborted|premature close|target closed/i.test(read.error)) {
-      diagnostics.push(`stream-error:${endpoint}`);
+      diagnostics.push(`body-read-error:${endpoint}`);
     }
     if (read.bytes === 0) diagnostics.push(`body-empty:${endpoint}`);
 
-    // One row per captured response, capped so a long-lived page cannot grow the artifact
-    // without bound. `matched` records whether this response actually carried search
-    // evidence, which is what makes an empty retrieval layer explainable.
     if (responseEvidence.length < 200) {
       responseEvidence.push({
         endpoint,
@@ -455,7 +457,6 @@ export function createNetworkEvidenceCollector(page, options = {}) {
   };
 
   const onResponse = (response) => {
-    // Endpoints that are not internal, stream-shaped, or relevant never reach the reader.
     const task = captureResponse(response)
       .catch((error) => diagnostics.push(`capture-error:${error?.message || String(error)}`))
       .finally(() => pending.delete(task));
@@ -499,16 +500,11 @@ export function createNetworkEvidenceCollector(page, options = {}) {
 function isPlausibleQuery(value) {
   const text = String(value ?? "").trim();
   if (!text) return false;
-  // A bare long hex id has no spaces and no separators.
   if (/^[0-9a-f]{16,}$/i.test(text)) return false;
-  // Log lines arrive as several space-separated clauses and always end in sentence
-  // punctuation; no search query looks like that.
   if (/[。！？]$/.test(text)) return false;
   if (text.split(/\s+/).filter(Boolean).length >= 4) return false;
   const letters = text.match(/[A-Za-z\u4e00-\u9fff]/g) ?? [];
   if (letters.length < 4) return false;
-  // Chinese queries are content words: a two-character fragment is a UI label or a
-  // truncated string, not something anyone searches for.
   const han = text.match(/[\u4e00-\u9fff]/g) ?? [];
   if (han.length === text.length && han.length < 4) return false;
   return true;

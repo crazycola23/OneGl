@@ -21,8 +21,9 @@ async function distinctCitedDomainCount(pool, projectId, from, to) {
       WHERE p.project_id = $1
         AND r.created_at >= $2
         AND r.created_at <= $3
-        AND r.status IN ('success', 'partial')
+        AND r.status = 'success'
         AND r.conversation_reset_confirmed IS TRUE
+        AND r.citation_state IN ('found', 'none_visible')
         AND c.source_type = 'visible'
         AND c.visible_to_user IS TRUE`,
     [projectId, from, to],
@@ -92,6 +93,9 @@ function sourceContentView(source = {}) {
 
 function queryFanoutView(fanout = {}) {
   return {
+    evidence_status: fanout.evidenceStatus ?? "unavailable",
+    valid_runs: Number(fanout.validRuns ?? 0),
+    evidence_coverage_rate: finite(fanout.coverage),
     total_queries: Number(fanout.totalQueries ?? 0),
     unique_queries: Number(fanout.uniqueQueries ?? 0),
     brand_mention_rate: finite(fanout.coverageRate),
@@ -112,6 +116,8 @@ function queryFanoutView(fanout = {}) {
 function citationView(citations = {}) {
   const stability = citations.stability ?? {};
   return {
+    valid_runs: Number(citations.validRuns ?? 0),
+    evidence_coverage_rate: finite(citations.coverage),
     total: Number(citations.total ?? 0),
     unique_domains: Number(citations.uniqueDomains ?? citations.topDomains?.length ?? 0),
     top_domains: (citations.topDomains ?? []).map((row) => ({
@@ -221,10 +227,15 @@ export async function buildCustomerDashboard(pool, tenantId, taskId, { days = 30
       visibility_rate: finite(intelligence.visibility?.rate),
       share_of_voice: finite(intelligence.shareOfVoice?.brandShare),
       total_entity_mentions: Number(intelligence.shareOfVoice?.totalMentions ?? 0),
+      citation_valid_runs: citations.valid_runs,
+      citation_evidence_coverage_rate: citations.evidence_coverage_rate,
       visible_citations: citations.total,
       cited_domains: citations.unique_domains,
       citation_stability_score: citations.stability.score,
       citation_landscape: citations.stability.difficulty,
+      query_fanout_evidence_status: searchQueries.evidence_status,
+      query_fanout_valid_runs: searchQueries.valid_runs,
+      query_fanout_evidence_coverage_rate: searchQueries.evidence_coverage_rate,
       query_fanout_total: searchQueries.total_queries,
       query_fanout_unique: searchQueries.unique_queries,
       source_pages_analyzed: source.analyzed_pages,
@@ -257,7 +268,7 @@ export async function buildCustomerDashboard(pool, tenantId, taskId, { days = 30
       questions_truncated: Number(intelligence.promptGaps?.length ?? 0) > questions.length,
       question_limit: questionLimit,
       rule_mode: intelligence.ruleMode ?? null,
-      note: "Dashboard metrics are observational measurements from stored Doubao runs. Cited-page traits are correlations, not claims about Doubao ranking or citation causation.",
+      note: "Visibility uses answer-valid runs; citation metrics use only citation-complete runs; query fan-out reports evidence coverage separately so unavailable capture is never presented as zero searches. Cited-page traits are observational correlations, not claims about Doubao ranking or citation causation.",
     },
   };
 }

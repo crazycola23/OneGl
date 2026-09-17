@@ -1,17 +1,19 @@
+import { createHash } from "node:crypto";
+
 import { canonicalizeUrl } from "../url.js";
+import {
+  parseOutboundUrl,
+  resolvePublicTarget,
+  safeOutboundBufferRequest,
+} from "../security/outbound-url.js";
 import {
   DEFAULT_BREAKER,
   assessContentQuality,
-  captureValidators,
   conditionalHeaders,
   isBreakerOpen,
   registerDomainOutcome,
   robotsDecision,
-  userAgentToken,
 } from "./page-fetch-guard.js";
-import { createHash } from "node:crypto";
-import { lookup } from "node:dns/promises";
-import net from "node:net";
 
 const DEFAULT_USER_AGENT = "OneGlPageEvidence/0.3 (+https://github.com/crazycola23/OneGl)";
 const META_DATE_PUBLISHED = new Set([
@@ -20,6 +22,7 @@ const META_DATE_PUBLISHED = new Set([
 const META_DATE_MODIFIED = new Set([
   "article:modified_time", "datemodified", "last-modified", "last_modified", "modified", "og:updated_time",
 ]);
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 function decodeEntities(value) {
   return String(value ?? "")
@@ -153,7 +156,6 @@ export function detectHtmlCharset(bytes, contentType = "") {
 
   const input = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes ?? []);
   const prefix = input.slice(0, Math.min(input.length, 8192));
-  // HTML charset declarations are ASCII-compatible even when the document body is GBK/Big5.
   const sniff = new TextDecoder("windows-1252", { fatal: false }).decode(prefix);
   const direct = sniff.match(/<meta\b[^>]*charset\s*=\s*["']?([^\s"'/>;]+)/i);
   if (direct?.[1]) return normalizeCharset(direct[1]) ?? "utf-8";
@@ -172,71 +174,26 @@ export function decodeHtmlBytes(bytes, contentType = "") {
   }
 }
 
-/**
- * Fake-IP ranges used by transparent proxies (Clash/Surge-style).
- *
- * On such a network every hostname resolves into 198.18.0.0/15 and the proxy performs the
- * real resolution at connect time, so a public site looks like a reserved address. Blocking
- * it is a false positive: the request never goes to 198.18.0.x.
- *
- * This is off by default and enabled explicitly via ONEGL_TRUST_PROXY_FAKE_IP, because
- * allowing it does remove a layer of SSRF defence: on an ordinary network a 198.18 address
- * would be reachable. Genuine private/loopback/ULA ranges stay blocked either way.
- */
-const FAKE_IP_RANGES = [
-  [198, 18, 15],
-];
-
-function inFakeIpRange(address) {
-  if (!net.isIPv4(address)) return false;
-  const [a, b, c] = address.split(".").map(Number);
-  return FAKE_IP_RANGES.some(([ra, rb, rc]) => a === ra && b === rb && c >= 0 && c <= rc);
-}
-
-function trustProxyFakeIp() {
-  return /^(1|true|yes|on)$/i.test(String(process.env.ONEGL_TRUST_PROXY_FAKE_IP ?? "").trim());
-}
-
-function isPrivateIp(address) {
-  if (!net.isIP(address)) return true;
-  if (net.isIPv4(address)) {
-    const [a, b] = address.split(".").map(Number);
-    return (
-      a === 0 || a === 10 || a === 127 || a >= 224 ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && (b === 0 || b === 168)) ||
-      (a === 198 && (b === 18 || b === 19 || b === 51)) ||
-      (a === 203 && b === 0)
-    );
-  }
-  const lower = address.toLowerCase();
-  if (lower === "::" || lower === "::1") return true;
-  if (lower.startsWith("fc") || lower.startsWith("fd") || lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb") || lower.startsWith("ff")) return true;
-  if (lower.startsWith("2001:db8:")) return true;
-  if (lower.startsWith("::ffff:")) {
-    const mapped = lower.slice("::ffff:".length);
-    return net.isIPv4(mapped) ? isPrivateIp(mapped) : true;
-  }
-  return false;
+function pageUrlError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const unsupported = /invalid|must use HTTP|must use HTTPS|credentials/i.test(message);
+  return Object.assign(new Error(message), {
+    code: unsupported ? "PAGE_URL_UNSUPPORTED" : "PAGE_URL_PRIVATE",
+  });
 }
 
 export async function assertPublicHttpUrl(value) {
-  const url = validHttpUrl(value);
-  if (!url) throw Object.assign(new Error("only public http(s) URLs are supported"), { code: "PAGE_URL_UNSUPPORTED" });
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (host === "localhost" || host.endsWith(".localhost")) {
-    throw Object.assign(new Error("localhost is not allowed"), { code: "PAGE_URL_PRIVATE" });
+  try {
+    const url = parseOutboundUrl(value, { allowHttp: true });
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (host === "localhost" || host.endsWith(".localhost")) {
+      throw new Error("localhost is not allowed");
+    }
+    await resolvePublicTarget(url);
+    return url;
+  } catch (error) {
+    throw pageUrlError(error);
   }
-  const records = net.isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: true });
-  const usable = records.filter(
-    (record) => !isPrivateIp(record.address) || (trustProxyFakeIp() && inFakeIpRange(record.address)),
-  );
-  if (!records.length || !usable.length) {
-    throw Object.assign(new Error("private/reserved destination is not allowed"), { code: "PAGE_URL_PRIVATE" });
-  }
-  return url;
 }
 
 export function extractPageFeatures(html, { url = null, contentType = "text/html" } = {}) {
@@ -260,9 +217,6 @@ export function extractPageFeatures(html, { url = null, contentType = "text/html
   const metaDescription = firstMeta(meta, ["description", "og:description", "twitter:description"]);
   const canonicalMatch = source.match(/<link\b[^>]*rel\s*=\s*(?:"canonical"|'canonical'|canonical)[^>]*>/i);
   const canonicalRaw = canonicalMatch ? parseAttributes(canonicalMatch[0]).href ?? null : null;
-  // Resolved against the fetched (final) URL and normalised with the same helper the
-  // citation matcher uses. A raw attribute is useless as a matching key: it is often
-  // relative, and it never had the tracking parameters removed.
   let canonicalHref = canonicalRaw;
   if (canonicalRaw) {
     try {
@@ -325,56 +279,76 @@ export function extractPageFeatures(html, { url = null, contentType = "text/html
   };
 }
 
-async function readLimitedBody(response, maxBytes) {
-  const reader = response.body?.getReader();
-  if (!reader) return { data: new Uint8Array(), bytes: 0, tooLarge: false };
-  const chunks = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      return { data: new Uint8Array(), bytes: total, tooLarge: true };
-    }
-    chunks.push(value);
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return { data: merged, bytes: total, tooLarge: false };
+function headerValue(headers, name) {
+  if (!headers) return null;
+  const lower = String(name).toLowerCase();
+  const value = headers[lower] ?? headers[name];
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value == null ? null : String(value);
 }
 
-/**
- * robots.txt lookup, kept deliberately small.
- *
- * Status meanings:
- *   found       - usable rules were returned
- *   missing     - the origin answered 4xx: treat the site as having no rules
- *   unavailable - network failure, 5xx or an unreadable body: the caller decides, and the
- *                 crawler's choice is to skip the domain rather than assume consent
- */
-async function fetchRobots(baseUrl, { timeoutMs = 10000, userAgent = DEFAULT_USER_AGENT } = {}) {
-  const robotsUrl = new URL("/robots.txt", baseUrl);
+function validatorsFromHeaders(headers) {
+  return {
+    etag: headerValue(headers, "etag"),
+    lastModified: headerValue(headers, "last-modified"),
+  };
+}
+
+async function requestPage(url, options) {
   try {
-    const response = await fetch(robotsUrl, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(Math.min(timeoutMs, 5000)),
-      headers: { "user-agent": userAgent, accept: "text/plain,*/*;q=0.1" },
+    return await safeOutboundBufferRequest(url.href ?? url, {
+      method: options.method ?? "GET",
+      headers: { ...options.headers, "accept-encoding": "identity" },
+      body: options.body ?? null,
+      timeoutMs: options.timeoutMs,
+      maxResponseBytes: options.maxResponseBytes,
+      allowHttp: true,
     });
-    if (response.status >= 400 && response.status < 500) return { status: "missing" };
-    if (!response.ok) return { status: "unavailable", httpStatus: response.status };
-    const text = await response.text();
-    if (!text || text.length > 512 * 1024) return { status: "missing" };
-    return { status: "found", text };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/non-public|reserved|localhost|resolve/i.test(message)) {
+      error.code = "PAGE_URL_PRIVATE";
+    }
+    if (/timed out/i.test(message)) error.name = "TimeoutError";
+    throw error;
+  }
+}
+
+async function fetchRobots(baseUrl, { timeoutMs = 10000, userAgent = DEFAULT_USER_AGENT } = {}) {
+  let current;
+  try {
+    current = await assertPublicHttpUrl(new URL("/robots.txt", baseUrl).href);
+  } catch {
+    return { status: "unavailable" };
+  }
+
+  try {
+    for (let redirects = 0; redirects <= 3; redirects += 1) {
+      const response = await requestPage(current, {
+        timeoutMs: Math.min(timeoutMs, 5000),
+        maxResponseBytes: 512 * 1024 + 1,
+        headers: { "user-agent": userAgent, accept: "text/plain,*/*;q=0.1" },
+      });
+      if (REDIRECT_STATUSES.has(response.status)) {
+        const location = headerValue(response.headers, "location");
+        if (!location || redirects >= 3) return { status: "unavailable" };
+        current = await assertPublicHttpUrl(new URL(location, current).href);
+        continue;
+      }
+      if (response.status >= 400 && response.status < 500) return { status: "missing" };
+      if (!response.ok) return { status: "unavailable", httpStatus: response.status };
+      if (response.tooLarge) return { status: "unavailable", httpStatus: response.status };
+      const text = Buffer.from(response.body ?? []).toString("utf8");
+      if (response.bytes > 512 * 1024) return { status: "unavailable", httpStatus: response.status };
+      if (!text) return { status: "missing" };
+      return { status: "found", text };
+    }
+    return { status: "unavailable" };
   } catch {
     return { status: "unavailable" };
   }
 }
+
 export async function fetchPageEvidence(inputUrl, {
   timeoutMs = 10000,
   maxBytes = 2 * 1024 * 1024,
@@ -406,8 +380,6 @@ export async function fetchPageEvidence(inputUrl, {
       ? { domain, state: breakers.get(domain) }
       : { domain, state: null };
 
-    // A domain that already answered with blocks or timeouts is left alone. This is the
-    // cheapest way to avoid turning a soft block into a hard one across a batch.
     if (isBreakerOpen(breaker.state, Date.now(), breakerConfig)) {
       return finish({
         state: "blocked",
@@ -419,7 +391,6 @@ export async function fetchPageEvidence(inputUrl, {
     }
 
     if (validateRobots) {
-      const token = userAgentToken(userAgent);
       const cached = robots?.get?.(domain);
       let decision;
       if (cached?.text) {
@@ -435,7 +406,7 @@ export async function fetchPageEvidence(inputUrl, {
       } else if (cached?.status === "unverified") {
         decision = { rule: "allow", matched: null };
       } else {
-        const robotsResult = await fetchRobots(current, { timeoutMs, userAgent, maxBytes });
+        const robotsResult = await fetchRobots(current, { timeoutMs, userAgent });
         if (robotsResult.status === "found") {
           robots?.set?.(domain, { status: "found", text: robotsResult.text, fetchedAt: Date.now() });
           decision = robotsDecision(robotsResult.text, { path: current.pathname || "/", userAgent });
@@ -470,38 +441,48 @@ export async function fetchPageEvidence(inputUrl, {
         accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
         ...(unconditional ? {} : conditionalHeaders(previous)),
       };
-      const response = await fetch(current, {
-        redirect: "manual",
-        signal: AbortSignal.timeout(timeoutMs),
+      const response = await requestPage(current, {
+        timeoutMs,
+        maxResponseBytes: maxBytes + 1,
         headers,
       });
 
-      if ([301, 302, 303, 307, 308].includes(response.status)) {
-        const location = response.headers.get("location");
+      if (REDIRECT_STATUSES.has(response.status)) {
+        const location = headerValue(response.headers, "location");
         if (!location) return finish({ state: "http_error", startedAt, finalUrl: current.href, httpStatus: response.status, errorCode: "REDIRECT_WITHOUT_LOCATION" });
         if (redirectCount >= maxRedirects) return finish({ state: "redirect_limit", startedAt, finalUrl: current.href, httpStatus: response.status, errorCode: "PAGE_REDIRECT_LIMIT" });
         current = await assertPublicHttpUrl(new URL(location, current).href);
         continue;
       }
 
-      // The server says nothing changed. That is a useful observation in itself: it means
-      // the version OneGl already holds is still current, so features stay valid without
-      // re-reading the page.
+      const validators = validatorsFromHeaders(response.headers);
       if (response.status === 304) {
         return finish({
           state: "not_modified",
           startedAt,
           finalUrl: current.href,
           httpStatus: 304,
-          validators: captureValidators(response),
+          validators,
         });
       }
 
-      const contentType = response.headers.get("content-type") ?? "";
-      const contentLength = Number(response.headers.get("content-length") ?? 0);
-      const validators = captureValidators(response);
-      if (contentLength > maxBytes) return finish({ state: "too_large", startedAt, finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: contentLength, errorCode: "PAGE_TOO_LARGE", validators });
-      if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) return finish({ state: "non_html", startedAt, finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: contentLength || null, validators });
+      const contentType = headerValue(response.headers, "content-type") ?? "";
+      const contentLength = Number(headerValue(response.headers, "content-length") ?? 0);
+      if (response.tooLarge || contentLength > maxBytes) {
+        return finish({
+          state: "too_large",
+          startedAt,
+          finalUrl: current.href,
+          httpStatus: response.status,
+          contentType,
+          responseBytes: Math.max(Number(response.bytes ?? 0), contentLength),
+          errorCode: "PAGE_TOO_LARGE",
+          validators,
+        });
+      }
+      if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) {
+        return finish({ state: "non_html", startedAt, finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: response.bytes || contentLength || null, validators });
+      }
       if (!response.ok) {
         return finish({
           state: response.status === 401 || response.status === 403 || response.status === 429 ? "blocked" : "http_error",
@@ -514,9 +495,8 @@ export async function fetchPageEvidence(inputUrl, {
         });
       }
 
-      const body = await readLimitedBody(response, maxBytes);
-      if (body.tooLarge) return finish({ state: "too_large", startedAt, finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: body.bytes, errorCode: "PAGE_TOO_LARGE", validators });
-      const decoded = decodeHtmlBytes(body.data, contentType);
+      const body = Buffer.from(response.body ?? []);
+      const decoded = decodeHtmlBytes(body, contentType);
       const quality = assessContentQuality({ text: decoded.text, html: decoded.text, contentType });
       if (!quality.usable) {
         return finish({
@@ -526,7 +506,7 @@ export async function fetchPageEvidence(inputUrl, {
           httpStatus: response.status,
           contentType,
           contentCharset: decoded.charset,
-          responseBytes: body.bytes,
+          responseBytes: response.bytes,
           errorCode: quality.code === "THIN_CONTENT" ? "PAGE_THIN_CONTENT" : "PAGE_JAVASCRIPT_SHELL",
           diagnostics: quality.diagnostics.map((item) => item.code),
           validators,
@@ -534,7 +514,7 @@ export async function fetchPageEvidence(inputUrl, {
       }
 
       const features = extractPageFeatures(decoded.text, { url: current.href, contentType });
-      if (decoded.fallback) features.diagnostics = [...features.diagnostics, { code: "CHARSET_FALLBACK", declared: detectHtmlCharset(body.data, contentType) }];
+      if (decoded.fallback) features.diagnostics = [...features.diagnostics, { code: "CHARSET_FALLBACK", declared: detectHtmlCharset(body, contentType) }];
       if (quality.diagnostics.length) features.diagnostics = [...features.diagnostics, ...quality.diagnostics];
       return finish({
         state: "success",
@@ -543,7 +523,7 @@ export async function fetchPageEvidence(inputUrl, {
         httpStatus: response.status,
         contentType,
         contentCharset: decoded.charset,
-        responseBytes: body.bytes,
+        responseBytes: response.bytes,
         validators,
         features,
       });

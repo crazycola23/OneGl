@@ -124,6 +124,7 @@ test("collector parses search evidence nested inside stringified event_data", as
   assert.deepEqual(evidence.queries, ["nested q"]);
   assert.equal(evidence.retrievedSources[0].canonicalUrl, "https://example.org/source");
 });
+
 test("collector drops identifiers and log sentences that are not real queries", async () => {
   const listeners = new Map();
   const page = {
@@ -160,6 +161,7 @@ test("collector drops identifiers and log sentences that are not real queries", 
   assert.deepEqual(evidence.queries, ["绍兴中医馆推荐"]);
   assert.ok(evidence.rejectedQueryCount >= 2);
 });
+
 test("collector ignores responses that are not this turn's retrieval endpoint", async () => {
   const listeners = new Map();
   const page = {
@@ -193,4 +195,32 @@ test("collector ignores responses that are not this turn's retrieval endpoint", 
   assert.deepEqual(evidence.queries, []);
   assert.equal(evidence.retrievedSources.length, 0);
   assert.equal(evidence.responses.length, 0);
+});
+
+test("collector marks an unsettled Playwright body as partial instead of a measured zero", async () => {
+  const listeners = new Map();
+  const page = {
+    on(event, fn) {
+      listeners.set(event, fn);
+    },
+    off(event, fn) {
+      if (listeners.get(event) === fn) listeners.delete(event);
+    },
+  };
+  const collector = createNetworkEvidenceCollector(page, {
+    bodyTimeoutMs: 20,
+    evidenceEndpoints: [/.*/],
+  });
+  listeners.get("response")({
+    url: () => "https://www.doubao.com/chat/completion",
+    status: () => 200,
+    headers: () => ({ "content-type": "text/event-stream" }),
+    body: () => new Promise(() => {}),
+  });
+
+  const evidence = await collector.stop();
+  assert.equal(evidence.state, "partial");
+  assert.deepEqual(evidence.queries, []);
+  assert.equal(evidence.responses.length, 0);
+  assert.ok(evidence.diagnostics.some((value) => value.startsWith("body-timeout:")));
 });

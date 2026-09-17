@@ -144,6 +144,124 @@ function mergeSearchQueries(...groups) {
   return out;
 }
 
+async function persistSavedRun({
+  pool,
+  store,
+  saved,
+  project,
+  validation,
+  artifactPath,
+  accountKey,
+  samplingBatchId,
+  runToken,
+  jobId,
+  attempt,
+}) {
+  const persistSummary = await persistRun({
+    pool,
+    run: saved,
+    project,
+    prompt: validation ? { externalId: validation.caseId ?? null } : null,
+    artifactPath: artifactPath ?? saved.artifactPath ?? null,
+    accountKey,
+    samplingBatchId,
+    runToken,
+    jobId,
+    attempt: saved.attempt ?? attempt,
+  });
+  const next = await store.updateRun(saved.id, {
+    dbStatus: "success",
+    db: persistSummary,
+    dbError: null,
+  });
+  return { saved: next, persistSummary };
+}
+
+function canReplayPersistence(saved, { prompt, project, accountKey, samplingBatchId, runToken }) {
+  if (!saved || !["success", "partial"].includes(saved.status)) return false;
+  if (saved.dbStatus === "success") return false;
+  if (runToken && saved.runToken !== runToken) return false;
+  if (saved.prompt !== prompt || saved.project !== project) return false;
+  if ((saved.accountKey ?? null) !== (accountKey ?? null)) return false;
+  if ((saved.samplingBatchId ?? null) !== (samplingBatchId ?? null)) return false;
+  return true;
+}
+
+/**
+ * Replay only PostgreSQL persistence for a completed local observation.
+ *
+ * Returns null when there is nothing safe to replay. This entry point can be called by a
+ * queue worker before account throttles, leases or browser startup because it can never
+ * enter provider collection. A completed local run is immutable provider evidence; retrying
+ * persistence must not submit the prompt again.
+ */
+export async function replayPendingPersistence({
+  store,
+  pool,
+  runId,
+  prompt,
+  project,
+  validation = null,
+  artifactPath = null,
+  context = {},
+}) {
+  if (!pool || !runId) return null;
+
+  const accountKey = context.accountKey ?? null;
+  const samplingBatchId = context.samplingBatchId ?? null;
+  const runToken = context.runToken ?? null;
+  const jobId = context.jobId ?? null;
+  const attempt = Number.isInteger(context.attempt) && context.attempt > 0 ? context.attempt : 1;
+  const previous = await store.readRun(runId).catch(() => null);
+
+  if (!canReplayPersistence(previous, {
+    prompt,
+    project,
+    accountKey,
+    samplingBatchId,
+    runToken,
+  })) {
+    return null;
+  }
+
+  try {
+    const replay = await persistSavedRun({
+      pool,
+      store,
+      saved: previous,
+      project,
+      validation,
+      artifactPath,
+      accountKey,
+      samplingBatchId,
+      runToken,
+      jobId,
+      attempt,
+    });
+    return {
+      ok: true,
+      saved: replay.saved,
+      normalized: null,
+      persistSummary: replay.persistSummary,
+      persistError: null,
+      persistenceReplay: true,
+    };
+  } catch (error) {
+    const saved = await store.updateRun(previous.id, {
+      dbStatus: "failed",
+      dbError: { name: error.name, message: error.message },
+    }).catch(() => previous);
+    return {
+      ok: true,
+      saved,
+      normalized: null,
+      persistSummary: null,
+      persistError: error,
+      persistenceReplay: true,
+    };
+  }
+}
+
 /**
  * 执行一次提问并落库。
  *
@@ -173,6 +291,24 @@ export async function runOnePrompt({
   const attempt = Number.isInteger(context.attempt) && context.attempt > 0 ? context.attempt : 1;
   const provider = getProviderAdapter(context.provider ?? config?.provider ?? "doubao");
 
+  const replay = await replayPendingPersistence({
+    store,
+    pool,
+    runId,
+    prompt,
+    project,
+    validation,
+    artifactPath,
+    context: {
+      accountKey,
+      samplingBatchId,
+      runToken,
+      jobId,
+      attempt,
+    },
+  });
+  if (replay) return replay;
+
   const run = await store.createRun({
     runId,
     prompt,
@@ -192,19 +328,15 @@ export async function runOnePrompt({
   if (validation) await store.updateRun(run.id, { validation });
 
   const attemptArtifactPath = store.attemptPath(run.id, attempt);
-  // Turn scope for retrieval evidence.
-  //
-  // `im/conversation/batch_get` replays the whole conversation, so evidence is only
-  // accepted once the page has actually navigated into this run's conversation. Until
-  // then the collector is looking at history - which is exactly how a single run ended up
-  // reporting 403 candidates accumulated from twenty earlier, unrelated questions.
+  // Turn scope for retrieval evidence. The request callback receives a Playwright Request,
+  // not a Response, so postData() is read directly from it.
   const turnScope = { conversationId: null };
-  const observeTurnScope = (response) => {
+  const observeTurnScope = (request) => {
     try {
-      if (!/\/im\/conversation\//.test(response.url())) return;
-      const body = response.request()?.postData();
+      if (!/\/im\/conversation\//.test(request.url())) return;
+      const body = request.postData?.();
       if (!body) return;
-      const match = body.match(/"(?:conversation_id|conversationId)"\s*:\s*"?(\d{6,})"?/);
+      const match = body.match(/"(?:conversation_id|conversationId)"\s*:\s*"([^"\\]+)"/);
       if (match) turnScope.conversationId = match[1];
     } catch {
       // Scope detection is best-effort; failure must not disturb collection.
@@ -218,7 +350,7 @@ export async function runOnePrompt({
       maxBodyBytes: config.networkEvidenceMaxBodyBytes,
       bodyTimeoutMs: config.networkEvidenceBodyTimeoutMs,
       getTurnId: () => {
-        const fromUrl = page.url().match(/\/chat\/(\d{6,})/);
+        const fromUrl = page.url().match(/\/chat\/([^/?#]+)/);
         return turnScope.conversationId ?? fromUrl?.[1] ?? null;
       },
     })
@@ -331,19 +463,21 @@ export async function runOnePrompt({
   let persistError = null;
   if (pool) {
     try {
-      persistSummary = await persistRun({
+      const persisted = await persistSavedRun({
         pool,
-        run: saved,
+        store,
+        saved,
         project,
-        prompt: validation ? { externalId: validation.caseId ?? null } : null,
+        validation,
         artifactPath: artifactPath ?? attemptArtifactPath,
         accountKey,
         samplingBatchId,
         runToken,
         jobId,
-        attempt: saved.attempt ?? attempt,
+        attempt,
       });
-      saved = await store.updateRun(saved.id, { dbStatus: "success", db: persistSummary });
+      persistSummary = persisted.persistSummary;
+      saved = persisted.saved;
     } catch (error) {
       persistError = error;
       saved = await store
@@ -355,7 +489,7 @@ export async function runOnePrompt({
     }
   }
 
-  return { ok, saved, normalized, persistSummary, persistError };
+  return { ok, saved, normalized, persistSummary, persistError, persistenceReplay: false };
 }
 
 export function brandRulesFromConfig(brand) {
