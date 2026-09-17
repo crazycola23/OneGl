@@ -5,6 +5,7 @@ import { openApiDocument as baseOpenApiDocument } from "./base-openapi.js";
 import { applyResourceContractOpenApi } from "./resource-contract-openapi.js";
 import { applySaasOpenApi } from "./saas-openapi.js";
 import { applySaasPatchOpenApi } from "./saas-patch-openapi.js";
+import { applyStatusContractOpenApi } from "./status-contract-openapi.js";
 
 export function buildOpenApiDocument() {
   const document = structuredClone(baseOpenApiDocument);
@@ -13,6 +14,7 @@ export function buildOpenApiDocument() {
   applySaasPatchOpenApi(document);
   applyContractHardeningOpenApi(document);
   applyResourceContractOpenApi(document);
+  applyStatusContractOpenApi(document);
   applyObservabilityOpenApi(document);
   return document;
 }
