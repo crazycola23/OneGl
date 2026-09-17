@@ -322,6 +322,18 @@
             "type": "string"
           },
           "status": {
+            "enum": [
+              "ready",
+              "healthy",
+              "login_required",
+              "session_expired",
+              "verification_required",
+              "access_restricted",
+              "paused",
+              "cooldown",
+              "rate_limited",
+              "disabled"
+            ],
             "type": "string"
           },
           "storage_state_present": {
@@ -521,11 +533,288 @@
         "type": "object"
       },
       "BatchDetailResource": {
-        "additionalProperties": true,
+        "additionalProperties": false,
+        "properties": {
+          "accounts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "assignments": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "batchId": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "byCategory": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "count": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "category",
+                "count"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "poolSize": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project_id": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project_name": {
+            "type": "string"
+          },
+          "sampleSize": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "seed": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "start": {
+            "additionalProperties": false,
+            "properties": {
+              "accounts": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "alreadyActive": {
+                "type": "boolean"
+              },
+              "enqueued": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "started": {
+                "type": "boolean"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "queued"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "batchId",
+          "seed",
+          "poolSize",
+          "sampleSize",
+          "assignments",
+          "byCategory",
+          "project_id",
+          "project_name",
+          "accounts",
+          "status"
+        ],
         "type": "object"
       },
       "BatchProgressResource": {
-        "additionalProperties": true,
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "batch": {
+            "additionalProperties": false,
+            "properties": {
+              "aborted_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "completed_jobs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "failed_jobs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "finished_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "last_heartbeat_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "project_name": {
+                "type": "string"
+              },
+              "queued_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requested_jobs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "skipped_jobs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "queued",
+                  "running",
+                  "paused",
+                  "completed",
+                  "partial",
+                  "failed",
+                  "aborted"
+                ],
+                "type": "string"
+              },
+              "target_brand": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "status",
+              "project_name"
+            ],
+            "type": "object"
+          },
+          "counts": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "completed": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "done": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "failed": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "parallelism": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "percent": {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "requested": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "skipped": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "waiting": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "requested",
+              "completed",
+              "failed",
+              "skipped",
+              "waiting",
+              "active",
+              "parallelism",
+              "done",
+              "percent"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "batch",
+          "counts",
+          "active"
+        ],
         "type": "object"
       },
       "BatchSummaryResource": {
@@ -611,6 +900,16 @@
             ]
           },
           "status": {
+            "enum": [
+              "pending",
+              "queued",
+              "running",
+              "paused",
+              "completed",
+              "partial",
+              "failed",
+              "aborted"
+            ],
             "type": "string"
           }
         },
@@ -1820,6 +2119,163 @@
       },
       "IntelligenceResource": {
         "additionalProperties": true,
+        "properties": {
+          "citations": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "competitors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "fanout": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "opportunities": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "project": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "targetBrand": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "targetBrand"
+            ],
+            "type": "object"
+          },
+          "promptGaps": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "providers": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "ruleMode": {
+            "type": "string"
+          },
+          "scope": {
+            "additionalProperties": true,
+            "properties": {
+              "batchId": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "batchName": {
+                "type": "string"
+              },
+              "days": {
+                "maximum": 365,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "from": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "to": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "batch",
+                  "project"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "shareOfVoice": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "sourceContent": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "visibility": {
+            "additionalProperties": false,
+            "properties": {
+              "brandMentions": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rate": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "series": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "validRuns": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "validRuns",
+              "brandMentions",
+              "rate",
+              "series"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "scope",
+          "project",
+          "ruleMode",
+          "visibility",
+          "providers",
+          "shareOfVoice",
+          "competitors",
+          "fanout",
+          "citations",
+          "promptGaps",
+          "opportunities"
+        ],
         "type": "object"
       },
       "KeywordCreate": {
@@ -1845,7 +2301,56 @@
         "type": "object"
       },
       "KeywordImportResource": {
-        "additionalProperties": true,
+        "additionalProperties": false,
+        "properties": {
+          "added": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "duplicates": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "keywords": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "isNew": {
+                  "type": "boolean"
+                },
+                "keyword": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "keyword",
+                "isNew"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "revived": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "skipped": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "added",
+          "revived",
+          "duplicates",
+          "skipped",
+          "keywords"
+        ],
         "type": "object"
       },
       "KeywordResource": {
@@ -1889,7 +2394,88 @@
         "type": "object"
       },
       "MonitorExecutionResource": {
-        "additionalProperties": true,
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "batch_id": {
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": true,
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_id": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "project_id": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "scheduled_for": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "processing",
+              "completed",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "plan_id",
+          "project_id",
+          "scheduled_for",
+          "status",
+          "attempts"
+        ],
         "type": "object"
       },
       "MonitorPlanCreate": {
@@ -1971,6 +2557,143 @@
       },
       "MonitorPlanResource": {
         "additionalProperties": true,
+        "properties": {
+          "accounts": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "type": "array"
+          },
+          "cadence": {
+            "enum": [
+              "daily",
+              "weekly"
+            ],
+            "type": "string"
+          },
+          "consecutive_failures": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "last_batch_id": {
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_executed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_scheduled_for": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "local_hour": {
+            "maximum": 23,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "local_minute": {
+            "maximum": 59,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "local_time": {
+            "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "next_run_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "project_id": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "repeats": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "sample_size": {
+            "maximum": 10000,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sampling_method": {
+            "enum": [
+              "stratified",
+              "random"
+            ],
+            "type": "string"
+          },
+          "tenant_id": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "time_zone": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "weekday": {
+            "maximum": 7,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "project_id",
+          "name",
+          "cadence",
+          "time_zone",
+          "local_time",
+          "sampling_method",
+          "repeats",
+          "accounts",
+          "enabled",
+          "next_run_at"
+        ],
         "type": "object"
       },
       "OpenApiDocumentResource": {
@@ -2272,6 +2995,35 @@
       },
       "ReportPayloadResource": {
         "additionalProperties": true,
+        "properties": {
+          "intelligence": {
+            "$ref": "#/components/schemas/IntelligenceResource"
+          },
+          "project_name": {
+            "type": "string"
+          },
+          "report": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunResource"
+            },
+            "type": "array"
+          },
+          "sources": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "project_name",
+          "report",
+          "runs",
+          "sources",
+          "intelligence"
+        ],
         "type": "object"
       },
       "ReportResource": {
@@ -2573,6 +3325,11 @@
             ]
           },
           "status": {
+            "enum": [
+              "success",
+              "partial",
+              "failed"
+            ],
             "type": "string"
           }
         },
@@ -3497,6 +4254,12 @@
             ]
           },
           "status": {
+            "enum": [
+              "pending",
+              "delivering",
+              "delivered",
+              "failed"
+            ],
             "type": "string"
           }
         },

@@ -1323,7 +1323,8 @@ export interface components {
             last_run_at?: string | null;
             /** @enum {string} */
             provider?: "doubao";
-            status?: string;
+            /** @enum {string} */
+            status?: "ready" | "healthy" | "login_required" | "session_expired" | "verification_required" | "access_restricted" | "paused" | "cooldown" | "rate_limited" | "disabled";
             storage_state_present?: boolean;
             /** Format: date-time */
             updated_at?: string | null;
@@ -1384,10 +1385,63 @@ export interface components {
             start: boolean;
         };
         BatchDetailResource: {
-            [key: string]: unknown;
+            accounts: string[];
+            assignments: number;
+            batchId: number;
+            byCategory: {
+                category: string | null;
+                count: number;
+            }[];
+            poolSize: number;
+            project_id: number;
+            project_name: string;
+            sampleSize: number;
+            seed: string | number;
+            start?: {
+                accounts?: string[];
+                alreadyActive?: boolean;
+                enqueued?: number;
+                reason?: string;
+                started?: boolean;
+            } | null;
+            /** @enum {string} */
+            status: "pending" | "queued";
         };
         BatchProgressResource: {
-            [key: string]: unknown;
+            active: boolean;
+            batch: {
+                /** Format: date-time */
+                aborted_at?: string | null;
+                completed_jobs?: number | null;
+                failed_jobs?: number | null;
+                /** Format: date-time */
+                finished_at?: string | null;
+                id: number;
+                /** Format: date-time */
+                last_heartbeat_at?: string | null;
+                name?: string | null;
+                project_name: string;
+                /** Format: date-time */
+                queued_at?: string | null;
+                requested_jobs?: number | null;
+                skipped_jobs?: number | null;
+                /** Format: date-time */
+                started_at?: string | null;
+                /** @enum {string} */
+                status: "pending" | "queued" | "running" | "paused" | "completed" | "partial" | "failed" | "aborted";
+                target_brand?: string | null;
+            };
+            counts: {
+                active: number;
+                completed: number;
+                done: number;
+                failed: number;
+                parallelism: number;
+                percent: number;
+                requested: number;
+                skipped: number;
+                waiting: number;
+            };
         };
         BatchSummaryResource: {
             completed_jobs?: number | null;
@@ -1407,7 +1461,8 @@ export interface components {
             skipped_jobs?: number | null;
             /** Format: date-time */
             started_at?: string | null;
-            status: string;
+            /** @enum {string} */
+            status: "pending" | "queued" | "running" | "paused" | "completed" | "partial" | "failed" | "aborted";
         } & {
             [key: string]: unknown;
         };
@@ -1673,6 +1728,58 @@ export interface components {
             };
         };
         IntelligenceResource: {
+            citations: {
+                [key: string]: unknown;
+            };
+            competitors: {
+                [key: string]: unknown;
+            }[];
+            fanout: {
+                [key: string]: unknown;
+            };
+            opportunities: {
+                [key: string]: unknown;
+            }[];
+            project: {
+                id: number;
+                name: string;
+                targetBrand: string | null;
+            };
+            promptGaps: {
+                [key: string]: unknown;
+            }[];
+            providers: {
+                [key: string]: unknown;
+            }[];
+            ruleMode: string;
+            scope: {
+                batchId?: number;
+                batchName?: string;
+                days?: number;
+                /** Format: date-time */
+                from?: string;
+                /** Format: date-time */
+                to?: string;
+                /** @enum {string} */
+                type: "batch" | "project";
+            } & {
+                [key: string]: unknown;
+            };
+            shareOfVoice: {
+                [key: string]: unknown;
+            };
+            sourceContent?: {
+                [key: string]: unknown;
+            };
+            visibility: {
+                brandMentions: number;
+                rate: number | null;
+                series: {
+                    [key: string]: unknown;
+                }[];
+                validRuns: number;
+            };
+        } & {
             [key: string]: unknown;
         };
         KeywordCreate: {
@@ -1680,7 +1787,15 @@ export interface components {
             keywords: string[];
         };
         KeywordImportResource: {
-            [key: string]: unknown;
+            added: number;
+            duplicates: number;
+            keywords: {
+                id: number;
+                isNew: boolean;
+                keyword: string;
+            }[];
+            revived: number;
+            skipped: number;
         };
         KeywordResource: {
             category?: string | null;
@@ -1696,7 +1811,27 @@ export interface components {
             [key: string]: unknown;
         };
         MonitorExecutionResource: {
-            [key: string]: unknown;
+            attempts: number;
+            batch_id?: number | null;
+            /** Format: date-time */
+            created_at?: string;
+            details?: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: date-time */
+            finished_at?: string | null;
+            id: number;
+            last_error?: string | null;
+            plan_id: number;
+            project_id: number;
+            /** Format: date-time */
+            scheduled_for: string;
+            /** Format: date-time */
+            started_at?: string | null;
+            /** @enum {string} */
+            status: "pending" | "processing" | "completed" | "failed";
+            /** Format: date-time */
+            updated_at?: string;
         };
         MonitorPlanCreate: {
             accounts: string[];
@@ -1725,6 +1860,37 @@ export interface components {
             weekday?: number | null;
         };
         MonitorPlanResource: {
+            accounts: string[];
+            /** @enum {string} */
+            cadence: "daily" | "weekly";
+            consecutive_failures?: number;
+            /** Format: date-time */
+            created_at?: string;
+            enabled: boolean;
+            id: number;
+            last_batch_id?: number | null;
+            last_error?: string | null;
+            /** Format: date-time */
+            last_executed_at?: string | null;
+            /** Format: date-time */
+            last_scheduled_for?: string | null;
+            local_hour?: number;
+            local_minute?: number;
+            local_time: string;
+            name: string;
+            /** Format: date-time */
+            next_run_at: string;
+            project_id: number;
+            repeats: number;
+            sample_size?: number | null;
+            /** @enum {string} */
+            sampling_method: "stratified" | "random";
+            tenant_id: number;
+            time_zone: string;
+            /** Format: date-time */
+            updated_at?: string;
+            weekday?: number | null;
+        } & {
             [key: string]: unknown;
         };
         OpenApiDocumentResource: {
@@ -1811,6 +1977,16 @@ export interface components {
             status: "generating" | "ready";
         };
         ReportPayloadResource: {
+            intelligence: components["schemas"]["IntelligenceResource"];
+            project_name: string;
+            report: {
+                [key: string]: unknown;
+            };
+            runs: components["schemas"]["RunResource"][];
+            sources: {
+                [key: string]: unknown;
+            };
+        } & {
             [key: string]: unknown;
         };
         ReportResource: {
@@ -1886,7 +2062,8 @@ export interface components {
             project_name?: string | null;
             /** Format: date-time */
             started_at?: string | null;
-            status?: string;
+            /** @enum {string} */
+            status?: "success" | "partial" | "failed";
         } & {
             [key: string]: unknown;
         };
@@ -2137,7 +2314,8 @@ export interface components {
             last_error?: string | null;
             /** Format: date-time */
             next_attempt_at?: string | null;
-            status?: string;
+            /** @enum {string} */
+            status?: "pending" | "delivering" | "delivered" | "failed";
         } & {
             [key: string]: unknown;
         };
