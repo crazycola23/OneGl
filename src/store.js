@@ -75,14 +75,19 @@ export class RunStore {
     await mkdir(this.runDir(runId), { recursive: true });
 
     const previous = await this.readRun(runId).catch(() => null);
+    const deterministicBatchRun =
+      previous?.samplingBatchId != null || String(previous?.runToken ?? "").startsWith("batch:");
 
     // A deterministic batch run that is still marked running after the worker moved on to
     // a later attempt has an unknowable provider-submission boundary: the old process may
     // have died immediately after sending the prompt. Never overwrite that evidence and
     // resubmit automatically. A settled failed run remains retryable through the normal
     // promptSubmitted=false gate, while a completed run is handled by persist-only replay.
+    // Generic/local RunStore callers without batch identity can still reuse one explicit run
+    // directory across attempts; the provider exactly-once boundary is a batch-worker rule.
     if (
       explicitRunId &&
+      deterministicBatchRun &&
       previous?.status === "running" &&
       Number.isInteger(previous.attempt) &&
       attempt > previous.attempt
