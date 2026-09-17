@@ -1,6 +1,7 @@
 import { summarizeDoubaoSourceSignals } from "../analysis/doubao-source-signals.js";
 
-const VALID_RUN = "r.status IN ('success', 'partial') AND r.conversation_reset_confirmed IS TRUE";
+const CITATION_VALID_RUN =
+  "r.status = 'success' AND r.conversation_reset_confirmed IS TRUE AND r.citation_state IN ('found', 'none_visible')";
 
 function normalizeRows(rows) {
   return rows.map((row) => ({
@@ -37,7 +38,7 @@ export async function loadProjectDoubaoSourceSignals(pool, projectId, { from, to
         AND COALESCE(r.provider_access, 'scraped') = 'scraped'
         AND r.created_at >= $2
         AND r.created_at <= $3
-        AND ${VALID_RUN}
+        AND ${CITATION_VALID_RUN}
         AND c.source_type = 'visible'
         AND c.visible_to_user IS TRUE
       ORDER BY r.sampling_batch_id, a.id, r.id DESC`,
@@ -70,7 +71,7 @@ export async function loadBatchDoubaoSourceSignals(pool, batchId) {
       WHERE r.sampling_batch_id = $1
         AND r.provider = 'doubao'
         AND COALESCE(r.provider_access, 'scraped') = 'scraped'
-        AND ${VALID_RUN}
+        AND ${CITATION_VALID_RUN}
         AND c.source_type = 'visible'
         AND c.visible_to_user IS TRUE
       ORDER BY r.sampling_batch_id, a.id, r.id DESC`,
