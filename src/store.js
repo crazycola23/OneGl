@@ -132,6 +132,7 @@ export class RunStore {
       attempt,
       attempts,
       attemptHistory,
+      status: "running",
       attemptStartedAt: new Date().toISOString(),
       startedAt: previous?.startedAt ?? new Date().toISOString(),
       completedAt: null,
