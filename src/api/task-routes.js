@@ -67,29 +67,34 @@ async function createTaskResource(db, tenant, raw) {
   await validateAccountIds(db, tenant.id, input.accountIds);
   const taskId = publicId("tsk");
   const internalName = internalProjectName(tenant, `task-${taskId}`);
-  let projectId = null;
+  const client = await db.connect();
   try {
-    const project = await createProject(db, {
+    await client.query("BEGIN");
+    const project = await createProject(client, {
       name: internalName,
       description: `SaaS task ${input.name}`,
       targetBrand: input.targetBrand,
     });
-    projectId = Number(project.id);
-    await bindProject(db, {
+    const projectId = Number(project.id);
+    await bindProject(client, {
       tenantId: tenant.id,
       projectId,
       displayName: input.name,
       externalId: `task:${taskId}`,
     });
-    await addKeywords(db, { projectId, input: input.questions.join("\n") });
-    await createTaskRow(db, { tenantId: tenant.id, projectId, publicTaskId: taskId, input });
-    return getTask(db, tenant.id, taskId);
+    await addKeywords(client, { projectId, input: input.questions.join("\n") });
+    await createTaskRow(client, { tenantId: tenant.id, projectId, publicTaskId: taskId, input });
+    const task = await getTask(client, tenant.id, taskId);
+    await client.query("COMMIT");
+    return task;
   } catch (error) {
-    if (projectId) await db.query("DELETE FROM projects WHERE id = $1", [projectId]).catch(() => undefined);
+    await client.query("ROLLBACK").catch(() => undefined);
     if (error?.code === "23505") {
       throw new ApiHttpError(409, "task_conflict", "external_id is already used by another task");
     }
     throw error;
+  } finally {
+    client.release();
   }
 }
 
