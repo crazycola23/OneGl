@@ -68,6 +68,23 @@ test("旧快照 success Run 缺 citation_state 时仍可用 captured count 兼�
   assert.equal(row.citationDensity, 3);
 });
 
+test("新 citation contract 缺 citation_state 时 fail closed，不用 captured count 掩盖", () => {
+  const detail = {
+    report: {
+      runs: { assignmentsRun: 1 },
+      citations: { validRuns: 1, coverage: 1 },
+    },
+    runs: [run("新合同异常", { citation_state: null, captured_citation_count: 3 })],
+  };
+  const [row] = buildPromptOpportunities(detail).rows;
+  assert.equal(row.validRuns, 1);
+  assert.equal(row.citationValidRuns, 0);
+  assert.equal(row.citationComparableRuns, 0);
+  assert.equal(row.citationEvidenceRate, 0);
+  assert.equal(row.citationDensity, null);
+  assert.match(row.action, /引用证据覆盖 0\.0%/);
+});
+
 test("partial citation parse failure 只参与品牌回答口径，不污染 Prompt 引用密度", () => {
   const detail = {
     report: { runs: { assignmentsRun: 2 } },
