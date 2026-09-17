@@ -56,10 +56,11 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
       const inserted = await pool.query(
         `INSERT INTO runs
            (prompt_id, provider, provider_access, model, status, started_at, finished_at, answer,
-            captured_citation_count, citation_state, citation_diagnostics, local_run_id, sampling_batch_id,
-            conversation_reset_confirmed, brand_mentioned, matched_terms, attempt, created_at)
+            captured_citation_count, citation_state, citation_diagnostics, network_evidence_state,
+            local_run_id, sampling_batch_id, conversation_reset_confirmed, brand_mentioned,
+            matched_terms, attempt, created_at)
          VALUES ($1, 'doubao', 'scraped', 'doubao', 'success', $2, $2, $3,
-                 0, 'found', '[]'::jsonb, $4, $5, true, $6, '[]'::jsonb, 1, $2)
+                 0, 'found', '[]'::jsonb, 'found', $4, $5, true, $6, '[]'::jsonb, 1, $2)
          RETURNING id`,
         [promptId, row.day, row.answer, `run_geo_${suffix}_${index}`, batchId, row.brand],
       );
@@ -69,10 +70,10 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     await pool.query(
       `INSERT INTO runs
          (prompt_id, provider, provider_access, model, status, started_at, finished_at, answer,
-          captured_citation_count, citation_state, citation_diagnostics, local_run_id,
+          captured_citation_count, citation_state, citation_diagnostics, network_evidence_state, local_run_id,
           conversation_reset_confirmed, brand_mentioned, matched_terms, attempt, created_at)
        VALUES ($1, 'doubao', 'scraped', 'doubao', 'success', $2, $2, '品牌A未来观察',
-               0, 'none_visible', '[]'::jsonb, $3, true, true, '[]'::jsonb, 1, $2)`,
+               0, 'none_visible', '[]'::jsonb, 'disabled', $3, true, true, '[]'::jsonb, 1, $2)`,
       [promptId, "2026-09-20T10:00:00Z", `run_geo_${suffix}_future`],
     );
 
@@ -127,6 +128,9 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     assert.equal(intelligence.competitors[0].mentions, 2);
     assert.equal(intelligence.shareOfVoice.brandShare, 0.5);
     assert.equal(intelligence.shareOfVoice.series.length, 2);
+    assert.equal(intelligence.fanout.evidenceStatus, "available");
+    assert.equal(intelligence.fanout.validRuns, 3);
+    assert.equal(intelligence.fanout.coverage, 1);
     assert.equal(intelligence.fanout.totalQueries, 3);
     assert.equal(intelligence.citations.validRuns, 3);
     assert.equal(intelligence.citations.coverage, 1);
@@ -134,6 +138,13 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     assert.equal(intelligence.citations.stability.transitions, 1);
     assert.ok(intelligence.citations.stability.stabilityScore >= 0);
     assert.ok(intelligence.citations.topDomains.some((row) => row.domain === "a.example"));
+
+    await pool.query("UPDATE runs SET network_evidence_state = 'disabled' WHERE id = $1", [runRows[2]]);
+    const partialEvidence = await loadBatchGeoIntelligence(pool, batchId);
+    assert.equal(partialEvidence.fanout.evidenceStatus, "partial");
+    assert.equal(partialEvidence.fanout.validRuns, 2);
+    assert.equal(partialEvidence.fanout.coverage, 2 / 3);
+    assert.equal(partialEvidence.fanout.totalQueries, 2);
 
     const projectWindow = await loadProjectGeoIntelligence(pool, projectId, {
       days: 7,
@@ -143,6 +154,8 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     assert.equal(projectWindow.scope.days, 7);
     assert.equal(projectWindow.visibility.validRuns, 3);
     assert.deepEqual(projectWindow.visibility.series.map((row) => row.date), ["2026-09-14", "2026-09-15"]);
+    assert.equal(projectWindow.fanout.evidenceStatus, "partial");
+    assert.equal(projectWindow.fanout.validRuns, 2);
     assert.equal(projectWindow.citations.validRuns, 3);
     assert.equal(projectWindow.citations.stability.transitions, 1);
 
