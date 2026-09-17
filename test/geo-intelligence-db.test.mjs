@@ -56,10 +56,10 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
       const inserted = await pool.query(
         `INSERT INTO runs
            (prompt_id, provider, provider_access, model, status, started_at, finished_at, answer,
-            captured_citation_count, citation_diagnostics, local_run_id, sampling_batch_id,
+            captured_citation_count, citation_state, citation_diagnostics, local_run_id, sampling_batch_id,
             conversation_reset_confirmed, brand_mentioned, matched_terms, attempt, created_at)
          VALUES ($1, 'doubao', 'scraped', 'doubao', 'success', $2, $2, $3,
-                 0, '[]'::jsonb, $4, $5, true, $6, '[]'::jsonb, 1, $2)
+                 0, 'found', '[]'::jsonb, $4, $5, true, $6, '[]'::jsonb, 1, $2)
          RETURNING id`,
         [promptId, row.day, row.answer, `run_geo_${suffix}_${index}`, batchId, row.brand],
       );
@@ -70,10 +70,10 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     await pool.query(
       `INSERT INTO runs
          (prompt_id, provider, provider_access, model, status, started_at, finished_at, answer,
-          captured_citation_count, citation_diagnostics, local_run_id,
+          captured_citation_count, citation_state, citation_diagnostics, local_run_id,
           conversation_reset_confirmed, brand_mentioned, matched_terms, attempt, created_at)
        VALUES ($1, 'doubao', 'scraped', 'doubao', 'success', $2, $2, '品牌A未来观察',
-               0, '[]'::jsonb, $3, true, true, '[]'::jsonb, 1, $2)`,
+               0, 'none_visible', '[]'::jsonb, $3, true, true, '[]'::jsonb, 1, $2)`,
       [promptId, "2026-09-20T10:00:00Z", `run_geo_${suffix}_future`],
     );
 
@@ -125,12 +125,12 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     assert.equal(intelligence.providers.length, 1);
     assert.equal(intelligence.providers[0].access, "scraped");
     assert.equal(intelligence.competitors[0].name, "竞品B");
-    // The third answer contains the competitor's configured domain, but no competitor alias.
-    // Domains are source metadata and must not be counted as answer-text competitor mentions.
     assert.equal(intelligence.competitors[0].mentions, 2);
     assert.equal(intelligence.shareOfVoice.brandShare, 0.5);
     assert.equal(intelligence.shareOfVoice.series.length, 2);
     assert.equal(intelligence.fanout.totalQueries, 3);
+    assert.equal(intelligence.citations.validRuns, 3);
+    assert.equal(intelligence.citations.coverage, 1);
     assert.equal(intelligence.citations.total, 5);
     assert.equal(intelligence.citations.stability.transitions, 1);
     assert.ok(intelligence.citations.stability.stabilityScore >= 0);
@@ -142,15 +142,15 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     });
     assert.equal(projectWindow.scope.type, "project-window");
     assert.equal(projectWindow.scope.days, 7);
-    // The future 2026-09-20 run must be excluded by the explicit upper bound.
     assert.equal(projectWindow.visibility.validRuns, 3);
     assert.deepEqual(projectWindow.visibility.series.map((row) => row.date), ["2026-09-14", "2026-09-15"]);
+    assert.equal(projectWindow.citations.validRuns, 3);
     assert.equal(projectWindow.citations.stability.transitions, 1);
 
     assert.equal(await deleteProjectCompetitor(pool, projectId, competitor.id), true);
     assert.deepEqual(await listProjectCompetitors(pool, projectId), []);
   } finally {
-    if (projectId) await pool.query("DELETE FROM projects WHERE id = $1", [projectId]).catch(() => undefined);
+    if (projectId) await pool.query("DELETE FROM projects WHERE id = $1").catch(() => undefined);
     await pool.query("DELETE FROM articles WHERE canonical_url = ANY($1::text[])", [articleUrls]).catch(() => undefined);
     await pool.end();
   }
