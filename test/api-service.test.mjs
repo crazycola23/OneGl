@@ -30,9 +30,16 @@ test("tenant client keys are stored as hashes and scopes are enforced", () => {
   assert.ok(DEFAULT_SCOPES.includes("webhooks:write"));
 });
 
-test("tenant project names are internally namespaced without breaking legacy default tenant names", () => {
-  assert.equal(internalProjectName({ slug: "default" }, "小米汽车"), "小米汽车");
-  assert.equal(internalProjectName({ slug: "agency-a" }, "小米汽车"), "agency-a::小米汽车");
+test("service project names are opaque and cannot be chosen by another tenant", () => {
+  const first = internalProjectName({ id: 1, slug: "default" }, "小米汽车");
+  const second = internalProjectName({ id: 1, slug: "default" }, "小米汽车");
+  const otherTenant = internalProjectName({ id: 2, slug: "agency-a" }, "小米汽车");
+
+  assert.match(first, /^svc:t1:[a-f0-9]{16}:[a-f0-9]{12}$/);
+  assert.match(otherTenant, /^svc:t2:[a-f0-9]{16}:[a-f0-9]{12}$/);
+  assert.notEqual(first, second);
+  assert.notEqual(first, otherTenant);
+  assert.equal(first.includes("小米汽车"), false);
 });
 
 test("webhook signing secrets are deterministic per tenant and endpoint", () => {
