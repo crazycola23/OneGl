@@ -31,8 +31,16 @@ export async function countOverview(pool) {
         (SELECT count(*) FROM prompts)           AS prompts,
         (SELECT count(*) FROM sampling_batches)  AS batches,
         (SELECT count(*) FROM runs)              AS runs,
-        (SELECT count(*) FROM articles)          AS articles,
-        (SELECT count(*) FROM citations)         AS citations,
+        (SELECT count(DISTINCT c.article_id)
+           FROM citations c
+           JOIN runs r ON r.id = c.run_id
+          WHERE ${CITATION_VALID_RUN_SQL}
+            AND ${VISIBLE_CITATION_SQL})         AS articles,
+        (SELECT count(*)
+           FROM citations c
+           JOIN runs r ON r.id = c.run_id
+          WHERE ${CITATION_VALID_RUN_SQL}
+            AND ${VISIBLE_CITATION_SQL})         AS citations,
         (SELECT count(*) FROM accounts)          AS accounts
     `)
   ).rows;
