@@ -139,7 +139,10 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     assert.ok(intelligence.citations.stability.stabilityScore >= 0);
     assert.ok(intelligence.citations.topDomains.some((row) => row.domain === "a.example"));
 
-    await pool.query("UPDATE runs SET network_evidence_state = 'disabled' WHERE id = $1", [runRows[2]]);
+    // An empty scraped capture is not authoritative proof that Doubao performed zero
+    // searches: Playwright may not have exposed a long-lived completion body. It must reduce
+    // fan-out evidence coverage rather than contribute a zero-query observation.
+    await pool.query("UPDATE runs SET network_evidence_state = 'none' WHERE id = $1", [runRows[2]]);
     const partialEvidence = await loadBatchGeoIntelligence(pool, batchId);
     assert.equal(partialEvidence.fanout.evidenceStatus, "partial");
     assert.equal(partialEvidence.fanout.validRuns, 2);
