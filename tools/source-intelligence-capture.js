@@ -1,6 +1,5 @@
 import "dotenv/config";
 
-import { compileBrandRules } from "../src/brand/detect.js";
 import { buildPageContentIntelligence } from "../src/analysis/content-intelligence.js";
 import {
   assertPublicHttpUrl,
@@ -11,9 +10,12 @@ import {
   assessContentQuality,
   robotsDecision,
 } from "../src/analysis/page-fetch-guard.js";
+import { compileBrandRules } from "../src/brand/detect.js";
 import { createPool } from "../src/db/pool.js";
+import { safeOutboundBufferRequest } from "../src/security/outbound-url.js";
 
 const USER_AGENT = "OneGlSourceIntelligence/0.4 (+https://github.com/crazycola23/OneGl)";
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const pool = createPool();
 const robotsCache = new Map();
 const lastDomainFetch = new Map();
@@ -89,7 +91,11 @@ async function loadCitedArticles(batchId, { refresh, limit }) {
          LEFT JOIN article_page_observations apo
            ON apo.batch_id = r.sampling_batch_id AND apo.article_id = a.id
         WHERE r.sampling_batch_id = $1
-          AND c.visible_to_user IS NOT FALSE
+          AND r.status = 'success'
+          AND r.conversation_reset_confirmed IS TRUE
+          AND r.citation_state IN ('found', 'none_visible')
+          AND c.source_type = 'visible'
+          AND c.visible_to_user IS TRUE
           ${refresh ? "" : "AND COALESCE(apo.content_profile, '{}'::jsonb) = '{}'::jsonb"}
         GROUP BY a.id
         ORDER BY citation_count DESC, a.id${limitSql}`,
@@ -107,6 +113,30 @@ async function waitForDomain(url) {
   lastDomainFetch.set(domain, Date.now());
 }
 
+function headerValue(headers, name) {
+  if (!headers) return null;
+  const lower = String(name).toLowerCase();
+  const value = headers[lower] ?? headers[name];
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value == null ? null : String(value);
+}
+
+async function pinnedGet(url, { timeoutMs, maxBytes, headers }) {
+  try {
+    return await safeOutboundBufferRequest(url.href ?? url, {
+      method: "GET",
+      headers: { ...headers, "accept-encoding": "identity" },
+      timeoutMs,
+      maxResponseBytes: maxBytes,
+      allowHttp: true,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/non-public|reserved|localhost|resolve/i.test(message)) error.code = "PAGE_URL_PRIVATE";
+    throw error;
+  }
+}
+
 async function fetchRobots(url, timeoutMs) {
   const base = await assertPublicHttpUrl(url);
   const key = base.hostname.toLowerCase();
@@ -116,14 +146,14 @@ async function fetchRobots(url, timeoutMs) {
   let result = { status: "unavailable", text: null };
   try {
     for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
-      const response = await fetch(current, {
-        redirect: "manual",
-        signal: AbortSignal.timeout(Math.min(timeoutMs, 5000)),
+      const response = await pinnedGet(current, {
+        timeoutMs: Math.min(timeoutMs, 5000),
+        maxBytes: 512 * 1024 + 1,
         headers: { "user-agent": USER_AGENT, accept: "text/plain,*/*;q=0.1" },
       });
 
-      if ([301, 302, 303, 307, 308].includes(response.status)) {
-        const location = response.headers.get("location");
+      if (REDIRECT_STATUSES.has(response.status)) {
+        const location = headerValue(response.headers, "location");
         if (!location || redirectCount >= 3) {
           result = { status: "unavailable", text: null };
           break;
@@ -134,9 +164,9 @@ async function fetchRobots(url, timeoutMs) {
 
       if (response.status >= 400 && response.status < 500) {
         result = { status: "missing", text: null };
-      } else if (response.ok) {
-        const text = await response.text();
-        result = text && text.length <= 512 * 1024
+      } else if (response.ok && !response.tooLarge) {
+        const text = Buffer.from(response.body ?? []).toString("utf8");
+        result = text && response.bytes <= 512 * 1024
           ? { status: "found", text }
           : { status: "missing", text: null };
       }
@@ -147,30 +177,6 @@ async function fetchRobots(url, timeoutMs) {
   }
   robotsCache.set(key, result);
   return result;
-}
-
-async function readLimitedBody(response, maxBytes) {
-  const reader = response.body?.getReader();
-  if (!reader) return { data: new Uint8Array(), bytes: 0, tooLarge: false };
-  const chunks = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      return { data: new Uint8Array(), bytes: total, tooLarge: true };
-    }
-    chunks.push(value);
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return { data: merged, bytes: total, tooLarge: false };
 }
 
 async function fetchHtml(inputUrl, { timeoutMs, maxBytes, maxRedirects = 5 }) {
@@ -188,16 +194,16 @@ async function fetchHtml(inputUrl, { timeoutMs, maxBytes, maxRedirects = 5 }) {
 
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
     await waitForDomain(current.href);
-    const response = await fetch(current, {
-      redirect: "manual",
-      signal: AbortSignal.timeout(timeoutMs),
+    const response = await pinnedGet(current, {
+      timeoutMs,
+      maxBytes: maxBytes + 1,
       headers: {
         "user-agent": USER_AGENT,
         accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
       },
     });
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-      const location = response.headers.get("location");
+    if (REDIRECT_STATUSES.has(response.status)) {
+      const location = headerValue(response.headers, "location");
       if (!location || redirectCount >= maxRedirects) {
         return { state: "redirect_limit", finalUrl: current.href, httpStatus: response.status, errorCode: "PAGE_REDIRECT_LIMIT" };
       }
@@ -205,18 +211,30 @@ async function fetchHtml(inputUrl, { timeoutMs, maxBytes, maxRedirects = 5 }) {
       continue;
     }
 
-    const contentType = response.headers.get("content-type") ?? "";
-    const contentLength = Number(response.headers.get("content-length") ?? 0);
-    if (contentLength > maxBytes) return { state: "too_large", finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: contentLength, errorCode: "PAGE_TOO_LARGE" };
-    if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) return { state: "non_html", finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: contentLength || null };
-    if (!response.ok) return { state: response.status === 401 || response.status === 403 || response.status === 429 ? "blocked" : "http_error", finalUrl: current.href, httpStatus: response.status, contentType, errorCode: `HTTP_${response.status}` };
+    const contentType = headerValue(response.headers, "content-type") ?? "";
+    const contentLength = Number(headerValue(response.headers, "content-length") ?? 0);
+    if (response.tooLarge || contentLength > maxBytes) {
+      return {
+        state: "too_large",
+        finalUrl: current.href,
+        httpStatus: response.status,
+        contentType,
+        responseBytes: Math.max(Number(response.bytes ?? 0), contentLength),
+        errorCode: "PAGE_TOO_LARGE",
+      };
+    }
+    if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) {
+      return { state: "non_html", finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: response.bytes || contentLength || null };
+    }
+    if (!response.ok) {
+      return { state: response.status === 401 || response.status === 403 || response.status === 429 ? "blocked" : "http_error", finalUrl: current.href, httpStatus: response.status, contentType, errorCode: `HTTP_${response.status}` };
+    }
 
-    const body = await readLimitedBody(response, maxBytes);
-    if (body.tooLarge) return { state: "too_large", finalUrl: current.href, httpStatus: response.status, contentType, responseBytes: body.bytes, errorCode: "PAGE_TOO_LARGE" };
-    const decoded = decodeHtmlBytes(body.data, contentType);
+    const body = Buffer.from(response.body ?? []);
+    const decoded = decodeHtmlBytes(body, contentType);
     const quality = assessContentQuality({ text: decoded.text, html: decoded.text, contentType });
     if (!quality.usable) {
-      return { state: "unusable", finalUrl: current.href, httpStatus: response.status, contentType, contentCharset: decoded.charset, responseBytes: body.bytes, errorCode: quality.code === "THIN_CONTENT" ? "PAGE_THIN_CONTENT" : "PAGE_JAVASCRIPT_SHELL" };
+      return { state: "unusable", finalUrl: current.href, httpStatus: response.status, contentType, contentCharset: decoded.charset, responseBytes: response.bytes, errorCode: quality.code === "THIN_CONTENT" ? "PAGE_THIN_CONTENT" : "PAGE_JAVASCRIPT_SHELL" };
     }
     return {
       state: "success",
@@ -225,7 +243,7 @@ async function fetchHtml(inputUrl, { timeoutMs, maxBytes, maxRedirects = 5 }) {
       httpStatus: response.status,
       contentType,
       contentCharset: decoded.charset,
-      responseBytes: body.bytes,
+      responseBytes: response.bytes,
     };
   }
   return { state: "redirect_limit", finalUrl: current.href, errorCode: "PAGE_REDIRECT_LIMIT" };
@@ -349,7 +367,7 @@ async function worker(queue, options, brandRules, stats) {
       fetched = await fetchHtml(url, options);
     } catch (error) {
       fetched = {
-        state: "error",
+        state: error?.code === "PAGE_URL_PRIVATE" ? "blocked" : "error",
         finalUrl: url,
         errorCode: error?.code ?? "SOURCE_INTELLIGENCE_FETCH_ERROR",
       };
