@@ -93,6 +93,9 @@ function sourceContentView(source = {}) {
 
 function queryFanoutView(fanout = {}) {
   return {
+    evidence_status: fanout.evidenceStatus ?? "unavailable",
+    valid_runs: Number(fanout.validRuns ?? 0),
+    evidence_coverage_rate: finite(fanout.coverage),
     total_queries: Number(fanout.totalQueries ?? 0),
     unique_queries: Number(fanout.uniqueQueries ?? 0),
     brand_mention_rate: finite(fanout.coverageRate),
@@ -230,6 +233,9 @@ export async function buildCustomerDashboard(pool, tenantId, taskId, { days = 30
       cited_domains: citations.unique_domains,
       citation_stability_score: citations.stability.score,
       citation_landscape: citations.stability.difficulty,
+      query_fanout_evidence_status: searchQueries.evidence_status,
+      query_fanout_valid_runs: searchQueries.valid_runs,
+      query_fanout_evidence_coverage_rate: searchQueries.evidence_coverage_rate,
       query_fanout_total: searchQueries.total_queries,
       query_fanout_unique: searchQueries.unique_queries,
       source_pages_analyzed: source.analyzed_pages,
@@ -262,7 +268,7 @@ export async function buildCustomerDashboard(pool, tenantId, taskId, { days = 30
       questions_truncated: Number(intelligence.promptGaps?.length ?? 0) > questions.length,
       question_limit: questionLimit,
       rule_mode: intelligence.ruleMode ?? null,
-      note: "Visibility uses answer-valid runs; citation metrics use only citation-complete runs. Cited-page traits are observational correlations, not claims about Doubao ranking or citation causation.",
+      note: "Visibility uses answer-valid runs; citation metrics use only citation-complete runs; query fan-out reports evidence coverage separately so unavailable capture is never presented as zero searches. Cited-page traits are observational correlations, not claims about Doubao ranking or citation causation.",
     },
   };
 }
