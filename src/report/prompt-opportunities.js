@@ -9,10 +9,12 @@ function validObservedRun(run) {
 }
 
 function citationValidObservedRun(run) {
+  if (run?.status !== "success" || run?.conversation_reset_confirmed !== true) return false;
   const state = run?.citation_state ?? run?.citationState;
-  return run?.status === "success" &&
-    run?.conversation_reset_confirmed === true &&
-    ["found", "none_visible"].includes(state);
+  if (state == null || state === "") {
+    return numberOrNull(run?.captured_citation_count ?? run?.capturedCitationCount) != null;
+  }
+  return ["found", "none_visible"].includes(state);
 }
 
 function promptState(row) {
