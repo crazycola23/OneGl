@@ -15,6 +15,18 @@ function operations(document) {
   return result;
 }
 
+function resolveLocalRef(document, value) {
+  if (!value?.$ref?.startsWith("#/")) return value;
+  return value.$ref.slice(2).split("/").reduce((target, key) => target?.[key], document);
+}
+
+function isBareObjectSchema(schema) {
+  if (!schema || schema.$ref || schema.oneOf || schema.anyOf || schema.allOf) return false;
+  const objectType = schema.type === "object" || (Array.isArray(schema.type) && schema.type.includes("object"));
+  if (!objectType) return false;
+  return !schema.properties && (!schema.additionalProperties || schema.additionalProperties === true);
+}
+
 test("every operation has a unique operationId and at least one tag", () => {
   const document = buildOpenApiDocument();
   const ids = new Set();
@@ -49,6 +61,53 @@ test("response objects never mix $ref with sibling fields", () => {
       if (!response?.$ref) continue;
       assert.deepEqual(Object.keys(response), ["$ref"], `${method.toUpperCase()} ${pathname} ${status} has $ref siblings`);
     }
+  }
+});
+
+test("all JSON success responses use concrete schemas instead of bare objects", () => {
+  const document = buildOpenApiDocument();
+  for (const { pathname, method, operation } of operations(document)) {
+    for (const [status, unresolvedResponse] of Object.entries(operation.responses ?? {})) {
+      if (!/^2\d\d$/.test(status)) continue;
+      const response = resolveLocalRef(document, unresolvedResponse);
+      const schema = response?.content?.["application/json"]?.schema;
+      if (!schema) continue;
+      assert.equal(
+        isBareObjectSchema(resolveLocalRef(document, schema)),
+        false,
+        `${method.toUpperCase()} ${pathname} ${status} has a generic object response schema`,
+      );
+    }
+  }
+});
+
+test("all JSON request bodies use concrete schemas instead of bare objects", () => {
+  const document = buildOpenApiDocument();
+  for (const { pathname, method, operation } of operations(document)) {
+    const requestBody = resolveLocalRef(document, operation.requestBody);
+    const schema = requestBody?.content?.["application/json"]?.schema;
+    if (!schema) continue;
+    assert.equal(
+      isBareObjectSchema(resolveLocalRef(document, schema)),
+      false,
+      `${method.toUpperCase()} ${pathname} has a generic object request schema`,
+    );
+  }
+});
+
+test("status-bearing public core resources expose finite enums", () => {
+  const document = buildOpenApiDocument();
+  for (const schemaName of [
+    "AccountResource",
+    "AuthSessionResource",
+    "BatchSummaryResource",
+    "RunResource",
+    "WebhookEventResource",
+    "MonitorExecutionResource",
+  ]) {
+    const status = document.components.schemas[schemaName]?.properties?.status;
+    assert.ok(status, `${schemaName} is missing status`);
+    assert.ok(Array.isArray(status.enum) && status.enum.length > 0, `${schemaName}.status must be an enum`);
   }
 });
 
