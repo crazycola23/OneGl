@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createPool } from "../src/db/pool.js";
+import { buildBrandSourceIntelligence } from "../src/db/brand-source-intelligence.js";
+import { listBatches, listProjects, sourceAggregates } from "../src/db/dashboard.js";
 import {
   deleteProjectCompetitor,
   listProjectCompetitors,
@@ -9,6 +11,7 @@ import {
   loadProjectGeoIntelligence,
   upsertProjectCompetitor,
 } from "../src/db/geo-intelligence.js";
+import { buildBatchReport } from "../src/db/report.js";
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -107,6 +110,17 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
          ($3, $4, 1, 'unresolved', true, 'visible', '2026-09-15T12:00:00Z')`,
       [...runRows, ...articleIds],
     );
+    await pool.query(
+      `UPDATE runs
+          SET captured_citation_count = CASE id
+            WHEN $1 THEN 2
+            WHEN $2 THEN 2
+            WHEN $3 THEN 1
+            ELSE captured_citation_count
+          END
+        WHERE id = ANY($4::bigint[])`,
+      [runRows[0], runRows[1], runRows[2], runRows],
+    );
 
     const competitor = await upsertProjectCompetitor(pool, projectId, {
       name: "竞品B",
@@ -161,6 +175,54 @@ test("GEO intelligence is re-derived from stored runs, queries, citations and co
     assert.equal(projectWindow.fanout.validRuns, 2);
     assert.equal(projectWindow.citations.validRuns, 3);
     assert.equal(projectWindow.citations.stability.transitions, 1);
+
+    // A partial run is still answer-valid, but its citation parse/reconciliation failed.
+    // Deliberately attach a visible citation to prove legacy source/report aggregations do not
+    // accidentally treat persisted partial evidence as authoritative citation ground truth.
+    const partialRun = await pool.query(
+      `INSERT INTO runs
+         (prompt_id, provider, provider_access, model, status, started_at, finished_at, answer,
+          captured_citation_count, citation_state, citation_diagnostics, network_evidence_state,
+          local_run_id, sampling_batch_id, conversation_reset_confirmed, brand_mentioned,
+          matched_terms, attempt, created_at)
+       VALUES ($1, 'doubao', 'scraped', 'doubao', 'partial', '2026-09-15T14:00:00Z', '2026-09-15T14:00:00Z',
+               '品牌A仍然值得考虑', 9, 'parse_failed', '["forced-partial"]'::jsonb, 'disabled',
+               $2, $3, true, true, '[]'::jsonb, 1, '2026-09-15T14:00:00Z')
+       RETURNING id`,
+      [promptId, `run_geo_${suffix}_partial`, batchId],
+    );
+    await pool.query(
+      `INSERT INTO citations
+         (run_id, article_id, source_position, relation_status, visible_to_user, source_type, created_at)
+       VALUES ($1, $2, 1, 'unresolved', true, 'visible', '2026-09-15T14:00:00Z')`,
+      [partialRun.rows[0].id, articleIds[2]],
+    );
+
+    const legacyReport = await buildBatchReport(pool, batchId);
+    assert.equal(legacyReport.runs.valid, 4);
+    assert.equal(legacyReport.citations.validRuns, 3);
+    assert.equal(legacyReport.citations.coverage, 3 / 4);
+    assert.equal(legacyReport.citations.total, 5);
+
+    const aggregates = await sourceAggregates(pool, { batchId, limit: 25 });
+    assert.equal(Number(aggregates.totals.citations), 5);
+
+    const batches = await listBatches(pool, { projectId, limit: 10 });
+    const listedBatch = batches.find((row) => Number(row.id) === Number(batchId));
+    assert.equal(Number(listedBatch.valid_runs), 4);
+    assert.equal(Number(listedBatch.citation_valid_runs), 3);
+    assert.equal(Number(listedBatch.citations), 5);
+
+    const listedProject = (await listProjects(pool)).find((row) => Number(row.id) === Number(projectId));
+    assert.equal(Number(listedProject.citation_count), 5);
+
+    const sourceIntelligence = await buildBrandSourceIntelligence(pool, batchId);
+    assert.equal(sourceIntelligence.runs.length, 4);
+    assert.equal(sourceIntelligence.coverage.answerValidRuns, 4);
+    assert.equal(sourceIntelligence.coverage.citationValidRuns, 3);
+    assert.equal(sourceIntelligence.coverage.citationEvidenceRate, 3 / 4);
+    assert.equal(sourceIntelligence.runs.find((row) => row.localRunId.endsWith("_partial")).citations.length, 0);
+    assert.equal(sourceIntelligence.sources.reduce((sum, row) => sum + Number(row.citationCount), 0), 5);
 
     assert.equal(await deleteProjectCompetitor(pool, projectId, competitor.id), true);
     assert.deepEqual(await listProjectCompetitors(pool, projectId), []);

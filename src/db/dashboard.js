@@ -4,12 +4,15 @@ import { buildBatchReport } from "./report.js";
 /**
  * Read-only queries that back the dashboard.
  *
- * The valid-run rule is repeated here in SQL so list pages stay a single round trip:
- * a run is a valid observation when it captured an answer (success or partial) from a
- * conversation that was confirmed empty.
+ * Answer-valid runs include partial observations because the captured answer remains usable.
+ * Citation-valid runs are stricter: citation parsing/reconciliation must have completed and
+ * only user-visible DOM citations are eligible for source analytics.
  */
 export const VALID_RUN_SQL =
   "r.status IN ('success', 'partial') AND r.conversation_reset_confirmed IS TRUE";
+export const CITATION_VALID_RUN_SQL =
+  "r.status = 'success' AND r.conversation_reset_confirmed IS TRUE AND r.citation_state IN ('found', 'none_visible')";
+const VISIBLE_CITATION_SQL = "c.source_type = 'visible' AND c.visible_to_user IS TRUE";
 
 export async function databaseReady(pool) {
   try {
@@ -54,7 +57,9 @@ export async function listProjects(pool) {
              (SELECT count(*)
                 FROM citations c JOIN runs r ON r.id = c.run_id
                 JOIN prompts q ON q.id = r.prompt_id
-               WHERE q.project_id = p.id)                                              AS citation_count
+               WHERE q.project_id = p.id
+                 AND ${CITATION_VALID_RUN_SQL}
+                 AND ${VISIBLE_CITATION_SQL})                                          AS citation_count
         FROM projects p
        ORDER BY p.created_at DESC
     `)
@@ -96,7 +101,13 @@ export async function trackedArticles(pool, projectId) {
               min(c.created_at)               AS first_seen_at,
               max(c.created_at)               AS last_seen_at
          FROM tracked_articles t
-         LEFT JOIN citations c ON c.tracked_article_id = t.id
+         LEFT JOIN (
+           SELECT c.*
+             FROM citations c
+             JOIN runs r ON r.id = c.run_id
+            WHERE ${CITATION_VALID_RUN_SQL}
+              AND ${VISIBLE_CITATION_SQL}
+         ) c ON c.tracked_article_id = t.id
         WHERE t.project_id = $1
         GROUP BY t.id
         ORDER BY citations DESC, t.canonical_url`,
@@ -133,17 +144,24 @@ export async function listBatches(pool, { projectId = null, limit = 50 } = {}) {
               p.name AS project_name, p.target_brand,
               count(r.id)                                                                AS runs_total,
               count(r.id) FILTER (WHERE ${VALID_RUN_SQL})                                AS valid_runs,
+              count(r.id) FILTER (WHERE ${CITATION_VALID_RUN_SQL})                       AS citation_valid_runs,
               count(r.id) FILTER (WHERE r.status = 'failed')                             AS failed_runs,
               count(r.id) FILTER (WHERE r.status = 'partial')                            AS partial_runs,
               count(r.id) FILTER (WHERE ${VALID_RUN_SQL} AND r.brand_mentioned)          AS mentioned_runs,
               count(DISTINCT r.prompt_id) FILTER (WHERE ${VALID_RUN_SQL})                AS prompts_total,
               count(DISTINCT r.prompt_id) FILTER (
                 WHERE ${VALID_RUN_SQL} AND r.brand_mentioned)                            AS prompts_mentioned,
-              COALESCE(sum(r.captured_citation_count), 0)                                AS citations,
+              COALESCE(sum(r.captured_citation_count) FILTER (WHERE ${CITATION_VALID_RUN_SQL}), 0) AS citations,
               (SELECT count(*) FROM tracked_articles t WHERE t.project_id = b.project_id AND t.enabled) AS tracked_total,
               (SELECT count(DISTINCT c.tracked_article_id)
                  FROM citations c JOIN runs r2 ON r2.id = c.run_id
-                WHERE r2.sampling_batch_id = b.id AND c.tracked_article_id IS NOT NULL)  AS tracked_cited
+                WHERE r2.sampling_batch_id = b.id
+                  AND r2.status = 'success'
+                  AND r2.conversation_reset_confirmed IS TRUE
+                  AND r2.citation_state IN ('found', 'none_visible')
+                  AND c.source_type = 'visible'
+                  AND c.visible_to_user IS TRUE
+                  AND c.tracked_article_id IS NOT NULL)                                  AS tracked_cited
          FROM sampling_batches b
          JOIN projects p ON p.id = b.project_id
          LEFT JOIN runs r ON r.sampling_batch_id = b.id
@@ -276,6 +294,8 @@ export async function sourceAggregates(pool, { projectId = null, batchId = null,
          JOIN prompts pr ON pr.id = r.prompt_id
         WHERE ($1::bigint IS NULL OR pr.project_id = $1)
           AND ($2::bigint IS NULL OR r.sampling_batch_id = $2)
+          AND ${CITATION_VALID_RUN_SQL}
+          AND ${VISIBLE_CITATION_SQL}
         GROUP BY 1
         ORDER BY citations DESC, domain
         LIMIT $3`,
@@ -296,6 +316,8 @@ export async function sourceAggregates(pool, { projectId = null, batchId = null,
          JOIN prompts pr ON pr.id = r.prompt_id
         WHERE ($1::bigint IS NULL OR pr.project_id = $1)
           AND ($2::bigint IS NULL OR r.sampling_batch_id = $2)
+          AND ${CITATION_VALID_RUN_SQL}
+          AND ${VISIBLE_CITATION_SQL}
         GROUP BY a.id
         ORDER BY citations DESC, a.canonical_url
         LIMIT $3`,
@@ -313,7 +335,9 @@ export async function sourceAggregates(pool, { projectId = null, batchId = null,
          JOIN runs r ON r.id = c.run_id
          JOIN prompts pr ON pr.id = r.prompt_id
         WHERE ($1::bigint IS NULL OR pr.project_id = $1)
-          AND ($2::bigint IS NULL OR r.sampling_batch_id = $2)`,
+          AND ($2::bigint IS NULL OR r.sampling_batch_id = $2)
+          AND ${CITATION_VALID_RUN_SQL}
+          AND ${VISIBLE_CITATION_SQL}`,
       [projectId, batchId],
     )
   ).rows;
