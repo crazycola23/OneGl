@@ -73,6 +73,8 @@ async function main() {
     const run = assertCanaryResult(outcome);
     console.log(JSON.stringify({
       ok: true,
+      browser: config.browser,
+      storage_state_encrypted: session.storageStateEncrypted === true,
       run_id: run.id,
       answer_chars: String(run.answer ?? "").length,
       citation_state: run.citationState,
@@ -88,6 +90,7 @@ async function main() {
 main().catch((error) => {
   console.error(JSON.stringify({
     ok: false,
+    browser: String(process.env.ONEGL_BROWSER ?? "camoufox"),
     error: error instanceof Error ? error.message : String(error),
     details: error?.details ?? null,
   }));
