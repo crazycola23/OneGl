@@ -26,6 +26,12 @@ function citationCompleteRun(run) {
   return run?.status === "success" && new Set(["found", "none_visible"]).has(run?.citation_state);
 }
 
+function queryEvidenceUsable(run) {
+  // API adapters can provide first-party query observations without browser-network capture.
+  if (run?.provider_access === "api") return true;
+  return new Set(["found", "none"]).has(run?.network_evidence_state);
+}
+
 export async function listProjectCompetitors(pool, projectId) {
   const { rows } = await pool.query(
     `SELECT id, project_id, name, aliases, domains, exclude_patterns, enabled, created_at, updated_at
@@ -101,7 +107,7 @@ const RUN_SELECT = `
          COALESCE(r.model, r.provider) AS model,
          COALESCE(r.provider_access, 'scraped') AS provider_access,
          r.model_version, r.answer, r.brand_mentioned, r.created_at,
-         r.status, r.citation_state
+         r.status, r.citation_state, r.network_evidence_state
     FROM runs r
     JOIN prompts p ON p.id = r.prompt_id
 `;
@@ -168,7 +174,9 @@ async function buildIntelligence(pool, project, runs, scope) {
     }
 
     const promptId = String(run.prompt_id);
-    promptRunCounts.set(promptId, (promptRunCounts.get(promptId) ?? 0) + 1);
+    if (queryEvidenceUsable(run)) {
+      promptRunCounts.set(promptId, (promptRunCounts.get(promptId) ?? 0) + 1);
+    }
     const prompt = promptStats.get(promptId) ?? {
       promptId,
       prompt: run.prompt,
@@ -202,8 +210,8 @@ async function buildIntelligence(pool, project, runs, scope) {
     providerStats.set(providerKey, target);
   }
 
-  const runIds = runs.map((run) => Number(run.id));
   const citationRunIds = runs.filter(citationCompleteRun).map((run) => Number(run.id));
+  const queryRunIds = runs.filter(queryEvidenceUsable).map((run) => Number(run.id));
   const { rows: queryRowsRaw } = await pool.query(
     `SELECT r.id AS run_id, r.prompt_id, p.prompt, q.query_text AS query
        FROM run_search_queries q
@@ -211,13 +219,25 @@ async function buildIntelligence(pool, project, runs, scope) {
        JOIN prompts p ON p.id = r.prompt_id
       WHERE r.id = ANY($1::bigint[])
       ORDER BY r.id, q.query_position`,
-    [runIds],
+    [queryRunIds],
   );
   const queryRows = queryRowsRaw.map((row) => ({
     ...row,
     brand_mentioned: brandMentionByRunId.get(String(row.run_id)) ?? false,
   }));
-  const fanout = computeQueryFanout(queryRows, { promptRunCounts });
+  const fanoutBase = computeQueryFanout(queryRows, { promptRunCounts });
+  const queryCoverage = runs.length ? queryRunIds.length / runs.length : null;
+  const fanout = {
+    ...fanoutBase,
+    validRuns: queryRunIds.length,
+    coverage: queryCoverage,
+    evidenceStatus:
+      queryRunIds.length === 0
+        ? "unavailable"
+        : queryRunIds.length === runs.length
+          ? "available"
+          : "partial",
+  };
 
   const { rows: dailyDomains } = await pool.query(
     `SELECT to_char((r.created_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS date,
