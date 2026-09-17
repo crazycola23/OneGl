@@ -3436,6 +3436,8 @@
           },
           "status": {
             "enum": [
+              "pending",
+              "running",
               "success",
               "partial",
               "failed"

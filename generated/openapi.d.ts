@@ -2094,7 +2094,7 @@ export interface components {
             /** Format: date-time */
             started_at?: string | null;
             /** @enum {string} */
-            status?: "success" | "partial" | "failed";
+            status?: "pending" | "running" | "success" | "partial" | "failed";
         } & {
             [key: string]: unknown;
         };
