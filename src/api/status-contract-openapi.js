@@ -22,7 +22,8 @@ const enums = {
   ],
   BatchSummaryResource: ["pending", "queued", "running", "paused", "completed", "partial", "failed", "aborted"],
   RunResource: ["success", "partial", "failed"],
-  WebhookEventResource: ["pending", "delivering", "delivered", "failed"],
+  WebhookEventResource: ["queued", "delivering", "delivered", "failed"],
+  ScheduleExecutionItem: ["pending", "processing", "completed", "failed"],
 };
 
 export function applyStatusContractOpenApi(document) {
