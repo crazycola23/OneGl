@@ -7,12 +7,13 @@ The public service implementation lives in `src/api-server.js` with tenant/clien
 OpenAPI development commands:
 
 ```bash
-npm run openapi:build   # regenerate openapi.json
-npm run openapi:lint    # Redocly validation/lint
-npm run openapi:types   # regenerate generated/openapi.d.ts
-npm run openapi:check   # build + lint + types + contract tests + generated-file drift check
+npm run openapi:build      # regenerate openapi.json
+npm run openapi:lint       # Redocly validation/lint
+npm run openapi:types      # regenerate generated/openapi.d.ts
+npm run openapi:typecheck  # compile-check the generated declaration
+npm run openapi:check      # build + lint + types + typecheck + contract tests + drift check
 ```
 
 Pull requests also run an OpenAPI breaking-change gate. The initial committed `openapi.json` establishes the baseline because older `main` revisions do not contain a static contract; once merged, later changes are compared against the base branch and breaking changes fail CI.
 
-See `docs/OPENAPI_SERVICE_PLAN.md` for deployment, tenant/client bootstrap, account-connect, task/execution/report and webhook integration flows.
+See `docs/OPENAPI_SERVICE_PLAN.md` for deployment and service architecture, and `docs/OPENAPI_CONTRACT_HARDENING.md` for contract workflow, compatibility rules, generated TypeScript examples, and webhook verification.
