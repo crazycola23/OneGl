@@ -64,6 +64,7 @@ export async function persistRetrievalEvidence({ client, runId, run }) {
   let articlesCreated = 0;
   let exactMatches = 0;
   let aliasMatches = 0;
+  let matchedRetrievedSources = 0;
   const matchedCitationIds = new Set();
   for (const row of sourceRows) {
     const articleResult = await client.query(ARTICLE_UPSERT, [
@@ -80,6 +81,7 @@ export async function persistRetrievalEvidence({ client, runId, run }) {
       siteRule: siteRuleCitations,
     });
     if (match.visibleCitationId) {
+      matchedRetrievedSources += 1;
       matchedCitationIds.add(match.visibleCitationId);
       if (match.matchMethod === MATCH_METHODS.EXACT) exactMatches += 1;
       else aliasMatches += 1;
@@ -126,8 +128,11 @@ export async function persistRetrievalEvidence({ client, runId, run }) {
     retrievedArticlesCreated: articlesCreated,
     exactCitationMatches: exactMatches,
     aliasCitationMatches: aliasMatches,
+    matchedRetrievedSourceCount: matchedRetrievedSources,
+    uniqueMatchedCitationCount: matchedCitationIds.size,
+    // Backward-compatible name: historically this field meant unique citation ids.
     matchedCitationCount: matchedCitationIds.size,
     exactCitationConversionRate: sourceRows.length ? exactMatches / sourceRows.length : null,
-    matchedCitationConversionRate: sourceRows.length ? matchedCitationIds.size / sourceRows.length : null,
+    matchedCitationConversionRate: sourceRows.length ? matchedRetrievedSources / sourceRows.length : null,
   };
 }
