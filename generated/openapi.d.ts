@@ -2484,6 +2484,19 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description Request is syntactically valid but violates a supported value or business validation rule */
+        UnprocessableEntity: {
+            headers: {
+                "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
     };
     parameters: never;
     requestBodies: never;
@@ -2645,6 +2658,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["UnprocessableEntity"];
             /** @description API request rate limit exceeded. */
             429: {
                 headers: {
@@ -3080,6 +3094,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             /** @description API request rate limit exceeded. */
             429: {
                 headers: {
@@ -3177,6 +3192,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
             /** @description API request rate limit exceeded. */
             429: {
                 headers: {
@@ -3466,6 +3482,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             /** @description API request rate limit exceeded. */
             429: {
                 headers: {
@@ -3929,6 +3946,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             /** @description API request rate limit exceeded. */
             429: {
                 headers: {
@@ -5774,6 +5792,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["UnprocessableEntity"];
             /** @description API request rate limit exceeded. */
             429: {
                 headers: {

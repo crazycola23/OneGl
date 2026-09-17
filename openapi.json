@@ -247,6 +247,30 @@
             "$ref": "#/components/headers/OneGlRateLimitReset"
           }
         }
+      },
+      "UnprocessableEntity": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Request is syntactically valid but violates a supported value or business validation rule",
+        "headers": {
+          "X-OneGl-Request-Id": {
+            "$ref": "#/components/headers/OneGlRequestId"
+          },
+          "X-RateLimit-Limit": {
+            "$ref": "#/components/headers/OneGlRateLimitLimit"
+          },
+          "X-RateLimit-Remaining": {
+            "$ref": "#/components/headers/OneGlRateLimitRemaining"
+          },
+          "X-RateLimit-Reset": {
+            "$ref": "#/components/headers/OneGlRateLimitReset"
+          }
+        }
       }
     },
     "schemas": {
@@ -4657,6 +4681,9 @@
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -5537,6 +5564,9 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -5754,6 +5784,9 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
           },
           "429": {
             "content": {
@@ -6360,6 +6393,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "429": {
             "content": {
@@ -7377,6 +7413,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "429": {
             "content": {
@@ -11362,6 +11401,9 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
           },
           "429": {
             "content": {
