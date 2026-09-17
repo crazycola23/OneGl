@@ -337,9 +337,10 @@ async function fetchRobots(baseUrl, { timeoutMs = 10000, userAgent = DEFAULT_USE
       }
       if (response.status >= 400 && response.status < 500) return { status: "missing" };
       if (!response.ok) return { status: "unavailable", httpStatus: response.status };
-      if (response.tooLarge) return { status: "missing" };
+      if (response.tooLarge) return { status: "unavailable", httpStatus: response.status };
       const text = Buffer.from(response.body ?? []).toString("utf8");
-      if (!text || response.bytes > 512 * 1024) return { status: "missing" };
+      if (response.bytes > 512 * 1024) return { status: "unavailable", httpStatus: response.status };
+      if (!text) return { status: "missing" };
       return { status: "found", text };
     }
     return { status: "unavailable" };
