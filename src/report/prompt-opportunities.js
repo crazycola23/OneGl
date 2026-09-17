@@ -115,7 +115,17 @@ export function buildPromptOpportunities(detail, { maxRows = 30 } = {}) {
       ? row.visibleCitations / row.citationComparableRuns
       : null;
     const state = promptState({ ...row, mentionRate });
-    return { ...row, mentionRate, citationEvidenceRate, citationDensity, ...state };
+    const citationCoverageNote = citationEvidenceRate != null && citationEvidenceRate < 1
+      ? ` 引用证据覆盖 ${(citationEvidenceRate * 100).toFixed(1)}%（${row.citationValidRuns}/${row.validRuns} Run）；覆盖不足时不要把引用密度变化解释成业务变化。`
+      : "";
+    return {
+      ...row,
+      mentionRate,
+      citationEvidenceRate,
+      citationDensity,
+      ...state,
+      action: `${state.action}${citationCoverageNote}`,
+    };
   });
 
   rows.sort((a, b) =>
