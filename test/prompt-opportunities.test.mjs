@@ -91,6 +91,8 @@ test("partial citation parse failure 只参与品牌回答口径，不污染 Pro
   assert.equal(row.citationEvidenceRate, 0.5);
   assert.equal(row.visibleCitations, 2);
   assert.equal(row.citationDensity, 2);
+  assert.match(row.action, /引用证据覆盖 50\.0%/);
+  assert.match(row.action, /不要把引用密度变化解释成业务变化/);
 });
 
 test("none_visible 是 citation-valid 的 0 引用证据", () => {
