@@ -179,7 +179,7 @@ test("an unsettled deterministic run refuses a later automatic attempt", async (
       runToken: "batch:10:1",
       attempt: 1,
     });
-    assert.equal(first.status, undefined);
+    assert.equal(first.status, "running");
 
     await assert.rejects(
       () => store.createRun({
@@ -211,6 +211,7 @@ test("an unsettled deterministic run refuses a later automatic attempt", async (
       runToken: "batch:10:1",
       attempt: 2,
     });
+    assert.equal(retry.status, "running");
     assert.equal(retry.attempt, 2);
     assert.ok(retry.attemptHistory.some((entry) => entry.attempt === 1 && entry.status === "failed"));
   } finally {
