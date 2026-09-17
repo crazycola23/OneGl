@@ -1,4 +1,4 @@
-import { canonicalizeUrl, domainFromUrl } from "../url.js";
+import { canonicalizeUrl, domainFromUrl, siteRuleAlias } from "../url.js";
 import { normalizeDomain } from "./domain.js";
 
 function compactText(value, max) {
@@ -87,20 +87,23 @@ function indexOf(entries) {
   return index;
 }
 
+function tierIndex(bucket) {
+  if (!bucket) return { index: null, keyFor: (value) => value };
+  if (bucket?.index) {
+    return {
+      index: indexOf(bucket.index),
+      keyFor: typeof bucket.keyFor === "function" ? bucket.keyFor : (value) => value,
+    };
+  }
+  return { index: indexOf(bucket), keyFor: (value) => value };
+}
+
 /**
  * Retrieval -> visible-citation match, in strict confidence order.
  *
  * Every tier below `canonical_url_exact` is a *separate, labelled* method, never a
- * silent widening of the exact metric. The exact tier stays authoritative; the alias
- * tiers exist because the same article is routinely observed under a different URL
- * shape on the network side (redirect target, HTML <link rel=canonical>, mobile/AMP
- * host) than in the rendered citation list, and counting those as "not cited"
- * systematically understates the overlap the report is trying to measure.
- *
- * `aliases` may be given in two shapes:
- *   - a Map of alias key -> citation, or
- *   - `{ redirect, htmlCanonical, siteRule, contentHash }`, each a Map or an array of
- *     citations that will be indexed by their own canonicalUrl.
+ * silent widening of the exact metric. Alias tiers may provide `{ index, keyFor }` so
+ * both sides of a tier are normalized by the same rule before lookup.
  */
 export function exactCitationMatch(retrievedCanonicalUrl, visibleByCanonicalUrl, aliases = null) {
   const exactIndex = indexOf(visibleByCanonicalUrl);
@@ -116,7 +119,11 @@ export function exactCitationMatch(retrievedCanonicalUrl, visibleByCanonicalUrl,
     [MATCH_METHODS.CONTENT_HASH, aliases?.contentHash],
   ];
   for (const [matchMethod, bucket] of tiers) {
-    const citation = lookup(indexOf(bucket), retrievedCanonicalUrl);
+    const { index, keyFor } = tierIndex(bucket);
+    const key = matchMethod === MATCH_METHODS.SITE_RULE
+      ? siteRuleAlias(retrievedCanonicalUrl)
+      : keyFor(retrievedCanonicalUrl);
+    const citation = lookup(index, key);
     if (citation) return { visibleCitationId: citation.id, matchMethod };
   }
 
