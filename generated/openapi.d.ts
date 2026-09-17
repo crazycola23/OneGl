@@ -1324,7 +1324,7 @@ export interface components {
             /** @enum {string} */
             provider?: "doubao";
             /** @enum {string} */
-            status?: "healthy" | "login_required" | "session_expired" | "verification_required" | "access_restricted" | "paused" | "cooldown" | "rate_limited" | "disabled";
+            status?: "unknown" | "healthy" | "login_required" | "session_expired" | "verification_required" | "access_restricted" | "paused" | "cooldown" | "rate_limited" | "disabled";
             storage_state_present?: boolean;
             /** Format: date-time */
             updated_at?: string | null;
@@ -1363,7 +1363,7 @@ export interface components {
                 [key: string]: unknown;
             };
             /** @enum {string} */
-            status: "starting" | "waiting_for_login" | "connected" | "verification_required" | "access_restricted" | "failed" | "cancelled" | "expired";
+            status: "pending" | "starting" | "waiting_for_login" | "connected" | "verification_required" | "access_restricted" | "failed" | "cancelled" | "expired";
             /** Format: date-time */
             updated_at?: string | null;
         } & {
@@ -1830,7 +1830,7 @@ export interface components {
             /** Format: date-time */
             started_at?: string | null;
             /** @enum {string} */
-            status: "pending" | "processing" | "completed" | "failed";
+            status: "pending" | "processing" | "completed" | "skipped" | "failed";
             /** Format: date-time */
             updated_at?: string;
         };
@@ -2142,7 +2142,7 @@ export interface components {
             /** Format: date-time */
             scheduled_for: string;
             /** @enum {string} */
-            status: "pending" | "processing" | "completed" | "failed";
+            status: "pending" | "processing" | "completed" | "failed" | "action_required";
         };
         ScheduleResource: {
             account_ids: string[];

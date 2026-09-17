@@ -347,6 +347,7 @@
           },
           "status": {
             "enum": [
+              "unknown",
               "healthy",
               "login_required",
               "session_expired",
@@ -481,6 +482,7 @@
           },
           "status": {
             "enum": [
+              "pending",
               "starting",
               "waiting_for_login",
               "connected",
@@ -2492,6 +2494,7 @@
               "pending",
               "processing",
               "completed",
+              "skipped",
               "failed"
             ],
             "type": "string"
@@ -3566,7 +3569,8 @@
               "pending",
               "processing",
               "completed",
-              "failed"
+              "failed",
+              "action_required"
             ],
             "type": "string"
           }
