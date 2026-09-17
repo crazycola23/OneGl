@@ -131,10 +131,6 @@ export async function inspectSession(page) {
     const hasVisible = (selector) =>
       [...document.querySelectorAll(selector)].some(visible);
 
-    // Session detection has two independent sources, because each one alone has been
-    // observed to be wrong: the app's own router payload (absent in newer builds) and the
-    // passport cookies/localStorage the login flow leaves behind. `loggedIn` is the OR of
-    // both; `routerLogin` alone must never be trusted to mean "logged out".
     const routerLogin =
       window._ROUTER_DATA?.loaderData?.chat_layout?.userSetting?.data?.is_login;
     const cookieNames = document.cookie
@@ -160,10 +156,6 @@ export async function inspectSession(page) {
       hasVisible('iframe[src*="captcha"], iframe[src*="verify"], iframe[src*="rmc"], input[placeholder*="验证码"], input[aria-label*="验证码"]') ||
       visibleText.some((text) => /人机验证|完成安全验证|滑动验证|拖动滑块/.test(text));
 
-    // `routerLogin` is the app's own answer and is the only *positive* signal available.
-    // The previous version also treated a visible 登录 button as "not logged in" while
-    // simultaneously letting a page with both a login button and an editable box count as
-    // healthy - which is exactly the shape of the logged-out chat page.
     const explicitLogin =
       routerLogin === false ||
       visibleText.some((text) => /扫码登录|请登录后使用|登录后继续|登录以解锁更多功能/.test(text));
@@ -181,9 +173,6 @@ export async function inspectSession(page) {
 
     if (captcha) return { state: "verification_required", routerLogin, loggedIn, loginButton, textbox };
     if (explicitLogin && !loggedIn) return { state: "login_required", routerLogin, loggedIn, loginButton, textbox };
-    // A visible 登录 control only counts as "not logged in" when we have no positive proof
-    // of a session; otherwise a logged-in page that happens to render a 登录 entry (e.g. an
-    // account switcher) would be misread.
     if (loginButton && !loggedIn) return { state: "login_required", routerLogin, loggedIn, loginButton, textbox };
     if (accessRestricted) return { state: "access_restricted", routerLogin, loggedIn, loginButton, textbox };
     if (textbox && loggedIn) return { state: "healthy", routerLogin, loggedIn, loginButton, textbox };
@@ -196,9 +185,6 @@ export async function waitForManualLogin(page, config) {
   let healthyPolls = 0;
   let lastNavigationAt = Date.now();
   while (Date.now() < deadline) {
-    // The login flow navigates to an OAuth provider and back, and inspecting the DOM during
-    // that navigation throws "Execution context was destroyed". Treating that as fatal
-    // killed the auth command mid-login, so it is counted as "still settling" instead.
     let state;
     try {
       state = await inspectSession(page);
@@ -213,9 +199,6 @@ export async function waitForManualLogin(page, config) {
       throw error;
     }
     if (state.state === "healthy") {
-      // A healthy reading right after a navigation is not trustworthy: the SPA may still be
-      // about to bounce to the login page. Require a short quiet period as well as two
-      // consecutive healthy polls.
       if (Date.now() - lastNavigationAt < 2_000) {
         healthyPolls = 0;
       } else {
@@ -235,9 +218,6 @@ export async function waitForManualLogin(page, config) {
 }
 
 export async function requireHealthySession(page, config) {
-  // Doubao is an SPA that reports `unknown` while it boots, and a cold browser can need
-  // several seconds before the composer renders. Wait that gap out instead of reporting
-  // a page change; definitive login/verification states are still reported immediately.
   const settleMs = Math.min(config.timeoutMs, 30_000);
   const deadline = Date.now() + settleMs;
   let state = await inspectSession(page);
@@ -292,10 +272,6 @@ async function clickFirstVisible(locator) {
 }
 
 export async function startCleanConversation(page, config) {
-  // Deliberately no "新工作任务" fallback: that control switches the product into a
-  // different interaction mode, which changes what is being measured and is not the
-  // chat behaviour this collector is authorised to exercise. If "新对话" is missing we
-  // return to /chat/ and, failing that, refuse to submit.
   const candidates = [
     page.getByRole("button", { name: "新对话", exact: true }),
     page.getByText("新对话", { exact: true }),
@@ -332,10 +308,6 @@ export async function startCleanConversation(page, config) {
   });
   await page.waitForTimeout(400);
 
-  // Confirm the conversation really is empty before the prompt runs. Clicking 新对话
-  // only reports that a click happened; the SPA may still be swapping the composer.
-  // A run whose answer was shaped by leftover history would silently corrupt the
-  // mention-rate statistic, so this has to be verified rather than assumed.
   const settleMs = config?.conversationSettleMs ?? 15_000;
   const resetConfirmed = await waitForEmptyConversation(page, settleMs);
   return { clickedNewConversation: clicked, resetConfirmed };
@@ -343,9 +315,15 @@ export async function startCleanConversation(page, config) {
 
 async function waitForEmptyConversation(page, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
+  let stableEmptyPolls = 0;
   while (Date.now() < deadline) {
     const candidates = await answerCandidates(page);
-    if (!candidates.some((item) => !item.isUser)) return true;
+    if (candidates.length === 0) {
+      stableEmptyPolls += 1;
+      if (stableEmptyPolls >= 2) return true;
+    } else {
+      stableEmptyPolls = 0;
+    }
     await page.waitForTimeout(400);
   }
   return false;
@@ -367,11 +345,6 @@ async function answerTexts(page) {
   }, ANSWER_SELECTOR);
 }
 
-// Doubao renders the user's own message bubble with the same `.md-box-root` class it
-// uses for assistant answers, so a bare selector match makes the extractor mistake the
-// submitted prompt for the answer. User bubbles are right-aligned inside a `justify-end`
-// row, while an assistant message that is still being written carries
-// `data-streaming="true"`. Both facts were verified against the live DOM.
 async function answerCandidates(page) {
   return page.evaluate((selector) => {
     const visible = (element) => {
@@ -402,9 +375,6 @@ async function answerCandidates(page) {
   }, ANSWER_SELECTOR);
 }
 
-// An in-flight progress step such as "正在搜索相关资料 ›" is the reliable signal that a
-// task-mode turn is still running. Matching is restricted to leaf elements with short
-// text so a container whose subtree merely contains the phrase cannot trigger it.
 const IN_PROGRESS_STEP = /正在(搜索|思考|生成|查询|读取|分析|整理|执行|编写|获取|规划|联网)/;
 
 async function isGenerating(page) {
@@ -472,9 +442,6 @@ async function tryClickSend(page) {
         (await button.isEnabled().catch(() => false))
       ) {
         try {
-          // Doubao re-renders the composer, so after the first turn in a session the
-          // resolved button node can go stale and the click never lands. Treat that as
-          // "not sent" so submitPrompt falls back to the Enter-key path.
           await button.click({ timeout: 5_000 });
           return true;
         } catch {
@@ -506,9 +473,6 @@ async function waitForSubmissionConfirmation(page, prompt, baselineAnswers) {
   return false;
 }
 
-// Doubao re-renders the composer (notably when switching conversations, and in task
-// mode), which detaches the textarea node in the middle of fill(). Retry with a fresh
-// node instead of failing the run, while still never sending unverified text.
 async function fillVerifiedPrompt(page, prompt, attempts = 3) {
   const expected = normalizeText(prompt);
   let lastFailure = null;
@@ -524,8 +488,6 @@ async function fillVerifiedPrompt(page, prompt, attempts = 3) {
         if (actual !== expected) {
           lastFailure = { reason: "verification-mismatch", expected, actual };
         } else {
-          // Doubao can swap the composer right after fill and silently drop the text.
-          // Re-read after a short settle so we never click send on an empty box.
           await page.waitForTimeout(700);
           const settled = normalizeText(await readEditableValue(box).catch(() => ""));
           if (settled === expected) return box;
@@ -558,8 +520,6 @@ async function submitPrompt(page, prompt) {
   const baselineAnswers = await answerTexts(page);
   const sentByButton = await tryClickSend(page);
   if (!sentByButton) {
-    // Re-resolve the composer first: the node captured by the fill may already be
-    // detached, and pressing Enter on a stale handle just times out.
     const fresh = await waitForTextbox(page, 10_000);
     if (fresh) {
       await fresh.press("Enter", { timeout: 5_000 }).catch(() => undefined);
@@ -607,9 +567,6 @@ async function waitForAnswer(page, baselineAnswers, config) {
     );
     const current = usable.map((item) => normalizeText(item.text));
     const answer = current.at(-1) || "";
-    // The "停止生成" button that isGenerating looks for is not rendered on current
-    // Doubao builds, so the streaming attribute on the answer node is what actually
-    // tells us the answer is still being written.
     const running = usable.some((item) => item.streaming) || (await isGenerating(page));
 
     if (answer.length > best.length) best = answer;
@@ -650,9 +607,6 @@ async function sourceSnapshot(page, clickIfNeeded = false) {
         const style = getComputedStyle(element);
         return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
       };
-      // Only the protocol is checked here: which hosts count as "external" is decided
-      // once in src/url.js on the Node side, so the DOM extractor and the persistence
-      // layer can never disagree about it.
       const httpLink = (href) => {
         try {
           const url = new URL(href, location.href);
@@ -671,8 +625,6 @@ async function sourceSnapshot(page, clickIfNeeded = false) {
           }))
           .filter((row) => httpLink(row.url));
 
-      // Same rule as answerCandidates: the user's own bubble shares `.md-box-root`,
-      // so it must not be mistaken for the answer root.
       const isUserBubble = (element) => {
         let node = element;
         for (let depth = 0; node && depth < 6; depth += 1) {
@@ -786,8 +738,6 @@ async function overlayLinks(page) {
       const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
     };
-    // Same rule as sourceSnapshot: protocol filter only; host classification happens
-    // on the Node side through isExternalSourceUrl().
     const httpLink = (href) => {
       try {
         return /^https?:$/.test(new URL(href, location.href).protocol);
@@ -832,8 +782,6 @@ function normalizeCitationRows(rows, relations) {
   const discarded = { internalHost: 0, unparseable: 0, duplicate: 0 };
   for (const row of rows || []) {
     rawLinkCount += 1;
-    // Host classification happens here, on the Node side, so the DOM pass stays a
-    // pure collector and both layers cannot drift apart.
     if (!isExternalSourceUrl(row.url)) {
       discarded.internalHost += 1;
       continue;
@@ -882,12 +830,6 @@ function emptyCounts() {
   };
 }
 
-/**
- * One place that turns the raw DOM counts into the numbers an operator (and the
- * partial-vs-failed decision) reads. The diagnostic string keeps the historical
- * `reference-count-mismatch:<captured>/<expected>` prefix so existing logs and
- * dashboards stay readable, and appends the discard breakdown for diagnosis.
- */
 function buildCounts(meta, { expected, domLinks }) {
   const counts = {
     expected: Number.isInteger(expected) ? expected : null,
@@ -906,6 +848,7 @@ function buildCounts(meta, { expected, domLinks }) {
     (breakdown.length ? ` (raw:${counts.rawLinks} ${breakdown.join(" ")})` : ` (raw:${counts.rawLinks})`);
   return counts;
 }
+
 export async function extractVisibleCitations(page) {
   let snapshot = await sourceSnapshot(page, false);
   if (!snapshot.answerFound) {
@@ -929,8 +872,6 @@ export async function extractVisibleCitations(page) {
       expectedCount: citations.length ? citations.length : 0,
       citations,
       diagnostics: citations.length ? ["inline-link-fallback"] : [],
-      // The UI signal is absent in this path, so the honest expectation is what the DOM
-      // actually offered: an inline-link fallback with zero links is a real zero.
       counts: buildCounts(meta, {
         expected: citations.length,
         domLinks: snapshot.links.length,
@@ -972,9 +913,6 @@ export async function extractVisibleCitations(page) {
   if (overlayAmbiguous) diagnostics.push("reference-overlay-ambiguous");
   if (!Number.isInteger(snapshot.expectedCount)) diagnostics.push("reference-count-signal-missing");
 
-  // A declared-vs-captured gap is reported with its full breakdown instead of only a
-  // ratio: the operator needs to see whether the gap is duplicates, internal-Doubao
-  // links or genuinely missing cards, because only the last one is a parser problem.
   if (counts.expected !== null && counts.expected > 0 && counts.captured !== counts.expected) {
     diagnostics.push(counts.diagnostic);
     if (!Number.isInteger(snapshot.expectedCount)) diagnostics.push("reference-count-unknown");
@@ -1031,14 +969,6 @@ export async function extractVisibleCitations(page) {
   };
 }
 
-/**
- * Fail closed on the conversation reset.
- *
- * This is an execution-stage gate, not a reporting filter: an answer produced on top of
- * a previous conversation measures P(mention | prompt + history), which is not the
- * quantity this tool exists to measure. Excluding such runs later would still mean the
- * prompt was sent, so the check has to happen before submit.
- */
 export function assertFreshConversation(conversation, currentUrl = null) {
   if (conversation?.resetConfirmed === true) return;
   throw new DoubaoMvpError(
@@ -1048,23 +978,12 @@ export function assertFreshConversation(conversation, currentUrl = null) {
       clickedNewConversation: conversation?.clickedNewConversation ?? false,
       resetConfirmed: conversation?.resetConfirmed ?? null,
       currentUrl,
-      // Nothing was typed into the conversation and nothing was submitted, so this
-      // failure is safe to retry without producing a duplicate prompt.
       promptSubmitted: false,
       stage: "pre-submit",
     },
   );
 }
 
-/**
- * Stage markers for the retry classifier.
- *
- * `stage` records where the pipeline stopped; `promptSubmitted` records whether the
- * platform has already received this prompt. The distinction is what makes retries
- * idempotent: a failure after submit can almost always be confirmed from the page,
- * but re-sending the same prompt is a duplicate turn - and a duplicate turn is both
- * a data-quality problem and exactly the pattern that looks like abuse.
- */
 function withExecutionStage(error, { stage, promptSubmitted }) {
   const details =
     error?.details && typeof error.details === "object" && !Array.isArray(error.details)
@@ -1113,8 +1032,6 @@ export async function executeDoubaoPrompt(page, prompt, config) {
   } catch (error) {
     throw withExecutionStage(error, {
       stage: submitting ? "submit" : "pre-submit",
-      // Any non-pre-submit failure is treated as "may have been submitted". Assuming
-      // the safer interpretation keeps an unconfirmed send from being repeated.
       promptSubmitted: submitting,
     });
   }
