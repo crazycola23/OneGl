@@ -188,6 +188,81 @@ function canReplayPersistence(saved, { prompt, project, accountKey, samplingBatc
 }
 
 /**
+ * Replay only PostgreSQL persistence for a completed local observation.
+ *
+ * Returns null when there is nothing safe to replay. This entry point can be called by a
+ * queue worker before account throttles, leases or browser startup because it can never
+ * enter provider collection. A completed local run is immutable provider evidence; retrying
+ * persistence must not submit the prompt again.
+ */
+export async function replayPendingPersistence({
+  store,
+  pool,
+  runId,
+  prompt,
+  project,
+  validation = null,
+  artifactPath = null,
+  context = {},
+}) {
+  if (!pool || !runId) return null;
+
+  const accountKey = context.accountKey ?? null;
+  const samplingBatchId = context.samplingBatchId ?? null;
+  const runToken = context.runToken ?? null;
+  const jobId = context.jobId ?? null;
+  const attempt = Number.isInteger(context.attempt) && context.attempt > 0 ? context.attempt : 1;
+  const previous = await store.readRun(runId).catch(() => null);
+
+  if (!canReplayPersistence(previous, {
+    prompt,
+    project,
+    accountKey,
+    samplingBatchId,
+    runToken,
+  })) {
+    return null;
+  }
+
+  try {
+    const replay = await persistSavedRun({
+      pool,
+      store,
+      saved: previous,
+      project,
+      validation,
+      artifactPath,
+      accountKey,
+      samplingBatchId,
+      runToken,
+      jobId,
+      attempt,
+    });
+    return {
+      ok: true,
+      saved: replay.saved,
+      normalized: null,
+      persistSummary: replay.persistSummary,
+      persistError: null,
+      persistenceReplay: true,
+    };
+  } catch (error) {
+    const saved = await store.updateRun(previous.id, {
+      dbStatus: "failed",
+      dbError: { name: error.name, message: error.message },
+    }).catch(() => previous);
+    return {
+      ok: true,
+      saved,
+      normalized: null,
+      persistSummary: null,
+      persistError: error,
+      persistenceReplay: true,
+    };
+  }
+}
+
+/**
  * 执行一次提问并落库。
  *
  * Browser-backed and direct-API adapters share this entry. DOM/network evidence is
@@ -216,56 +291,23 @@ export async function runOnePrompt({
   const attempt = Number.isInteger(context.attempt) && context.attempt > 0 ? context.attempt : 1;
   const provider = getProviderAdapter(context.provider ?? config?.provider ?? "doubao");
 
-  // A completed local observation is immutable provider evidence. If PostgreSQL failed
-  // after collection, a BullMQ retry may only replay persistence; it must never submit
-  // the same prompt to the provider a second time.
-  if (pool && runId) {
-    const previous = await store.readRun(runId).catch(() => null);
-    if (canReplayPersistence(previous, {
-      prompt,
-      project,
+  const replay = await replayPendingPersistence({
+    store,
+    pool,
+    runId,
+    prompt,
+    project,
+    validation,
+    artifactPath,
+    context: {
       accountKey,
       samplingBatchId,
       runToken,
-    })) {
-      try {
-        const replay = await persistSavedRun({
-          pool,
-          store,
-          saved: previous,
-          project,
-          validation,
-          artifactPath,
-          accountKey,
-          samplingBatchId,
-          runToken,
-          jobId,
-          attempt,
-        });
-        return {
-          ok: true,
-          saved: replay.saved,
-          normalized: null,
-          persistSummary: replay.persistSummary,
-          persistError: null,
-          persistenceReplay: true,
-        };
-      } catch (error) {
-        const saved = await store.updateRun(previous.id, {
-          dbStatus: "failed",
-          dbError: { name: error.name, message: error.message },
-        }).catch(() => previous);
-        return {
-          ok: true,
-          saved,
-          normalized: null,
-          persistSummary: null,
-          persistError: error,
-          persistenceReplay: true,
-        };
-      }
-    }
-  }
+      jobId,
+      attempt,
+    },
+  });
+  if (replay) return replay;
 
   const run = await store.createRun({
     runId,
