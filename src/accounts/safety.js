@@ -18,9 +18,6 @@ function intEnv(name, fallback, min = 1) {
 }
 
 export function safetyConfig() {
-  // Conservative defaults: the collector is account-bound browser automation, so prefer
-  // a slower, bounded cadence over maximum throughput. These are OneGl defaults, not
-  // claims about any unpublished platform threshold.
   const minDelayMs = intEnv("ONEGL_MIN_DELAY_MS", 30_000, 0);
   const maxDelayMs = intEnv("ONEGL_MAX_DELAY_MS", 90_000, 0);
   if (maxDelayMs < minDelayMs) {
@@ -39,13 +36,11 @@ export function safetyConfig() {
   };
 }
 
-/** 两次提问之间在配置区间内随机等待，降低机械化突发负载。 */
 export function randomDelayMs({ minDelayMs, maxDelayMs }) {
   if (maxDelayMs <= minDelayMs) return minDelayMs;
   return minDelayMs + Math.floor(Math.random() * (maxDelayMs - minDelayMs + 1));
 }
 
-/** 需要停下来等人工处理或长冷却的错误：绝不立即自动重试。 */
 export const ACCOUNT_BLOCKING_CODES = {
   DOUBAO_LOGIN_REQUIRED: {
     status: "login_required",
@@ -74,26 +69,21 @@ export const ACCOUNT_BLOCKING_CODES = {
   },
 };
 
-/**
- * 明确属于临时性错误，允许有限重试。其余一律不重试。
- *
- * UNKNOWN_ERROR 不在这里：未知异常可能是页面改版、浏览器崩溃，也可能是「提交结果
- * 未知」。把它当可重试等于让队列在不确定状态下重复提问，代价比丢掉一个样本高。
- */
+// Failures in OneGl's own persistence/queue/storage layers are not observations about
+// the provider account. They must never increment provider consecutive_failures or put
+// a healthy Doubao account into cooldown.
+export const INFRASTRUCTURE_ERROR_CODES = new Set([
+  "DATABASE_ERROR",
+  "REDIS_ERROR",
+  "STORAGE_ERROR",
+]);
+
 export const RETRYABLE_CODES = new Set([
   "DOUBAO_TIMEOUT",
   "NETWORK_ERROR",
-  // 会话没能确认是干净的新会话：属于页面状态问题，重试可能就好，但绝不带着旧上下文提问。
   "DOUBAO_CONVERSATION_RESET_FAILED",
 ]);
 
-/**
- * 重试前必须确认「上一次提问确实没有送到平台」的集合。
- *
- * 这些错误本身是临时性的，但重试意味着可能再向同一个会话发一次相同的提问。
- * DOUBAO_TIMEOUT 和 NETWORK_ERROR 都可能发生在请求已经到达平台之后，只有
- * executeDoubaoPrompt 明确标记了 promptSubmitted === false 才允许重试。
- */
 export const RESUBMIT_UNSAFE_CODES = new Set([
   "DOUBAO_TIMEOUT",
   "NETWORK_ERROR",
@@ -103,12 +93,6 @@ export function isRetryable(code) {
   return RETRYABLE_CODES.has(code);
 }
 
-/**
- * 是否可以把这次失败交给队列重试。
- *
- * `promptSubmitted === false` 是 executeDoubaoPrompt 在提交阶段之前失败时写下的
- * 明确证据。缺省一律按「可能已经提交」处理——宁可少一个样本，也不制造重复提问。
- */
 export function canRetryOutcome(code, details = null) {
   if (!RETRYABLE_CODES.has(code)) return false;
   if (!RESUBMIT_UNSAFE_CODES.has(code)) return true;
@@ -118,10 +102,6 @@ export function canRetryOutcome(code, details = null) {
 export function isBlocking(code) {
   return Object.prototype.hasOwnProperty.call(ACCOUNT_BLOCKING_CODES, code);
 }
-
-// ---------------------------------------------------------------------------
-// 自然日与时区
-// ---------------------------------------------------------------------------
 
 export const DEFAULT_ACCOUNT_TIME_ZONE = "Asia/Shanghai";
 
@@ -138,7 +118,6 @@ export function accountTimeZone() {
   return value;
 }
 
-/** 某个瞬间在账号时区里属于哪一天，返回 YYYY-MM-DD。 */
 export function accountDayKey(now = new Date(), timeZone = accountTimeZone()) {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone,
@@ -148,7 +127,6 @@ export function accountDayKey(now = new Date(), timeZone = accountTimeZone()) {
   }).format(now);
 }
 
-/** 该瞬间与账号时区之间的偏移（毫秒）。 */
 function timeZoneOffsetMs(date, timeZone) {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat("en-US", {
@@ -175,7 +153,6 @@ function timeZoneOffsetMs(date, timeZone) {
   return asUtc - Math.floor(date.getTime() / 1000) * 1000;
 }
 
-/** 账号时区里的下一个零点（每日限额的重置时刻）。 */
 export function nextAccountDayStart(now = new Date(), timeZone = accountTimeZone()) {
   const offset = timeZoneOffsetMs(now, timeZone);
   const shifted = new Date(now.getTime() + offset);
@@ -190,7 +167,6 @@ export function nextAccountDayStart(now = new Date(), timeZone = accountTimeZone
   return new Date(nextMidnight - offset);
 }
 
-/** 把 pg 返回的 date 列（可能是 Date，也可能是字符串）归一成 YYYY-MM-DD。 */
 export function dateKeyOf(value) {
   if (value == null) return null;
   if (value instanceof Date) {
@@ -202,10 +178,6 @@ export function dateKeyOf(value) {
   const matched = /^(\d{4}-\d{2}-\d{2})/.exec(String(value));
   return matched ? matched[1] : null;
 }
-
-// ---------------------------------------------------------------------------
-// 账号可用性判定（纯逻辑，便于离线测试）
-// ---------------------------------------------------------------------------
 
 export const AVAILABILITY = Object.freeze({
   AVAILABLE: "available",
@@ -313,10 +285,6 @@ export async function getAccountState(pool, accountKey, provider = "doubao") {
   return rows[0] ?? null;
 }
 
-/**
- * 是否可以继续给这个账号派活。
- * kind 决定调用方的动作：available -> 执行；temporary -> 延迟；permanent -> 人工处理。
- */
 export async function accountAvailability(pool, accountKey, config = safetyConfig()) {
   const state = await getAccountState(pool, accountKey);
   const verdict = classifyAccountState(state, { config });
@@ -329,7 +297,6 @@ export async function accountAvailability(pool, accountKey, config = safetyConfi
   };
 }
 
-/** 记录一次即将开始的提问，并按账号时区的自然日重置计数。 */
 export async function beginAccountRun(pool, accountKey, provider = "doubao") {
   const today = accountDayKey();
   await pool.query(
@@ -366,11 +333,19 @@ export async function recordAccountSuccess(pool, accountKey, provider = "doubao"
   );
 }
 
-/** 记录失败；阻塞类错误直接暂停/冷却，普通失败累计到阈值后进入冷却。 */
 export async function recordAccountFailure(
   pool,
   { accountKey, errorCode, provider = "doubao", config = safetyConfig() },
 ) {
+  if (INFRASTRUCTURE_ERROR_CODES.has(errorCode)) {
+    return {
+      blocked: false,
+      status: "infrastructure_error",
+      failures: null,
+      infrastructure: true,
+    };
+  }
+
   const blocking = ACCOUNT_BLOCKING_CODES[errorCode];
 
   if (blocking) {
@@ -442,7 +417,6 @@ export async function recordAccountFailure(
   return { blocked: false, status: "degraded", failures };
 }
 
-/** 人工解除暂停/冷却。 */
 export async function resumeAccount(pool, accountKey, provider = "doubao") {
   const { rowCount } = await pool.query(
     `UPDATE accounts
