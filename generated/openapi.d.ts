@@ -1324,7 +1324,7 @@ export interface components {
             /** @enum {string} */
             provider?: "doubao";
             /** @enum {string} */
-            status?: "ready" | "healthy" | "login_required" | "session_expired" | "verification_required" | "access_restricted" | "paused" | "cooldown" | "rate_limited" | "disabled";
+            status?: "healthy" | "login_required" | "session_expired" | "verification_required" | "access_restricted" | "paused" | "cooldown" | "rate_limited" | "disabled";
             storage_state_present?: boolean;
             /** Format: date-time */
             updated_at?: string | null;
@@ -1362,7 +1362,8 @@ export interface components {
             state_details?: {
                 [key: string]: unknown;
             };
-            status: string;
+            /** @enum {string} */
+            status: "starting" | "waiting_for_login" | "connected" | "verification_required" | "access_restricted" | "failed" | "cancelled" | "expired";
             /** Format: date-time */
             updated_at?: string | null;
         } & {

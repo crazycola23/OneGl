@@ -323,7 +323,6 @@
           },
           "status": {
             "enum": [
-              "ready",
               "healthy",
               "login_required",
               "session_expired",
@@ -457,6 +456,16 @@
             "type": "object"
           },
           "status": {
+            "enum": [
+              "starting",
+              "waiting_for_login",
+              "connected",
+              "verification_required",
+              "access_restricted",
+              "failed",
+              "cancelled",
+              "expired"
+            ],
             "type": "string"
           },
           "updated_at": {
