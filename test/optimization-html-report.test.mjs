@@ -34,6 +34,7 @@ function detail() {
         status: "success",
         conversation_reset_confirmed: true,
         brand_mentioned: false,
+        citation_state: "found",
         captured_citation_count: 3,
         expected_citation_count: 3,
       },
@@ -43,6 +44,7 @@ function detail() {
         status: "success",
         conversation_reset_confirmed: true,
         brand_mentioned: false,
+        citation_state: "found",
         captured_citation_count: 2,
         expected_citation_count: 2,
       },
@@ -52,6 +54,7 @@ function detail() {
         status: "success",
         conversation_reset_confirmed: true,
         brand_mentioned: true,
+        citation_state: "found",
         captured_citation_count: 2,
         expected_citation_count: 2,
       },
@@ -76,6 +79,9 @@ test("优化 HTML 报告包含 Prompt 机会矩阵并优先暴露 0 提及问题
   assert.match(html, /Test Brand 怎么样/);
   assert.match(html, /当前稳定提及/);
   assert.match(html, /不构造未经验证的 Query → Source 归因/);
+  assert.match(html, /引用证据覆盖/);
+  assert.match(html, /100\.0%/);
+  assert.match(html, /引用密度只统计 citation-valid Run/);
 });
 
 test("Prompt 机会矩阵转义外部 Prompt 文本", () => {
