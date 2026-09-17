@@ -11593,12 +11593,23 @@
   "webhooks": {
     "account.action_required": {
       "post": {
-        "description": "Receiver-side contract for the account.action_required public SaaS webhook event. Verify the HMAC-SHA256 signature before processing the JSON body.",
+        "description": "Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.",
         "operationId": "receiveAccountActionRequiredWebhook",
         "parameters": [
           {
+            "description": "Public event type delivered by OneGl.",
             "in": "header",
-            "name": "X-OneGl-Webhook-Id",
+            "name": "X-OneGl-Event",
+            "required": true,
+            "schema": {
+              "const": "account.action_required",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable public event ID used for consumer deduplication.",
+            "in": "header",
+            "name": "X-OneGl-Event-Id",
             "required": true,
             "schema": {
               "pattern": "^evt_[a-f0-9]{32}$",
@@ -11606,27 +11617,32 @@
             }
           },
           {
-            "in": "header",
-            "name": "X-OneGl-Webhook-Timestamp",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-OneGl-Webhook-Signature",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
+            "description": "Webhook envelope/signature version.",
             "in": "header",
             "name": "X-OneGl-Webhook-Version",
             "required": true,
             "schema": {
               "const": "1",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unix timestamp in seconds used as the first signature input segment.",
+            "in": "header",
+            "name": "X-OneGl-Timestamp",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest.",
+            "in": "header",
+            "name": "X-OneGl-Signature",
+            "required": true,
+            "schema": {
+              "pattern": "^v1=[a-f0-9]{64}$",
               "type": "string"
             }
           }
@@ -11637,6 +11653,7 @@
               "examples": {
                 "event": {
                   "value": {
+                    "created_at": "2026-09-17T00:00:00.000Z",
                     "data": {},
                     "id": "evt_0123456789abcdef0123456789abcdef",
                     "occurred_at": "2026-09-17T00:00:00.000Z",
@@ -11667,12 +11684,23 @@
     },
     "account.ready": {
       "post": {
-        "description": "Receiver-side contract for the account.ready public SaaS webhook event. Verify the HMAC-SHA256 signature before processing the JSON body.",
+        "description": "Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.",
         "operationId": "receiveAccountReadyWebhook",
         "parameters": [
           {
+            "description": "Public event type delivered by OneGl.",
             "in": "header",
-            "name": "X-OneGl-Webhook-Id",
+            "name": "X-OneGl-Event",
+            "required": true,
+            "schema": {
+              "const": "account.ready",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable public event ID used for consumer deduplication.",
+            "in": "header",
+            "name": "X-OneGl-Event-Id",
             "required": true,
             "schema": {
               "pattern": "^evt_[a-f0-9]{32}$",
@@ -11680,27 +11708,32 @@
             }
           },
           {
-            "in": "header",
-            "name": "X-OneGl-Webhook-Timestamp",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-OneGl-Webhook-Signature",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
+            "description": "Webhook envelope/signature version.",
             "in": "header",
             "name": "X-OneGl-Webhook-Version",
             "required": true,
             "schema": {
               "const": "1",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unix timestamp in seconds used as the first signature input segment.",
+            "in": "header",
+            "name": "X-OneGl-Timestamp",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest.",
+            "in": "header",
+            "name": "X-OneGl-Signature",
+            "required": true,
+            "schema": {
+              "pattern": "^v1=[a-f0-9]{64}$",
               "type": "string"
             }
           }
@@ -11711,6 +11744,7 @@
               "examples": {
                 "event": {
                   "value": {
+                    "created_at": "2026-09-17T00:00:00.000Z",
                     "data": {},
                     "id": "evt_0123456789abcdef0123456789abcdef",
                     "occurred_at": "2026-09-17T00:00:00.000Z",
@@ -11741,12 +11775,23 @@
     },
     "execution.cancelled": {
       "post": {
-        "description": "Receiver-side contract for the execution.cancelled public SaaS webhook event. Verify the HMAC-SHA256 signature before processing the JSON body.",
+        "description": "Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.",
         "operationId": "receiveExecutionCancelledWebhook",
         "parameters": [
           {
+            "description": "Public event type delivered by OneGl.",
             "in": "header",
-            "name": "X-OneGl-Webhook-Id",
+            "name": "X-OneGl-Event",
+            "required": true,
+            "schema": {
+              "const": "execution.cancelled",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable public event ID used for consumer deduplication.",
+            "in": "header",
+            "name": "X-OneGl-Event-Id",
             "required": true,
             "schema": {
               "pattern": "^evt_[a-f0-9]{32}$",
@@ -11754,27 +11799,32 @@
             }
           },
           {
-            "in": "header",
-            "name": "X-OneGl-Webhook-Timestamp",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-OneGl-Webhook-Signature",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
+            "description": "Webhook envelope/signature version.",
             "in": "header",
             "name": "X-OneGl-Webhook-Version",
             "required": true,
             "schema": {
               "const": "1",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unix timestamp in seconds used as the first signature input segment.",
+            "in": "header",
+            "name": "X-OneGl-Timestamp",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest.",
+            "in": "header",
+            "name": "X-OneGl-Signature",
+            "required": true,
+            "schema": {
+              "pattern": "^v1=[a-f0-9]{64}$",
               "type": "string"
             }
           }
@@ -11785,6 +11835,7 @@
               "examples": {
                 "event": {
                   "value": {
+                    "created_at": "2026-09-17T00:00:00.000Z",
                     "data": {},
                     "id": "evt_0123456789abcdef0123456789abcdef",
                     "occurred_at": "2026-09-17T00:00:00.000Z",
@@ -11815,12 +11866,23 @@
     },
     "execution.completed": {
       "post": {
-        "description": "Receiver-side contract for the execution.completed public SaaS webhook event. Verify the HMAC-SHA256 signature before processing the JSON body.",
+        "description": "Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.",
         "operationId": "receiveExecutionCompletedWebhook",
         "parameters": [
           {
+            "description": "Public event type delivered by OneGl.",
             "in": "header",
-            "name": "X-OneGl-Webhook-Id",
+            "name": "X-OneGl-Event",
+            "required": true,
+            "schema": {
+              "const": "execution.completed",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable public event ID used for consumer deduplication.",
+            "in": "header",
+            "name": "X-OneGl-Event-Id",
             "required": true,
             "schema": {
               "pattern": "^evt_[a-f0-9]{32}$",
@@ -11828,27 +11890,32 @@
             }
           },
           {
-            "in": "header",
-            "name": "X-OneGl-Webhook-Timestamp",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-OneGl-Webhook-Signature",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
+            "description": "Webhook envelope/signature version.",
             "in": "header",
             "name": "X-OneGl-Webhook-Version",
             "required": true,
             "schema": {
               "const": "1",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unix timestamp in seconds used as the first signature input segment.",
+            "in": "header",
+            "name": "X-OneGl-Timestamp",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest.",
+            "in": "header",
+            "name": "X-OneGl-Signature",
+            "required": true,
+            "schema": {
+              "pattern": "^v1=[a-f0-9]{64}$",
               "type": "string"
             }
           }
@@ -11859,6 +11926,7 @@
               "examples": {
                 "event": {
                   "value": {
+                    "created_at": "2026-09-17T00:00:00.000Z",
                     "data": {},
                     "id": "evt_0123456789abcdef0123456789abcdef",
                     "occurred_at": "2026-09-17T00:00:00.000Z",
@@ -11889,12 +11957,23 @@
     },
     "execution.failed": {
       "post": {
-        "description": "Receiver-side contract for the execution.failed public SaaS webhook event. Verify the HMAC-SHA256 signature before processing the JSON body.",
+        "description": "Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.",
         "operationId": "receiveExecutionFailedWebhook",
         "parameters": [
           {
+            "description": "Public event type delivered by OneGl.",
             "in": "header",
-            "name": "X-OneGl-Webhook-Id",
+            "name": "X-OneGl-Event",
+            "required": true,
+            "schema": {
+              "const": "execution.failed",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable public event ID used for consumer deduplication.",
+            "in": "header",
+            "name": "X-OneGl-Event-Id",
             "required": true,
             "schema": {
               "pattern": "^evt_[a-f0-9]{32}$",
@@ -11902,27 +11981,32 @@
             }
           },
           {
-            "in": "header",
-            "name": "X-OneGl-Webhook-Timestamp",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-OneGl-Webhook-Signature",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
+            "description": "Webhook envelope/signature version.",
             "in": "header",
             "name": "X-OneGl-Webhook-Version",
             "required": true,
             "schema": {
               "const": "1",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unix timestamp in seconds used as the first signature input segment.",
+            "in": "header",
+            "name": "X-OneGl-Timestamp",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest.",
+            "in": "header",
+            "name": "X-OneGl-Signature",
+            "required": true,
+            "schema": {
+              "pattern": "^v1=[a-f0-9]{64}$",
               "type": "string"
             }
           }
@@ -11933,6 +12017,7 @@
               "examples": {
                 "event": {
                   "value": {
+                    "created_at": "2026-09-17T00:00:00.000Z",
                     "data": {},
                     "id": "evt_0123456789abcdef0123456789abcdef",
                     "occurred_at": "2026-09-17T00:00:00.000Z",
@@ -11963,12 +12048,23 @@
     },
     "execution.partial": {
       "post": {
-        "description": "Receiver-side contract for the execution.partial public SaaS webhook event. Verify the HMAC-SHA256 signature before processing the JSON body.",
+        "description": "Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.",
         "operationId": "receiveExecutionPartialWebhook",
         "parameters": [
           {
+            "description": "Public event type delivered by OneGl.",
             "in": "header",
-            "name": "X-OneGl-Webhook-Id",
+            "name": "X-OneGl-Event",
+            "required": true,
+            "schema": {
+              "const": "execution.partial",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable public event ID used for consumer deduplication.",
+            "in": "header",
+            "name": "X-OneGl-Event-Id",
             "required": true,
             "schema": {
               "pattern": "^evt_[a-f0-9]{32}$",
@@ -11976,27 +12072,32 @@
             }
           },
           {
-            "in": "header",
-            "name": "X-OneGl-Webhook-Timestamp",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-OneGl-Webhook-Signature",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
+            "description": "Webhook envelope/signature version.",
             "in": "header",
             "name": "X-OneGl-Webhook-Version",
             "required": true,
             "schema": {
               "const": "1",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unix timestamp in seconds used as the first signature input segment.",
+            "in": "header",
+            "name": "X-OneGl-Timestamp",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest.",
+            "in": "header",
+            "name": "X-OneGl-Signature",
+            "required": true,
+            "schema": {
+              "pattern": "^v1=[a-f0-9]{64}$",
               "type": "string"
             }
           }
@@ -12007,6 +12108,7 @@
               "examples": {
                 "event": {
                   "value": {
+                    "created_at": "2026-09-17T00:00:00.000Z",
                     "data": {},
                     "id": "evt_0123456789abcdef0123456789abcdef",
                     "occurred_at": "2026-09-17T00:00:00.000Z",

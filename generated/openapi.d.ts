@@ -1189,7 +1189,7 @@ export interface webhooks {
         put?: never;
         /**
          * Receive account.action_required webhook
-         * @description Receiver-side contract for the account.action_required public SaaS webhook event. Verify the HMAC-SHA256 signature before processing the JSON body.
+         * @description Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.
          */
         post: operations["receiveAccountActionRequiredWebhook"];
         delete?: never;
@@ -1209,7 +1209,7 @@ export interface webhooks {
         put?: never;
         /**
          * Receive account.ready webhook
-         * @description Receiver-side contract for the account.ready public SaaS webhook event. Verify the HMAC-SHA256 signature before processing the JSON body.
+         * @description Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.
          */
         post: operations["receiveAccountReadyWebhook"];
         delete?: never;
@@ -1229,7 +1229,7 @@ export interface webhooks {
         put?: never;
         /**
          * Receive execution.cancelled webhook
-         * @description Receiver-side contract for the execution.cancelled public SaaS webhook event. Verify the HMAC-SHA256 signature before processing the JSON body.
+         * @description Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.
          */
         post: operations["receiveExecutionCancelledWebhook"];
         delete?: never;
@@ -1249,7 +1249,7 @@ export interface webhooks {
         put?: never;
         /**
          * Receive execution.completed webhook
-         * @description Receiver-side contract for the execution.completed public SaaS webhook event. Verify the HMAC-SHA256 signature before processing the JSON body.
+         * @description Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.
          */
         post: operations["receiveExecutionCompletedWebhook"];
         delete?: never;
@@ -1269,7 +1269,7 @@ export interface webhooks {
         put?: never;
         /**
          * Receive execution.failed webhook
-         * @description Receiver-side contract for the execution.failed public SaaS webhook event. Verify the HMAC-SHA256 signature before processing the JSON body.
+         * @description Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.
          */
         post: operations["receiveExecutionFailedWebhook"];
         delete?: never;
@@ -1289,7 +1289,7 @@ export interface webhooks {
         put?: never;
         /**
          * Receive execution.partial webhook
-         * @description Receiver-side contract for the execution.partial public SaaS webhook event. Verify the HMAC-SHA256 signature before processing the JSON body.
+         * @description Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.
          */
         post: operations["receiveExecutionPartialWebhook"];
         delete?: never;
@@ -5859,10 +5859,16 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-OneGl-Webhook-Id": string;
-                "X-OneGl-Webhook-Timestamp": string;
-                "X-OneGl-Webhook-Signature": string;
+                /** @description Public event type delivered by OneGl. */
+                "X-OneGl-Event": "account.action_required";
+                /** @description Stable public event ID used for consumer deduplication. */
+                "X-OneGl-Event-Id": string;
+                /** @description Webhook envelope/signature version. */
                 "X-OneGl-Webhook-Version": "1";
+                /** @description Unix timestamp in seconds used as the first signature input segment. */
+                "X-OneGl-Timestamp": string;
+                /** @description `v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest. */
+                "X-OneGl-Signature": string;
             };
             path?: never;
             cookie?: never;
@@ -5893,10 +5899,16 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-OneGl-Webhook-Id": string;
-                "X-OneGl-Webhook-Timestamp": string;
-                "X-OneGl-Webhook-Signature": string;
+                /** @description Public event type delivered by OneGl. */
+                "X-OneGl-Event": "account.ready";
+                /** @description Stable public event ID used for consumer deduplication. */
+                "X-OneGl-Event-Id": string;
+                /** @description Webhook envelope/signature version. */
                 "X-OneGl-Webhook-Version": "1";
+                /** @description Unix timestamp in seconds used as the first signature input segment. */
+                "X-OneGl-Timestamp": string;
+                /** @description `v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest. */
+                "X-OneGl-Signature": string;
             };
             path?: never;
             cookie?: never;
@@ -5927,10 +5939,16 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-OneGl-Webhook-Id": string;
-                "X-OneGl-Webhook-Timestamp": string;
-                "X-OneGl-Webhook-Signature": string;
+                /** @description Public event type delivered by OneGl. */
+                "X-OneGl-Event": "execution.cancelled";
+                /** @description Stable public event ID used for consumer deduplication. */
+                "X-OneGl-Event-Id": string;
+                /** @description Webhook envelope/signature version. */
                 "X-OneGl-Webhook-Version": "1";
+                /** @description Unix timestamp in seconds used as the first signature input segment. */
+                "X-OneGl-Timestamp": string;
+                /** @description `v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest. */
+                "X-OneGl-Signature": string;
             };
             path?: never;
             cookie?: never;
@@ -5961,10 +5979,16 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-OneGl-Webhook-Id": string;
-                "X-OneGl-Webhook-Timestamp": string;
-                "X-OneGl-Webhook-Signature": string;
+                /** @description Public event type delivered by OneGl. */
+                "X-OneGl-Event": "execution.completed";
+                /** @description Stable public event ID used for consumer deduplication. */
+                "X-OneGl-Event-Id": string;
+                /** @description Webhook envelope/signature version. */
                 "X-OneGl-Webhook-Version": "1";
+                /** @description Unix timestamp in seconds used as the first signature input segment. */
+                "X-OneGl-Timestamp": string;
+                /** @description `v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest. */
+                "X-OneGl-Signature": string;
             };
             path?: never;
             cookie?: never;
@@ -5995,10 +6019,16 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-OneGl-Webhook-Id": string;
-                "X-OneGl-Webhook-Timestamp": string;
-                "X-OneGl-Webhook-Signature": string;
+                /** @description Public event type delivered by OneGl. */
+                "X-OneGl-Event": "execution.failed";
+                /** @description Stable public event ID used for consumer deduplication. */
+                "X-OneGl-Event-Id": string;
+                /** @description Webhook envelope/signature version. */
                 "X-OneGl-Webhook-Version": "1";
+                /** @description Unix timestamp in seconds used as the first signature input segment. */
+                "X-OneGl-Timestamp": string;
+                /** @description `v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest. */
+                "X-OneGl-Signature": string;
             };
             path?: never;
             cookie?: never;
@@ -6029,10 +6059,16 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-OneGl-Webhook-Id": string;
-                "X-OneGl-Webhook-Timestamp": string;
-                "X-OneGl-Webhook-Signature": string;
+                /** @description Public event type delivered by OneGl. */
+                "X-OneGl-Event": "execution.partial";
+                /** @description Stable public event ID used for consumer deduplication. */
+                "X-OneGl-Event-Id": string;
+                /** @description Webhook envelope/signature version. */
                 "X-OneGl-Webhook-Version": "1";
+                /** @description Unix timestamp in seconds used as the first signature input segment. */
+                "X-OneGl-Timestamp": string;
+                /** @description `v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest. */
+                "X-OneGl-Signature": string;
             };
             path?: never;
             cookie?: never;
