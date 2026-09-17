@@ -1,5 +1,6 @@
 import { applyContractHardeningOpenApi } from "./contract-hardening-openapi.js";
 import { applyCustomerDashboardOpenApi } from "./customer-dashboard-openapi.js";
+import { applyErrorContractOpenApi } from "./error-contract-openapi.js";
 import { applyMonitoringContractOpenApi } from "./monitoring-contract-openapi.js";
 import { applyObservabilityOpenApi } from "./observability-openapi.js";
 import { openApiDocument as baseOpenApiDocument } from "./base-openapi.js";
@@ -19,6 +20,7 @@ export function buildOpenApiDocument() {
   applyResourceContractOpenApi(document);
   applyStatusContractOpenApi(document);
   applyWebhookContractOpenApi(document);
+  applyErrorContractOpenApi(document);
   applyObservabilityOpenApi(document);
   return document;
 }
