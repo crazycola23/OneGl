@@ -60,12 +60,3 @@ jobs:
 
       - name: Run live compatibility canary
         run: node tools/live-canary.js
-
-      - name: Upload diagnostic artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: live-canary-${{ github.run_id }}
-          path: .onegl/runs
-          if-no-files-found: warn
-          retention-days: 3
