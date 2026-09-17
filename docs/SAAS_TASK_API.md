@@ -1,4 +1,4 @@
-# OneGl SaaS Task API Contract v0.6
+# OneGl SaaS Task API Contract v0.7
 
 This is the stable server-to-server contract for integrating a SaaS product with OneGl.
 

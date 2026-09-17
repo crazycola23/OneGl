@@ -1,0 +1,57 @@
+name: OpenAPI Breaking Changes
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'openapi.json'
+      - 'src/api/**'
+      - 'tools/build-openapi.js'
+      - 'package.json'
+
+permissions:
+  contents: read
+
+jobs:
+  breaking-changes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build current OpenAPI contract
+        run: npm run openapi:build
+
+      - name: Detect existing base contract
+        id: baseline
+        shell: bash
+        run: |
+          if git cat-file -e "origin/${{ github.base_ref }}:openapi.json" 2>/dev/null; then
+            git show "origin/${{ github.base_ref }}:openapi.json" > /tmp/base-openapi.json
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No committed openapi.json exists on the base branch yet; this PR establishes the baseline."
+          fi
+
+      - name: Check OpenAPI breaking changes
+        if: steps.baseline.outputs.exists == 'true'
+        uses: oasdiff/oasdiff-action/breaking@v0
+        with:
+          base: '/tmp/base-openapi.json'
+          revision: 'openapi.json'
+          fail-on: ERR

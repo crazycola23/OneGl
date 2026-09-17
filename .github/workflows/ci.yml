@@ -48,6 +48,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: OpenAPI contract quality gate
+        run: npm run openapi:check
+
+      - name: Upload generated OpenAPI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-generated-${{ github.run_id }}
+          path: |
+            openapi.json
+            generated/openapi.d.ts
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Migration check
         env:
           DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
