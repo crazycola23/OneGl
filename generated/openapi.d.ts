@@ -1919,6 +1919,11 @@ export interface components {
             /** @enum {string} */
             type: "execution.completed" | "execution.partial" | "execution.failed" | "execution.cancelled" | "account.action_required" | "account.ready" | "webhook.test";
         };
+        ScheduleDeleteResource: {
+            /** @constant */
+            deleted: true;
+            schedule_id: string;
+        };
         ScheduleExecutionItem: {
             batch_created: boolean;
             details?: {
@@ -1955,6 +1960,21 @@ export interface components {
             };
             schedule_id: string;
             task_id: string;
+        };
+        TaskArchiveResource: {
+            /** @constant */
+            archived: true;
+            task_id: string;
+        };
+        /** @description Optional overrides applied when cloning an existing Task. An empty object clones the current public Task configuration unchanged except for its generated identity/name defaults. */
+        TaskCloneRequest: {
+            account_ids?: string[];
+            external_id?: string | null;
+            name?: string;
+            platforms?: "doubao"[];
+            questions?: string[];
+            sampling?: components["schemas"]["TaskSamplingInput"];
+            target_brand?: string | null;
         };
         TaskCreate: {
             /** @default [] */
@@ -4585,7 +4605,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        data: Record<string, never>;
+                        data: components["schemas"]["ScheduleDeleteResource"];
                     };
                 };
             };
@@ -4930,7 +4950,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        data: Record<string, never>;
+                        data: components["schemas"]["TaskArchiveResource"];
                     };
                 };
             };
@@ -5026,7 +5046,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": Record<string, never>;
+                "application/json": components["schemas"]["TaskCloneRequest"];
             };
         };
         responses: {

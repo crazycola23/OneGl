@@ -2646,6 +2646,24 @@
         ],
         "type": "object"
       },
+      "ScheduleDeleteResource": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "const": true,
+            "type": "boolean"
+          },
+          "schedule_id": {
+            "pattern": "^sch_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schedule_id",
+          "deleted"
+        ],
+        "type": "object"
+      },
       "ScheduleExecutionItem": {
         "properties": {
           "batch_created": {
@@ -2793,6 +2811,85 @@
           "next_run_at",
           "created_at"
         ],
+        "type": "object"
+      },
+      "TaskArchiveResource": {
+        "additionalProperties": false,
+        "properties": {
+          "archived": {
+            "const": true,
+            "type": "boolean"
+          },
+          "task_id": {
+            "pattern": "^tsk_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "archived"
+        ],
+        "type": "object"
+      },
+      "TaskCloneRequest": {
+        "additionalProperties": false,
+        "description": "Optional overrides applied when cloning an existing Task. An empty object clones the current public Task configuration unchanged except for its generated identity/name defaults.",
+        "properties": {
+          "account_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "external_id": {
+            "maxLength": 255,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "platforms": {
+            "items": {
+              "enum": [
+                "doubao"
+              ],
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "questions": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 5000,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "sampling": {
+            "$ref": "#/components/schemas/TaskSamplingInput"
+          },
+          "target_brand": {
+            "maxLength": 500,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "TaskCreate": {
@@ -8129,7 +8226,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "type": "object"
+                      "$ref": "#/components/schemas/ScheduleDeleteResource"
                     }
                   },
                   "required": [
@@ -8881,7 +8978,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "type": "object"
+                      "$ref": "#/components/schemas/TaskArchiveResource"
                     }
                   },
                   "required": [
@@ -9239,7 +9336,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object"
+                "$ref": "#/components/schemas/TaskCloneRequest"
               }
             }
           },
