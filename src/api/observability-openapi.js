@@ -26,6 +26,22 @@ function responseHeaders(existing = {}) {
   };
 }
 
+function resolveResponse(document, response) {
+  if (!response?.$ref) return structuredClone(response);
+  const prefix = "#/components/responses/";
+  if (!response.$ref.startsWith(prefix)) return structuredClone(response);
+  const name = response.$ref.slice(prefix.length);
+  const target = document.components?.responses?.[name];
+  if (!target) throw new Error(`OpenAPI response reference not found: ${response.$ref}`);
+  return structuredClone(target);
+}
+
+function withObservabilityHeaders(document, response) {
+  const resolved = resolveResponse(document, response);
+  resolved.headers = responseHeaders(resolved.headers);
+  return resolved;
+}
+
 export function applyObservabilityOpenApi(document) {
   document.components ??= {};
   document.components.headers ??= {};
@@ -41,8 +57,10 @@ export function applyObservabilityOpenApi(document) {
     for (const method of ["get", "post", "put", "patch", "delete"]) {
       const operation = pathItem?.[method];
       if (!operation) continue;
-      for (const response of Object.values(operation.responses ?? {})) {
-        if (response && typeof response === "object") response.headers = responseHeaders(response.headers);
+      for (const [status, response] of Object.entries(operation.responses ?? {})) {
+        if (response && typeof response === "object") {
+          operation.responses[status] = withObservabilityHeaders(document, response);
+        }
       }
       operation.responses ??= {};
       if (!operation.responses["429"]) {
