@@ -8,7 +8,7 @@
  * `position` values are 0-based UTF-16 offsets into the original answer string.
  */
 
-export const BRAND_DETECTION_VERSION = "rules-v1";
+export const BRAND_DETECTION_VERSION = "rules-v2";
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -16,6 +16,30 @@ function escapeRegExp(value) {
 
 function toTermList(values) {
   return [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];
+}
+
+function regexForTerm(term) {
+  const escaped = escapeRegExp(term);
+  // CJK aliases intentionally keep substring semantics. For aliases that contain ASCII
+  // word characters, require ASCII token boundaries so short aliases such as "AI" do
+  // not silently match inside "OpenAI", while mixed strings such as "小米SU7" still
+  // match naturally next to Chinese text.
+  if (!/[A-Za-z0-9]/.test(term)) return new RegExp(escaped, "giu");
+  return new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, "giu");
+}
+
+function validateExcludePattern(source) {
+  // Operator-supplied regexes run against full model answers. Keep the advanced escape
+  // hatch, but bound it so an accidental giant expression cannot become an easy CPU DoS.
+  if (source.length > 200) {
+    throw new Error(`Brand exclude pattern is too long (${source.length} > 200)`);
+  }
+  // Reject the most common catastrophic-backtracking shape: a quantified group whose
+  // body itself contains an unbounded quantifier, e.g. (a+)+ or (.*)*. This is not a
+  // complete regex safety proof, but it removes the high-risk form without a dependency.
+  if (/\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d*,?\d*\})/.test(source)) {
+    throw new Error(`Brand exclude pattern contains nested unbounded quantifiers: ${JSON.stringify(source)}`);
+  }
 }
 
 export function compileBrandRules(brand = {}) {
@@ -30,14 +54,15 @@ export function compileBrandRules(brand = {}) {
     ...productTerms.map((term) => ({ term, kind: "product" })),
   ].map((entry) => ({
     ...entry,
-    regex: new RegExp(escapeRegExp(entry.term), "gi"),
+    regex: regexForTerm(entry.term),
   }));
 
   // Exclude patterns are regular expressions supplied by the operator, used to blank
   // out contexts where an alias means something else (for example a phone brand).
   const excludes = toTermList(brand.excludePatterns ?? []).map((source) => {
+    validateExcludePattern(source);
     try {
-      return { source, regex: new RegExp(source, "gi") };
+      return { source, regex: new RegExp(source, "giu") };
     } catch (error) {
       throw new Error(`Invalid brand exclude pattern ${JSON.stringify(source)}: ${error.message}`);
     }
