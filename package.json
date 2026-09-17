@@ -26,7 +26,7 @@
     "openapi:build": "node tools/build-openapi.js",
     "openapi:lint": "npx --yes @redocly/cli@2 lint openapi.json",
     "openapi:types": "mkdir -p generated && npx --yes openapi-typescript@7 openapi.json -o generated/openapi.d.ts",
-    "openapi:check": "npm run openapi:build && npm run openapi:lint && npm run openapi:types && node --test test/openapi-build.test.mjs test/openapi-contract-coverage.test.mjs test/openapi-patch-contract.test.mjs",
+    "openapi:check": "npm run openapi:build && npm run openapi:lint && npm run openapi:types && node --test test/openapi-build.test.mjs test/openapi-contract-coverage.test.mjs test/openapi-patch-contract.test.mjs && git diff --exit-code -- openapi.json generated/openapi.d.ts",
     "check": "node --check src/*.js && node -e \"JSON.parse(require('fs').readFileSync('validation/phase0-prompts.json','utf8'))\"",
     "validate:scaffold": "node src/validate.js scaffold",
     "validate:evaluate": "node src/validate.js evaluate",
