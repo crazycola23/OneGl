@@ -13,6 +13,6 @@ npm run openapi:types   # regenerate generated/openapi.d.ts
 npm run openapi:check   # build + lint + types + contract tests + generated-file drift check
 ```
 
-Pull requests also run an OpenAPI breaking-change gate. The first committed `openapi.json` establishes the baseline; later changes are compared against the base branch and breaking changes fail CI.
+Pull requests also run an OpenAPI breaking-change gate. The initial committed `openapi.json` establishes the baseline because older `main` revisions do not contain a static contract; once merged, later changes are compared against the base branch and breaking changes fail CI.
 
 See `docs/OPENAPI_SERVICE_PLAN.md` for deployment, tenant/client bootstrap, account-connect, task/execution/report and webhook integration flows.
