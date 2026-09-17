@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { ApiHttpError } from "../src/api/http.js";
 import { createPool } from "../src/db/pool.js";
 import { createProject } from "../src/db/dashboard.js";
 import {
@@ -42,6 +43,17 @@ test("service platform isolates tenant projects/accounts and stores API client k
     assert.equal((await listTenantProjects(pool, tenantB.id)).length, 1);
     assert.equal((await getTenantProject(pool, tenantA.id, projectA.id)).display_name, "Project");
     assert.equal(await getTenantProject(pool, tenantA.id, projectB.id), null);
+
+    await assert.rejects(
+      () => bindProject(pool, {
+        tenantId: tenantB.id,
+        projectId: projectA.id,
+        displayName: "Stolen Project",
+      }),
+      (error) => error instanceof ApiHttpError && error.status === 409 && error.code === "project_already_owned",
+    );
+    assert.equal((await getTenantProject(pool, tenantA.id, projectA.id)).display_name, "Project");
+    assert.equal(await getTenantProject(pool, tenantB.id, projectA.id), null);
 
     const accountA = await ensureTenantAccount(pool, {
       tenantId: tenantA.id,
