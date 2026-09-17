@@ -18,28 +18,24 @@ const rateLimitHeaders = {
   },
 };
 
+const headerRefs = {
+  "X-OneGl-Request-Id": { $ref: "#/components/headers/OneGlRequestId" },
+  "X-RateLimit-Limit": { $ref: "#/components/headers/OneGlRateLimitLimit" },
+  "X-RateLimit-Remaining": { $ref: "#/components/headers/OneGlRateLimitRemaining" },
+  "X-RateLimit-Reset": { $ref: "#/components/headers/OneGlRateLimitReset" },
+};
+
 function responseHeaders(existing = {}) {
   return {
     ...existing,
-    "X-OneGl-Request-Id": requestIdHeader,
-    ...rateLimitHeaders,
+    ...headerRefs,
   };
 }
 
-function resolveResponse(document, response) {
-  if (!response?.$ref) return structuredClone(response);
-  const prefix = "#/components/responses/";
-  if (!response.$ref.startsWith(prefix)) return structuredClone(response);
-  const name = response.$ref.slice(prefix.length);
-  const target = document.components?.responses?.[name];
-  if (!target) throw new Error(`OpenAPI response reference not found: ${response.$ref}`);
-  return structuredClone(target);
-}
-
-function withObservabilityHeaders(document, response) {
-  const resolved = resolveResponse(document, response);
-  resolved.headers = responseHeaders(resolved.headers);
-  return resolved;
+function addObservabilityHeaders(response) {
+  if (!response || typeof response !== "object" || response.$ref) return response;
+  response.headers = responseHeaders(response.headers);
+  return response;
 }
 
 export function applyObservabilityOpenApi(document) {
@@ -52,15 +48,19 @@ export function applyObservabilityOpenApi(document) {
     OneGlRateLimitReset: rateLimitHeaders["X-RateLimit-Reset"],
   });
 
+  // Keep reusable response references pure. Their observability headers live on
+  // the referenced Response Object, avoiding illegal/ignored $ref siblings.
+  for (const response of Object.values(document.components.responses ?? {})) {
+    addObservabilityHeaders(response);
+  }
+
   for (const [pathname, pathItem] of Object.entries(document.paths ?? {})) {
     if (pathname !== "/v1" && !pathname.startsWith("/v1/")) continue;
     for (const method of ["get", "post", "put", "patch", "delete"]) {
       const operation = pathItem?.[method];
       if (!operation) continue;
-      for (const [status, response] of Object.entries(operation.responses ?? {})) {
-        if (response && typeof response === "object") {
-          operation.responses[status] = withObservabilityHeaders(document, response);
-        }
+      for (const response of Object.values(operation.responses ?? {})) {
+        addObservabilityHeaders(response);
       }
       operation.responses ??= {};
       if (!operation.responses["429"]) {
