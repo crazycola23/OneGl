@@ -1,0 +1,32 @@
+name: OpenAPI Breaking Changes
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'openapi.json'
+      - 'src/api/**'
+      - 'tools/build-openapi.js'
+      - 'package.json'
+
+permissions:
+  contents: read
+
+jobs:
+  breaking-changes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+
+      - name: Check OpenAPI breaking changes
+        uses: oasdiff/oasdiff-action/breaking@v0
+        with:
+          base: 'origin/${{ github.base_ref }}:openapi.json'
+          revision: 'HEAD:openapi.json'
+          fail-on: ERR
