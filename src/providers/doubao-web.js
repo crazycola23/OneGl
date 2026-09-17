@@ -1,6 +1,23 @@
 import { executeDoubaoPrompt } from "../doubao.js";
 import { normalizeProviderResult, PROVIDER_ACCESS } from "./contract.js";
 
+export function hardenDoubaoCitationFallback(raw) {
+  if (!raw || raw.citationSelectorUsed !== "inline-links") return raw;
+
+  return {
+    ...raw,
+    citationState: "parse_failed",
+    expectedCitationCount: null,
+    citationDiagnostics: [
+      ...new Set([
+        ...(Array.isArray(raw.citationDiagnostics) ? raw.citationDiagnostics : []),
+        "reference-block-not-found",
+        ...(raw.citations?.length ? ["inline-links-observed"] : []),
+      ]),
+    ],
+  };
+}
+
 export const doubaoWebProvider = {
   id: "doubao-web",
   provider: "doubao",
@@ -8,25 +25,9 @@ export const doubaoWebProvider = {
   access: PROVIDER_ACCESS.SCRAPED,
 
   async run({ page, prompt, config }) {
-    const raw = await executeDoubaoPrompt(page, prompt, config);
-
-    // Inline answer links are useful diagnostic evidence, but they are not proof that
-    // the reference block was parsed completely. If the source-block selector drifted,
-    // treating the observed inline links as both expected and captured would make the
-    // collector report a false success. Preserve the links while failing citation
-    // completeness closed.
-    if (raw.citationSelectorUsed === "inline-links") {
-      raw.citationState = "parse_failed";
-      raw.expectedCitationCount = null;
-      raw.citationDiagnostics = [
-        ...new Set([
-          ...(Array.isArray(raw.citationDiagnostics) ? raw.citationDiagnostics : []),
-          "reference-block-not-found",
-          ...(raw.citations?.length ? ["inline-links-observed"] : []),
-        ]),
-      ];
-    }
-
+    const raw = hardenDoubaoCitationFallback(
+      await executeDoubaoPrompt(page, prompt, config),
+    );
     return normalizeProviderResult(
       {
         ...raw,
