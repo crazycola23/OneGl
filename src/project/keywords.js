@@ -81,6 +81,10 @@ export async function addKeywordsInTransaction(client, args) {
 }
 
 export async function addKeywords(pool, args) {
+  // A pg PoolClient has release(); a Pool does not. When a caller already owns the
+  // transaction, write directly through that client instead of nesting BEGIN/COMMIT.
+  if (typeof pool?.release === "function") return writeKeywords(pool, args);
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -140,7 +144,7 @@ export async function deleteKeyword(pool, { projectId, promptId }) {
     `UPDATE prompts
         SET deleted_at = now(), enabled = false, updated_at = now()
       WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL`,
-    [promptId, projectId],
+    [promptId, projectId, enabled],
   );
   return rowCount > 0;
 }
