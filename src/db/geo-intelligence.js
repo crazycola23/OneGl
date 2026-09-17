@@ -7,7 +7,7 @@ import {
   computeShareOfVoice,
 } from "../analysis/geo-intelligence.js";
 
-const VALID_RUN = "r.status IN ('success', 'partial') AND r.conversation_reset_confirmed IS TRUE";
+const ANSWER_VALID_RUN = "r.status IN ('success', 'partial') AND r.conversation_reset_confirmed IS TRUE";
 
 function jsonArray(value) {
   return Array.isArray(value) ? value : [];
@@ -16,12 +16,14 @@ function jsonArray(value) {
 function competitorRules(row) {
   return compileBrandRules({
     name: row.name,
-    // Domains describe source ownership/attribution. They are intentionally not
-    // answer-text aliases: an answer containing a URL must not become a competitor mention.
     aliases: jsonArray(row.aliases),
     productAliases: [],
     excludePatterns: jsonArray(row.exclude_patterns),
   });
+}
+
+function citationCompleteRun(run) {
+  return run?.status === "success" && new Set(["found", "none_visible"]).has(run?.citation_state);
 }
 
 export async function listProjectCompetitors(pool, projectId) {
@@ -98,7 +100,8 @@ const RUN_SELECT = `
   SELECT r.id, r.prompt_id, p.prompt, r.provider,
          COALESCE(r.model, r.provider) AS model,
          COALESCE(r.provider_access, 'scraped') AS provider_access,
-         r.model_version, r.answer, r.brand_mentioned, r.created_at
+         r.model_version, r.answer, r.brand_mentioned, r.created_at,
+         r.status, r.citation_state
     FROM runs r
     JOIN prompts p ON p.id = r.prompt_id
 `;
@@ -106,7 +109,7 @@ const RUN_SELECT = `
 async function loadBatchRuns(pool, batchId) {
   const { rows } = await pool.query(
     `${RUN_SELECT}
-      WHERE r.sampling_batch_id = $1 AND ${VALID_RUN}
+      WHERE r.sampling_batch_id = $1 AND ${ANSWER_VALID_RUN}
       ORDER BY r.id`,
     [batchId],
   );
@@ -119,7 +122,7 @@ async function loadProjectRuns(pool, projectId, since, until) {
       WHERE p.project_id = $1
         AND r.created_at >= $2
         AND r.created_at <= $3
-        AND ${VALID_RUN}
+        AND ${ANSWER_VALID_RUN}
       ORDER BY r.id`,
     [projectId, since, until],
   );
@@ -151,9 +154,6 @@ async function buildIntelligence(pool, project, runs, scope) {
 
   for (const run of runs) {
     const answer = String(run.answer ?? "");
-    // Intelligence intentionally re-derives both brand and competitor mentions
-    // from the same current rule set. Stored brand_mentioned remains the immutable
-    // capture-time audit result used by legacy reports.
     const brandMentioned = detectBrandMention(answer, brandRules).mentioned;
     brandMentionByRunId.set(String(run.id), brandMentioned);
     if (brandMentioned) brandMentions += 1;
@@ -203,6 +203,7 @@ async function buildIntelligence(pool, project, runs, scope) {
   }
 
   const runIds = runs.map((run) => Number(run.id));
+  const citationRunIds = runs.filter(citationCompleteRun).map((run) => Number(run.id));
   const { rows: queryRowsRaw } = await pool.query(
     `SELECT r.id AS run_id, r.prompt_id, p.prompt, q.query_text AS query
        FROM run_search_queries q
@@ -230,12 +231,10 @@ async function buildIntelligence(pool, project, runs, scope) {
         AND c.visible_to_user IS TRUE
       GROUP BY 1, 2
       ORDER BY 1, 2`,
-    [runIds],
+    [citationRunIds],
   );
   const stability = computeCitationVolatility(dailyDomains);
 
-  // Fetch the complete distribution so top-domain shares use the true denominator;
-  // only the response list is truncated.
   const { rows: domainRows } = await pool.query(
     `SELECT a.normalized_domain AS domain, count(*)::int AS citations,
             count(DISTINCT r.id)::int AS runs
@@ -247,7 +246,7 @@ async function buildIntelligence(pool, project, runs, scope) {
         AND c.visible_to_user IS TRUE
       GROUP BY 1
       ORDER BY citations DESC, domain`,
-    [runIds],
+    [citationRunIds],
   );
   const totalCitations = domainRows.reduce((sum, row) => sum + Number(row.citations), 0);
   const topDomains = domainRows.slice(0, 25).map((row) => ({
@@ -343,6 +342,8 @@ async function buildIntelligence(pool, project, runs, scope) {
     })),
     fanout,
     citations: {
+      validRuns: citationRunIds.length,
+      coverage: runs.length ? citationRunIds.length / runs.length : null,
       total: totalCitations,
       topDomains,
       stability: { ...stability, difficulty: citationDifficulty(stability.stabilityScore) },
@@ -352,7 +353,6 @@ async function buildIntelligence(pool, project, runs, scope) {
   };
 }
 
-/** Re-derives one batch from its stored evidence. */
 export async function loadBatchGeoIntelligence(pool, batchId) {
   const project = await loadBatchProject(pool, batchId);
   if (!project) return null;
@@ -364,12 +364,6 @@ export async function loadBatchGeoIntelligence(pool, batchId) {
   });
 }
 
-/**
- * Re-derives project intelligence over a rolling time window across all valid project runs.
- * This is the preferred surface for longitudinal citation stability: a single batch
- * often completes within one day and therefore cannot produce a meaningful daily
- * transition score.
- */
 export async function loadProjectGeoIntelligence(pool, projectId, { days = 30, now = new Date() } = {}) {
   const normalizedDays = Math.max(1, Math.min(365, Number(days) || 30));
   const project = await loadProject(pool, projectId);
