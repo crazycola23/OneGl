@@ -3464,6 +3464,12 @@
             "type": "string"
           },
           "status": {
+            "enum": [
+              "pending",
+              "processing",
+              "completed",
+              "failed"
+            ],
             "type": "string"
           }
         },
@@ -4264,7 +4270,7 @@
           },
           "status": {
             "enum": [
-              "pending",
+              "queued",
               "delivering",
               "delivered",
               "failed"

@@ -2111,7 +2111,8 @@ export interface components {
             execution_id: string | null;
             /** Format: date-time */
             scheduled_for: string;
-            status: string;
+            /** @enum {string} */
+            status: "pending" | "processing" | "completed" | "failed";
         };
         ScheduleResource: {
             account_ids: string[];
@@ -2316,7 +2317,7 @@ export interface components {
             /** Format: date-time */
             next_attempt_at?: string | null;
             /** @enum {string} */
-            status?: "pending" | "delivering" | "delivered" | "failed";
+            status?: "queued" | "delivering" | "delivered" | "failed";
         } & {
             [key: string]: unknown;
         };
