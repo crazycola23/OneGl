@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { runOnePrompt } from "../src/collect/runner.js";
@@ -6,6 +9,7 @@ import { loadConfig } from "../src/config.js";
 import { executeDoubaoPrompt } from "../src/doubao.js";
 import { ErrorCode } from "../src/errors.js";
 import { hardenDoubaoCitationFallback } from "../src/providers/doubao-web.js";
+import { RunStore } from "../src/store.js";
 
 function createResetMockPage(answerBubbles) {
   const calls = { fills: [] };
@@ -158,4 +162,58 @@ test("a completed local observation retries persistence without entering provide
   assert.ok(outcome.persistError);
   assert.equal(readCount, 1);
   assert.equal(createCount, 0);
+});
+
+test("an unsettled deterministic run refuses a later automatic attempt", async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "onegl-run-state-"));
+  const store = new RunStore({ dataDir });
+  const runId = "run_batch_10_1";
+
+  try {
+    const first = await store.createRun({
+      runId,
+      prompt: "测试问题",
+      project: "project",
+      accountKey: "acct",
+      samplingBatchId: 10,
+      runToken: "batch:10:1",
+      attempt: 1,
+    });
+    assert.equal(first.status, undefined);
+
+    await assert.rejects(
+      () => store.createRun({
+        runId,
+        prompt: "测试问题",
+        project: "project",
+        accountKey: "acct",
+        samplingBatchId: 10,
+        runToken: "batch:10:1",
+        attempt: 2,
+      }),
+      (error) => error?.code === "RUN_STATE_UNCERTAIN" && error?.details?.previousAttempt === 1,
+    );
+
+    const untouched = await store.readRun(runId);
+    assert.equal(untouched.attempt, 1);
+
+    await store.updateRun(runId, {
+      status: "failed",
+      completedAt: "2026-09-17T00:00:10.000Z",
+      errorCode: "DOUBAO_CONVERSATION_RESET_FAILED",
+    });
+    const retry = await store.createRun({
+      runId,
+      prompt: "测试问题",
+      project: "project",
+      accountKey: "acct",
+      samplingBatchId: 10,
+      runToken: "batch:10:1",
+      attempt: 2,
+    });
+    assert.equal(retry.attempt, 2);
+    assert.ok(retry.attemptHistory.some((entry) => entry.attempt === 1 && entry.status === "failed"));
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });
