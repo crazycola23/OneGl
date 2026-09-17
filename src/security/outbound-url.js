@@ -4,39 +4,17 @@ import https from "node:https";
 import net from "node:net";
 
 const BLOCKED_IPV4 = [
-  ["0.0.0.0", 8],
-  ["10.0.0.0", 8],
-  ["100.64.0.0", 10],
-  ["127.0.0.0", 8],
-  ["169.254.0.0", 16],
-  ["172.16.0.0", 12],
-  ["192.0.0.0", 24],
-  ["192.0.2.0", 24],
-  ["192.88.99.0", 24],
-  ["192.168.0.0", 16],
-  ["198.18.0.0", 15],
-  ["198.51.100.0", 24],
-  ["203.0.113.0", 24],
-  ["224.0.0.0", 4],
-  ["240.0.0.0", 4],
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
+  ["192.88.99.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15],
+  ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
 ];
 
 const BLOCKED_IPV6 = [
-  ["::", 128],
-  ["::1", 128],
-  ["::ffff:0:0", 96],
-  ["64:ff9b::", 96],
-  ["64:ff9b:1::", 48],
-  ["100::", 64],
-  ["2001:2::", 48],
-  ["2001:10::", 28],
-  ["2001:20::", 28],
-  ["2001:db8::", 32],
-  ["2002::", 16],
-  ["3fff::", 20],
-  ["fc00::", 7],
-  ["fe80::", 10],
-  ["ff00::", 8],
+  ["::", 128], ["::1", 128], ["::ffff:0:0", 96], ["64:ff9b::", 96],
+  ["64:ff9b:1::", 48], ["100::", 64], ["2001:2::", 48], ["2001:10::", 28],
+  ["2001:20::", 28], ["2001:db8::", 32], ["2002::", 16], ["3fff::", 20],
+  ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
 ];
 
 function stripIpv6Brackets(value) {
@@ -159,11 +137,30 @@ export async function validatePublicOutboundUrl(raw, { allowHttp = false, lookup
   return url.toString();
 }
 
-function requestWithPinnedLookup(url, addresses, { method, headers, body, timeoutMs, maxResponseBytes }) {
+function requestWithPinnedLookup(url, addresses, {
+  method,
+  headers,
+  body,
+  timeoutMs,
+  maxResponseBytes,
+  responseType = "text",
+}) {
   const target = addresses[0];
   const requestImpl = url.protocol === "https:" ? https : http;
   const hostname = stripIpv6Brackets(url.hostname);
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+
     const request = requestImpl.request({
       protocol: url.protocol,
       hostname,
@@ -177,33 +174,48 @@ function requestWithPinnedLookup(url, addresses, { method, headers, body, timeou
         return callback(null, target.address, target.family);
       },
     }, (response) => {
-      let captured = "";
-      response.setEncoding("utf8");
+      const chunks = [];
+      let total = 0;
       response.on("data", (chunk) => {
-        if (captured.length < maxResponseBytes) {
-          captured += String(chunk).slice(0, maxResponseBytes - captured.length);
+        if (settled) return;
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        total += buffer.length;
+        if (total > maxResponseBytes) {
+          response.destroy();
+          finish({
+            status: Number(response.statusCode ?? 0),
+            ok: false,
+            body: responseType === "buffer" ? Buffer.alloc(0) : "",
+            headers: response.headers,
+            connectedAddress: target.address,
+            bytes: total,
+            tooLarge: true,
+          });
+          return;
         }
+        chunks.push(buffer);
       });
-      response.on("end", () => resolve({
-        status: Number(response.statusCode ?? 0),
-        ok: Number(response.statusCode ?? 0) >= 200 && Number(response.statusCode ?? 0) < 300,
-        body: captured,
-        headers: response.headers,
-        connectedAddress: target.address,
-      }));
+      response.on("end", () => {
+        const buffer = Buffer.concat(chunks, total);
+        finish({
+          status: Number(response.statusCode ?? 0),
+          ok: Number(response.statusCode ?? 0) >= 200 && Number(response.statusCode ?? 0) < 300,
+          body: responseType === "buffer" ? buffer : buffer.toString("utf8"),
+          headers: response.headers,
+          connectedAddress: target.address,
+          bytes: total,
+          tooLarge: false,
+        });
+      });
+      response.on("error", fail);
     });
-    request.on("error", reject);
+    request.on("error", fail);
     request.setTimeout(timeoutMs, () => request.destroy(new Error(`outbound request timed out after ${timeoutMs}ms`)));
     if (body != null) request.write(body);
     request.end();
   });
 }
 
-/**
- * Resolve, reject every private/reserved answer, then pin the actual socket lookup to a
- * prevalidated public address. Node's http/https client does not follow redirects by default,
- * so a 3xx response cannot redirect delivery into an internal network.
- */
 export async function safeOutboundRequest(rawUrl, {
   method = "POST",
   headers = {},
@@ -221,5 +233,28 @@ export async function safeOutboundRequest(rawUrl, {
     body,
     timeoutMs,
     maxResponseBytes,
+    responseType: "text",
+  });
+}
+
+/** Same SSRF contract as safeOutboundRequest, but preserves raw bytes for charset-aware HTML parsing. */
+export async function safeOutboundBufferRequest(rawUrl, {
+  method = "GET",
+  headers = {},
+  body = null,
+  timeoutMs = 10_000,
+  maxResponseBytes = 2 * 1024 * 1024,
+  allowHttp = true,
+  lookup = dns.lookup,
+} = {}) {
+  const url = parseOutboundUrl(rawUrl, { allowHttp });
+  const addresses = await resolvePublicTarget(url, { lookup });
+  return requestWithPinnedLookup(url, addresses, {
+    method,
+    headers,
+    body,
+    timeoutMs,
+    maxResponseBytes,
+    responseType: "buffer",
   });
 }
