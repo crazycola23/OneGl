@@ -1,5 +1,6 @@
 const enums = {
   AccountResource: [
+    "unknown",
     "healthy",
     "login_required",
     "session_expired",
@@ -11,6 +12,7 @@ const enums = {
     "disabled",
   ],
   AuthSessionResource: [
+    "pending",
     "starting",
     "waiting_for_login",
     "connected",
@@ -23,7 +25,8 @@ const enums = {
   BatchSummaryResource: ["pending", "queued", "running", "paused", "completed", "partial", "failed", "aborted"],
   RunResource: ["success", "partial", "failed"],
   WebhookEventResource: ["queued", "delivering", "delivered", "failed"],
-  ScheduleExecutionItem: ["pending", "processing", "completed", "failed"],
+  MonitorExecutionResource: ["pending", "processing", "completed", "skipped", "failed"],
+  ScheduleExecutionItem: ["pending", "processing", "completed", "failed", "action_required"],
 };
 
 export function applyStatusContractOpenApi(document) {
