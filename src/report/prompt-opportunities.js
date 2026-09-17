@@ -8,6 +8,13 @@ function validObservedRun(run) {
   return ["success", "partial"].includes(run?.status) && run?.conversation_reset_confirmed === true;
 }
 
+function citationValidObservedRun(run) {
+  const state = run?.citation_state ?? run?.citationState;
+  return run?.status === "success" &&
+    run?.conversation_reset_confirmed === true &&
+    ["found", "none_visible"].includes(state);
+}
+
 function promptState(row) {
   if (row.validRuns <= 0) {
     return {
@@ -75,6 +82,7 @@ export function buildPromptOpportunities(detail, { maxRows = 30 } = {}) {
       validRuns: 0,
       mentionedRuns: 0,
       failedRuns: 0,
+      citationValidRuns: 0,
       citationComparableRuns: 0,
       visibleCitations: 0,
     };
@@ -84,7 +92,10 @@ export function buildPromptOpportunities(detail, { maxRows = 30 } = {}) {
     if (validObservedRun(run)) {
       row.validRuns += 1;
       if (run?.brand_mentioned === true) row.mentionedRuns += 1;
-      const captured = numberOrNull(run?.captured_citation_count);
+    }
+    if (citationValidObservedRun(run)) {
+      row.citationValidRuns += 1;
+      const captured = numberOrNull(run?.captured_citation_count ?? run?.capturedCitationCount);
       if (captured != null && captured >= 0) {
         row.citationComparableRuns += 1;
         row.visibleCitations += captured;
@@ -95,11 +106,14 @@ export function buildPromptOpportunities(detail, { maxRows = 30 } = {}) {
 
   const rows = [...groups.values()].map((row) => {
     const mentionRate = row.validRuns > 0 ? row.mentionedRuns / row.validRuns : null;
+    const citationEvidenceRate = row.validRuns > 0
+      ? row.citationValidRuns / row.validRuns
+      : null;
     const citationDensity = row.citationComparableRuns > 0
       ? row.visibleCitations / row.citationComparableRuns
       : null;
     const state = promptState({ ...row, mentionRate });
-    return { ...row, mentionRate, citationDensity, ...state };
+    return { ...row, mentionRate, citationEvidenceRate, citationDensity, ...state };
   });
 
   rows.sort((a, b) =>
@@ -123,7 +137,7 @@ export function buildPromptOpportunities(detail, { maxRows = 30 } = {}) {
 }
 
 export function promptOpportunityBrowserBundle() {
-  return [numberOrNull, validObservedRun, promptState, buildPromptOpportunities]
+  return [numberOrNull, validObservedRun, citationValidObservedRun, promptState, buildPromptOpportunities]
     .map((fn) => fn.toString())
     .join("\n");
 }
