@@ -23,7 +23,7 @@ const enums = {
     "expired",
   ],
   BatchSummaryResource: ["pending", "queued", "running", "paused", "completed", "partial", "failed", "aborted"],
-  RunResource: ["success", "partial", "failed"],
+  RunResource: ["pending", "running", "success", "partial", "failed"],
   WebhookEventResource: ["queued", "delivering", "delivered", "failed"],
   MonitorExecutionResource: ["pending", "processing", "completed", "skipped", "failed"],
   ScheduleExecutionItem: ["pending", "processing", "completed", "failed", "action_required"],
