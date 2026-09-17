@@ -38,5 +38,18 @@ test("OpenAPI build includes readiness and formal SaaS webhook contracts", () =>
       receiver.requestBody.content["application/json"].schema.$ref,
       "#/components/schemas/SaasWebhookEvent",
     );
+    const headers = new Map(receiver.parameters.map((parameter) => [parameter.name, parameter]));
+    for (const name of [
+      "X-OneGl-Event",
+      "X-OneGl-Event-Id",
+      "X-OneGl-Webhook-Version",
+      "X-OneGl-Timestamp",
+      "X-OneGl-Signature",
+    ]) {
+      assert.ok(headers.has(name), `${eventType} webhook is missing ${name}`);
+    }
+    assert.equal(headers.get("X-OneGl-Event").schema.const, eventType);
+    assert.equal(headers.get("X-OneGl-Webhook-Version").schema.const, "1");
+    assert.equal(headers.has("X-OneGl-Webhook-Signature"), false);
   }
 });
