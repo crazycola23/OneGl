@@ -26,7 +26,7 @@
     "openapi:build": "node tools/build-openapi.js",
     "openapi:lint": "npx --yes @redocly/cli@2 lint openapi.json",
     "openapi:types": "mkdir -p generated && npx --yes openapi-typescript@7 openapi.json -o generated/openapi.d.ts",
-    "openapi:check": "npm run openapi:build && npm run openapi:lint && npm run openapi:types && node --test test/openapi-build.test.mjs test/openapi-contract-coverage.test.mjs",
+    "openapi:check": "npm run openapi:build && npm run openapi:lint && npm run openapi:types && node --test test/openapi-build.test.mjs test/openapi-contract-coverage.test.mjs test/openapi-patch-contract.test.mjs",
     "check": "node --check src/*.js && node -e \"JSON.parse(require('fs').readFileSync('validation/phase0-prompts.json','utf8'))\"",
     "validate:scaffold": "node src/validate.js scaffold",
     "validate:evaluate": "node src/validate.js evaluate",
@@ -55,8 +55,8 @@
   "dependencies": {
     "bullmq": "^6.3.4",
     "dotenv": "^17.2.3",
-    "ioredis": "^6.0.0",
-    "pg": "^8.13.0",
-    "playwright-core": "^1.51.1"
+    "ioredis": "^6.6.0",
+    "pg": "^8.16.3",
+    "playwright-core": "^1.55.0"
   }
 }
