@@ -9,7 +9,6 @@ import { beginSaasIdempotency, completeSaasIdempotency } from "./api/idempotency
 import { handleMonitoringRoute } from "./api/monitoring-routes.js";
 import { openApiDocument } from "./api/openapi.js";
 import { handleSaasPaginationRoute } from "./api/saas-pagination.js";
-import { applySaasOpenApi } from "./api/saas-openapi.js";
 import { handleTaskRoute } from "./api/task-routes.js";
 import {
   DEFAULT_SCOPES,
@@ -62,7 +61,6 @@ import { isQueueConfigured } from "./queue/connection.js";
 import { createSamplingBatch } from "./sampling/batch.js";
 import { readinessReport } from "./system/readiness.js";
 
-applySaasOpenApi(openApiDocument);
 
 const API_HOST = process.env.ONEGL_API_HOST?.trim() || "127.0.0.1";
 const API_PORT = parsePort(process.env.ONEGL_API_PORT, 3200);
