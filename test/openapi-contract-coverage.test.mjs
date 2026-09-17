@@ -115,20 +115,43 @@ test("all JSON request bodies use concrete schemas instead of bare objects", () 
   }
 });
 
-test("status-bearing public core resources expose finite enums", () => {
+test("status-bearing public core resources match runtime-visible state sets", () => {
   const document = buildOpenApiDocument();
-  for (const schemaName of [
-    "AccountResource",
-    "AuthSessionResource",
-    "BatchSummaryResource",
-    "RunResource",
-    "WebhookEventResource",
-    "MonitorExecutionResource",
-    "ScheduleExecutionItem",
-  ]) {
+  const expected = {
+    AccountResource: [
+      "unknown",
+      "healthy",
+      "login_required",
+      "session_expired",
+      "verification_required",
+      "access_restricted",
+      "paused",
+      "cooldown",
+      "rate_limited",
+      "disabled",
+    ],
+    AuthSessionResource: [
+      "pending",
+      "starting",
+      "waiting_for_login",
+      "connected",
+      "verification_required",
+      "access_restricted",
+      "failed",
+      "cancelled",
+      "expired",
+    ],
+    BatchSummaryResource: ["pending", "queued", "running", "paused", "completed", "partial", "failed", "aborted"],
+    RunResource: ["success", "partial", "failed"],
+    WebhookEventResource: ["queued", "delivering", "delivered", "failed"],
+    MonitorExecutionResource: ["pending", "processing", "completed", "skipped", "failed"],
+    ScheduleExecutionItem: ["pending", "processing", "completed", "failed", "action_required"],
+  };
+
+  for (const [schemaName, states] of Object.entries(expected)) {
     const status = document.components.schemas[schemaName]?.properties?.status;
     assert.ok(status, `${schemaName} is missing status`);
-    assert.ok(Array.isArray(status.enum) && status.enum.length > 0, `${schemaName}.status must be an enum`);
+    assert.deepEqual(status.enum, states, `${schemaName}.status is out of sync with runtime`);
   }
 });
 
