@@ -1,0 +1,47 @@
+name: OpenAPI Runtime Cleanup Bootstrap
+
+on:
+  push:
+    branches: [openapi-contract-hardening]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: openapi-contract-hardening
+
+      - name: Remove legacy contract mutation and refresh doc version
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          server = Path("src/api-server.js")
+          text = server.read_text()
+          text = text.replace('import { applySaasOpenApi } from "./api/saas-openapi.js";\n', '')
+          text = text.replace('\napplySaasOpenApi(openApiDocument);\n', '\n')
+          server.write_text(text)
+
+          task_doc = Path("docs/SAAS_TASK_API.md")
+          text = task_doc.read_text()
+          text = text.replace("# OneGl SaaS Task API Contract v0.6", "# OneGl SaaS Task API Contract v0.7", 1)
+          task_doc.write_text(text)
+          PY
+
+      - name: Commit cleanup when changed
+        shell: bash
+        run: |
+          if [[ -z "$(git status --porcelain -- src/api-server.js docs/SAAS_TASK_API.md)" ]]; then
+            echo "Runtime/docs cleanup already applied."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/api-server.js docs/SAAS_TASK_API.md
+          git commit -m "refactor(openapi): make builder the sole contract assembly path"
+          git push origin HEAD:openapi-contract-hardening
