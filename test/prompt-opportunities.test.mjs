@@ -56,6 +56,18 @@ test("引用数据缺失保持 N/A 语义，不自动记成 0 引用", () => {
   assert.equal(row.citationDensity, null);
 });
 
+test("旧快照 success Run 缺 citation_state 时仍可用 captured count 兼容", () => {
+  const detail = {
+    report: { runs: { assignmentsRun: 1 } },
+    runs: [run("旧快照", { citation_state: null, captured_citation_count: 3 })],
+  };
+  const [row] = buildPromptOpportunities(detail).rows;
+  assert.equal(row.citationValidRuns, 1);
+  assert.equal(row.citationComparableRuns, 1);
+  assert.equal(row.citationEvidenceRate, 1);
+  assert.equal(row.citationDensity, 3);
+});
+
 test("partial citation parse failure 只参与品牌回答口径，不污染 Prompt 引用密度", () => {
   const detail = {
     report: { runs: { assignmentsRun: 2 } },
