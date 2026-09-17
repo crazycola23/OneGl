@@ -1,0 +1,60 @@
+name: Live Doubao Canary
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "25 18 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-doubao-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    if: github.event_name == 'workflow_dispatch' || vars.ONEGL_LIVE_CANARY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ONEGL_ACCOUNT: canary
+      ONEGL_BROWSER: firefox
+      ONEGL_HEADLESS: "true"
+      ONEGL_REQUIRE_STORAGE_STATE_ENCRYPTION: "true"
+      ONEGL_CANARY_PROMPT: ${{ vars.ONEGL_CANARY_PROMPT }}
+      ONEGL_NETWORK_EVIDENCE: "false"
+      DOUBAO_TIMEOUT_MS: "120000"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Firefox
+        run: npx playwright-core install --with-deps firefox
+
+      - name: Restore encrypted canary session
+        shell: bash
+        env:
+          ONEGL_CANARY_STORAGE_STATE_ENVELOPE: ${{ secrets.ONEGL_CANARY_STORAGE_STATE_ENVELOPE }}
+        run: |
+          test -n "$ONEGL_CANARY_STORAGE_STATE_ENVELOPE" || { echo "ONEGL_CANARY_STORAGE_STATE_ENVELOPE is not configured" >&2; exit 1; }
+          install -d -m 700 .onegl/auth/accounts
+          printf '%s\n' "$ONEGL_CANARY_STORAGE_STATE_ENVELOPE" > .onegl/auth/accounts/canary.storage.json.enc
+          chmod 600 .onegl/auth/accounts/canary.storage.json.enc
+
+      - name: Run live compatibility canary
+        env:
+          ONEGL_STORAGE_STATE_KEY: ${{ secrets.ONEGL_CANARY_STORAGE_STATE_KEY }}
+        run: |
+          test -n "$ONEGL_STORAGE_STATE_KEY" || { echo "ONEGL_CANARY_STORAGE_STATE_KEY is not configured" >&2; exit 1; }
+          node tools/live-canary.js

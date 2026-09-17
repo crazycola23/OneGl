@@ -171,3 +171,71 @@ test("SaaS task facade returns stable task/execution/result/report/schedule IDs"
     await pool.end();
   }
 });
+
+test("SaaS task creation rolls back project, binding, and keywords when the task row fails", { skip: !enabled }, async () => {
+  const pool = createPool();
+  const suffix = `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  const taskName = `ROLLBACK_TEST_${suffix}`;
+  const description = `SaaS task ${taskName}`;
+  const port = 35050 + (process.pid % 400);
+  const proc = startApi(port);
+
+  try {
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION onegl_test_reject_task_insert()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF NEW.name LIKE 'ROLLBACK_TEST_%' THEN
+          RAISE EXCEPTION 'forced task insert failure for transaction regression';
+        END IF;
+        RETURN NEW;
+      END
+      $$
+    `);
+    await pool.query("DROP TRIGGER IF EXISTS onegl_test_reject_task_insert_trg ON service_tasks");
+    await pool.query(`
+      CREATE TRIGGER onegl_test_reject_task_insert_trg
+      BEFORE INSERT ON service_tasks
+      FOR EACH ROW EXECUTE FUNCTION onegl_test_reject_task_insert()
+    `);
+
+    await waitReady(proc);
+    const result = await api(`http://127.0.0.1:${port}`, "/v1/tasks", {
+      method: "POST",
+      body: {
+        name: taskName,
+        target_brand: "事务测试品牌",
+        questions: ["事务失败后不能留下关键词"],
+        platforms: ["doubao"],
+        account_ids: [],
+      },
+    });
+    assert.equal(result.response.status, 500);
+
+    const project = await pool.query("SELECT id FROM projects WHERE description = $1", [description]);
+    assert.equal(project.rowCount, 0, "project insert must roll back");
+
+    const binding = await pool.query(
+      "SELECT project_id FROM service_project_bindings WHERE display_name = $1",
+      [taskName],
+    );
+    assert.equal(binding.rowCount, 0, "tenant binding must roll back");
+
+    const prompts = await pool.query(
+      `SELECT q.id
+         FROM prompts q
+         JOIN projects p ON p.id = q.project_id
+        WHERE p.description = $1`,
+      [description],
+    );
+    assert.equal(prompts.rowCount, 0, "keyword inserts must roll back");
+  } finally {
+    await stop(proc.child);
+    await pool.query("DROP TRIGGER IF EXISTS onegl_test_reject_task_insert_trg ON service_tasks").catch(() => undefined);
+    await pool.query("DROP FUNCTION IF EXISTS onegl_test_reject_task_insert()").catch(() => undefined);
+    await pool.query("DELETE FROM projects WHERE description = $1", [description]).catch(() => undefined);
+    await pool.end();
+  }
+});
