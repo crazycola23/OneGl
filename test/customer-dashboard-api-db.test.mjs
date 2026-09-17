@@ -108,19 +108,20 @@ test("customer dashboard exposes front-end GEO metrics without internal IDs and 
 
     const runRows = [];
     for (const [index, row] of [
-      { answer: "品牌A和竞品B都值得考虑", brand: true, day: "2026-09-14T10:00:00Z" },
-      { answer: "竞品B更常被提到", brand: false, day: "2026-09-15T10:00:00Z" },
-      { answer: "品牌A的空间表现不错", brand: true, day: "2026-09-15T12:00:00Z" },
+      { answer: "品牌A和竞品B都值得考虑", brand: true, day: "2026-09-14T10:00:00Z", citations: 2 },
+      { answer: "竞品B更常被提到", brand: false, day: "2026-09-15T10:00:00Z", citations: 2 },
+      { answer: "品牌A的空间表现不错", brand: true, day: "2026-09-15T12:00:00Z", citations: 1 },
     ].entries()) {
       const inserted = await pool.query(
         `INSERT INTO runs
            (prompt_id, provider, provider_access, model, status, started_at, finished_at, answer,
-            captured_citation_count, citation_diagnostics, local_run_id, sampling_batch_id,
-            conversation_reset_confirmed, brand_mentioned, matched_terms, attempt, created_at)
+            citation_state, expected_citation_count, captured_citation_count, citation_diagnostics,
+            local_run_id, sampling_batch_id, conversation_reset_confirmed, brand_mentioned,
+            matched_terms, attempt, created_at)
          VALUES ($1, 'doubao', 'scraped', 'doubao', 'success', $2, $2, $3,
-                 0, '[]'::jsonb, $4, $5, true, $6, '[]'::jsonb, 1, $2)
+                 'found', $4, $4, '[]'::jsonb, $5, $6, true, $7, '[]'::jsonb, 1, $2)
          RETURNING id`,
-        [promptId, row.day, row.answer, `run_dashboard_${suffix}_${index}`, batchId, row.brand],
+        [promptId, row.day, row.answer, row.citations, `run_dashboard_${suffix}_${index}`, batchId, row.brand],
       );
       runRows.push(Number(inserted.rows[0].id));
     }
@@ -187,6 +188,8 @@ test("customer dashboard exposes front-end GEO metrics without internal IDs and 
     assert.equal(data.overview.brand_mentions, 2);
     assert.equal(data.overview.visibility_rate, 2 / 3);
     assert.equal(data.overview.share_of_voice, 0.5);
+    assert.equal(data.overview.citation_valid_runs, 3);
+    assert.equal(data.overview.citation_evidence_coverage_rate, 1);
     assert.equal(data.overview.visible_citations, 5);
     assert.equal(data.overview.cited_domains, 3);
     assert.equal(data.overview.query_fanout_total, 3);
