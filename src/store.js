@@ -71,21 +71,38 @@ export class RunStore {
       throw new Error(`attempt must be a positive integer, received ${JSON.stringify(attempt)}`);
     }
 
-    // 批次任务使用确定性 id，队列重试时复用同一个目录与同一条记录，
-    // 因此不会产生重复 Run。
     const runId = explicitRunId ?? `run_${safeTimestamp()}_${randomUUID().slice(0, 8)}`;
     await mkdir(this.runDir(runId), { recursive: true });
 
-    // 重试会以同一个 runId 重新进入。Run 记录与 run.json 故意复用，但上一次尝试的
-    // 现场必须保留：每次尝试把产物写进 attempts/<n>/，run.json 只记录历史与最终结果，
-    // 不会被下一次尝试覆盖掉失败证据。
     const previous = await this.readRun(runId).catch(() => null);
+
+    // A deterministic batch run that is still marked running after the worker moved on to
+    // a later attempt has an unknowable provider-submission boundary: the old process may
+    // have died immediately after sending the prompt. Never overwrite that evidence and
+    // resubmit automatically. A settled failed run remains retryable through the normal
+    // promptSubmitted=false gate, while a completed run is handled by persist-only replay.
+    if (
+      explicitRunId &&
+      previous?.status === "running" &&
+      Number.isInteger(previous.attempt) &&
+      attempt > previous.attempt
+    ) {
+      const error = new Error(
+        `Run ${runId} attempt ${previous.attempt} did not settle; refusing automatic attempt ${attempt} because provider submission state is uncertain`,
+      );
+      error.code = "RUN_STATE_UNCERTAIN";
+      error.details = {
+        runId,
+        previousAttempt: previous.attempt,
+        requestedAttempt: attempt,
+      };
+      throw error;
+    }
+
     const attempts = [...new Set([...(previous?.attempts ?? []), attempt])].sort(
       (a, b) => a - b,
     );
 
-    // run.json 只保存「当前尝试」的状态，所以每次重新进入前先把上一次的结论沉淀到
-    // attemptHistory。没有这一步，调试时就无法回答「第几次尝试失败、失败在哪一步」。
     const settled = previous && previous.status && previous.status !== "running";
     const previousHistory = settled
       ? [
@@ -112,23 +129,17 @@ export class RunStore {
       samplingBatchId,
       runToken,
       jobId,
-      // 当前 attempt，以及这个 Run 经历过的全部 attempt
       attempt,
       attempts,
-      // 历史尝试的结论（状态 / 错误 / 产物目录），用于界面上的 Attempt 时间线
       attemptHistory,
       attemptStartedAt: new Date().toISOString(),
-      // 整个 Run 的首次开始时间，重试时不重置
       startedAt: previous?.startedAt ?? new Date().toISOString(),
       completedAt: null,
       answer: null,
       citationState: null,
       expectedCitationCount: null,
       citations: [],
-      // Whether this run provably started from an empty conversation. Only confirmed
-      // runs belong in the headline mention-rate statistic.
       conversationResetConfirmed: null,
-      // Brand detection result, kept alongside the raw answer for audit.
       brandMentioned: null,
       mentionCount: null,
       firstMentionPosition: null,
@@ -138,7 +149,6 @@ export class RunStore {
       errorMessage: null,
       errorDetails: null,
       currentUrl: null,
-      // 当前（最新）attempt 的产物目录
       artifactPath: this.attemptPath(runId, attempt),
       debugPath: path.relative(process.cwd(), this.runDir(runId)),
     };
