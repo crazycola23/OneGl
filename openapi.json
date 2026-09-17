@@ -2488,16 +2488,20 @@
         "type": "object"
       },
       "MonitorPlanCreate": {
+        "additionalProperties": false,
         "properties": {
           "accounts": {
             "items": {
+              "minLength": 1,
               "type": "string"
             },
             "maxItems": 100,
             "minItems": 1,
-            "type": "array"
+            "type": "array",
+            "uniqueItems": true
           },
           "cadence": {
+            "default": "daily",
             "enum": [
               "daily",
               "weekly"
@@ -2532,7 +2536,6 @@
             "type": "integer"
           },
           "size": {
-            "description": "Null means all currently enabled prompts.",
             "maximum": 10000,
             "minimum": 1,
             "type": [
@@ -2542,13 +2545,11 @@
           },
           "time_zone": {
             "default": "Asia/Shanghai",
-            "examples": [
-              "Asia/Shanghai"
-            ],
+            "description": "IANA time-zone name validated by Intl.DateTimeFormat at runtime.",
             "type": "string"
           },
           "weekday": {
-            "description": "ISO weekday, Monday=1. Required for weekly cadence.",
+            "description": "ISO weekday. Used for weekly schedules; ignored/null for daily schedules.",
             "maximum": 7,
             "minimum": 1,
             "type": [
@@ -2559,9 +2560,82 @@
         },
         "required": [
           "name",
-          "cadence",
           "accounts"
         ],
+        "type": "object"
+      },
+      "MonitorPlanPatch": {
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "accounts": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "cadence": {
+            "default": "daily",
+            "enum": [
+              "daily",
+              "weekly"
+            ],
+            "type": "string"
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          },
+          "local_time": {
+            "default": "09:00",
+            "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+            "type": "string"
+          },
+          "method": {
+            "default": "stratified",
+            "enum": [
+              "stratified",
+              "random"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repeats": {
+            "default": 1,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "size": {
+            "maximum": 10000,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "time_zone": {
+            "default": "Asia/Shanghai",
+            "description": "IANA time-zone name validated by Intl.DateTimeFormat at runtime.",
+            "type": "string"
+          },
+          "weekday": {
+            "description": "ISO weekday. Used for weekly schedules; ignored/null for daily schedules.",
+            "maximum": 7,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "MonitorPlanResource": {
@@ -7252,8 +7326,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/MonitorPlanPatch"
               }
             }
           },

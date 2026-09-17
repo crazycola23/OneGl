@@ -1836,7 +1836,10 @@ export interface components {
         };
         MonitorPlanCreate: {
             accounts: string[];
-            /** @enum {string} */
+            /**
+             * @default daily
+             * @enum {string}
+             */
             cadence: "daily" | "weekly";
             /** @default true */
             enabled: boolean;
@@ -1850,14 +1853,41 @@ export interface components {
             name: string;
             /** @default 1 */
             repeats: number;
-            /** @description Null means all currently enabled prompts. */
             size?: number | null;
             /**
+             * @description IANA time-zone name validated by Intl.DateTimeFormat at runtime.
              * @default Asia/Shanghai
-             * @example Asia/Shanghai
              */
             time_zone: string;
-            /** @description ISO weekday, Monday=1. Required for weekly cadence. */
+            /** @description ISO weekday. Used for weekly schedules; ignored/null for daily schedules. */
+            weekday?: number | null;
+        };
+        MonitorPlanPatch: {
+            accounts?: string[];
+            /**
+             * @default daily
+             * @enum {string}
+             */
+            cadence: "daily" | "weekly";
+            /** @default true */
+            enabled: boolean;
+            /** @default 09:00 */
+            local_time: string;
+            /**
+             * @default stratified
+             * @enum {string}
+             */
+            method: "stratified" | "random";
+            name?: string;
+            /** @default 1 */
+            repeats: number;
+            size?: number | null;
+            /**
+             * @description IANA time-zone name validated by Intl.DateTimeFormat at runtime.
+             * @default Asia/Shanghai
+             */
+            time_zone: string;
+            /** @description ISO weekday. Used for weekly schedules; ignored/null for daily schedules. */
             weekday?: number | null;
         };
         MonitorPlanResource: {
@@ -3876,9 +3906,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["MonitorPlanPatch"];
             };
         };
         responses: {
