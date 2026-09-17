@@ -47,31 +47,20 @@ const REVIVE_KEYWORD = `
   RETURNING id, (xmax = 0) AS inserted
 `;
 
-export async function addKeywords(pool, { projectId, input, category = null }) {
+async function writeKeywords(client, { projectId, input, category = null }) {
   const { keywords, duplicates } = parseKeywordInput(input);
   if (!keywords.length) {
     return { added: 0, revived: 0, duplicates: duplicates.length, skipped: 0, keywords: [] };
   }
 
-  const client = await pool.connect();
   const saved = [];
   let added = 0;
   let revived = 0;
-
-  try {
-    await client.query("BEGIN");
-    for (const keyword of keywords) {
-      const result = await client.query(REVIVE_KEYWORD, [projectId, keyword, category]);
-      if (result.rows[0].inserted) added += 1;
-      else revived += 1;
-      saved.push({ id: Number(result.rows[0].id), keyword, isNew: result.rows[0].inserted });
-    }
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
+  for (const keyword of keywords) {
+    const result = await client.query(REVIVE_KEYWORD, [projectId, keyword, category]);
+    if (result.rows[0].inserted) added += 1;
+    else revived += 1;
+    saved.push({ id: Number(result.rows[0].id), keyword, isNew: result.rows[0].inserted });
   }
 
   return {
@@ -81,6 +70,29 @@ export async function addKeywords(pool, { projectId, input, category = null }) {
     skipped: keywords.length - saved.length,
     keywords: saved,
   };
+}
+
+/**
+ * Write keywords using a caller-owned PostgreSQL transaction.
+ * The caller is responsible for BEGIN/COMMIT/ROLLBACK and releasing the client.
+ */
+export async function addKeywordsInTransaction(client, args) {
+  return writeKeywords(client, args);
+}
+
+export async function addKeywords(pool, args) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await writeKeywords(client, args);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function listProjectKeywords(pool, projectId) {
