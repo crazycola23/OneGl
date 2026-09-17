@@ -54,6 +54,26 @@ test("protected v1 operations declare common authentication and availability err
   }
 });
 
+test("known runtime conflict and semantic validation errors are documented", () => {
+  const document = buildOpenApiDocument();
+  const expected = [
+    ["/v1/accounts", "post", "422"],
+    ["/v1/webhooks", "post", "422"],
+    ["/v1/batches", "post", "422"],
+    ["/v1/auth-sessions/{authSessionId}/screenshot", "get", "409"],
+    ["/v1/batches/{batchId}/stop", "post", "409"],
+    ["/v1/projects/{projectId}/monitor-plans", "post", "409"],
+    ["/v1/monitor-plans/{monitorPlanId}", "patch", "409"],
+  ];
+
+  for (const [pathname, method, status] of expected) {
+    assert.ok(
+      document.paths?.[pathname]?.[method]?.responses?.[status],
+      `${method.toUpperCase()} ${pathname} is missing runtime ${status}`,
+    );
+  }
+});
+
 test("response objects never mix $ref with sibling fields", () => {
   const document = buildOpenApiDocument();
   for (const { pathname, method, operation } of operations(document)) {
@@ -104,6 +124,7 @@ test("status-bearing public core resources expose finite enums", () => {
     "RunResource",
     "WebhookEventResource",
     "MonitorExecutionResource",
+    "ScheduleExecutionItem",
   ]) {
     const status = document.components.schemas[schemaName]?.properties?.status;
     assert.ok(status, `${schemaName} is missing status`);
