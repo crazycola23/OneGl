@@ -48,6 +48,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: OpenAPI contract quality gate
+        run: npm run openapi:check
+
       - name: Migration check
         env:
           DATABASE_URL: postgresql://postgres:onegl@127.0.0.1:5432/onegl_ci
