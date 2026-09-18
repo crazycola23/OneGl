@@ -205,6 +205,16 @@ ONEGL_API_PORT=3200
 
 Production mode additionally requires the safety settings documented in .env.example, including encrypted browser storage state.
 
+The production container is Camoufox-first. On Linux it defaults to a virtual Xvfb display, so the API remote-login browser and Worker collection browser can run without a desktop environment or physical monitor:
+
+~~~text
+ONEGL_BROWSER=camoufox
+ONEGL_CAMOUFOX_PYTHON=/opt/camoufox/bin/python
+ONEGL_CAMOUFOX_MODE=virtual
+~~~
+
+Supported Camoufox modes are `virtual` (Linux + managed Xvfb), `headless` (native headless), and `headful` (real display). Chromium remains installed in the Docker image as an explicit troubleshooting fallback, not the production default.
+
 Apply migrations:
 
 ~~~bash
