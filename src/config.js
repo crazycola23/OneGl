@@ -28,6 +28,13 @@ export function loadConfig(overrides = {}) {
   const browser = (
     overrides.browser ?? process.env.ONEGL_BROWSER ?? "camoufox"
   ).toLowerCase();
+  const headless =
+    overrides.headless ?? boolEnv(process.env.ONEGL_HEADLESS, false);
+  const camoufoxMode = String(
+    overrides.camoufoxMode ??
+      process.env.ONEGL_CAMOUFOX_MODE ??
+      (headless ? "headless" : "headful"),
+  ).trim().toLowerCase();
 
   // An account is an anonymous identifier; its storage state is kept in a per-account
   // file so several Doubao profiles stay independent of each other.
@@ -44,6 +51,9 @@ export function loadConfig(overrides = {}) {
 
   if (!new Set(["camoufox", "chromium", "firefox"]).has(browser)) {
     throw new Error("ONEGL_BROWSER must be camoufox, chromium, or firefox");
+  }
+  if (!new Set(["virtual", "headless", "headful"]).has(camoufoxMode)) {
+    throw new Error("ONEGL_CAMOUFOX_MODE must be virtual, headless, or headful");
   }
 
   const authStatePlaintextPath =
@@ -93,8 +103,12 @@ export function loadConfig(overrides = {}) {
       overrides.camoufoxPython ??
       process.env.ONEGL_CAMOUFOX_PYTHON ??
       "python3",
-    headless:
-      overrides.headless ?? boolEnv(process.env.ONEGL_HEADLESS, false),
+    // Camoufox has a separate runtime mode because production Linux normally wants a
+    // headful browser on an Xvfb display, while Chromium/Firefox continue to use the
+    // boolean ONEGL_HEADLESS flag. If ONEGL_CAMOUFOX_MODE is omitted, preserve the
+    // legacy ONEGL_HEADLESS behaviour for backwards compatibility.
+    camoufoxMode,
+    headless,
     timeoutMs:
       overrides.timeoutMs ?? intEnv("DOUBAO_TIMEOUT_MS", 180_000, 10_000),
     pollMs: overrides.pollMs ?? intEnv("DOUBAO_POLL_MS", 1_500, 250),
