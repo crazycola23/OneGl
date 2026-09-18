@@ -121,6 +121,25 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 Compose 的 API 只绑定 `127.0.0.1`，应通过 TLS reverse proxy 或私网入口提供给 SaaS 主平台，不建议直接把 3200 暴露到公网。
 
+### Camoufox / 无桌面服务器
+
+生产镜像默认使用：
+
+```env
+ONEGL_BROWSER=camoufox
+ONEGL_CAMOUFOX_PYTHON=/opt/camoufox/bin/python
+ONEGL_CAMOUFOX_MODE=virtual
+```
+
+`virtual` 模式不要求 Ubuntu Desktop、GNOME/KDE 或物理显示器。OneGl 为每个 Camoufox 浏览器会话启动独立 Xvfb display，浏览器仍以有窗口模式运行；会话关闭时 Xvfb 一起回收。API 的 Remote Auth 与 Worker 都走同一套 `launchBrowserSession()`，因此登录和后续采集保持同一浏览器后端。
+
+另外两个模式：
+
+- `headless`：使用 Camoufox 原生 headless，适合诊断或没有 Xvfb 的环境。
+- `headful`：使用真实 DISPLAY，主要用于本地开发和人工调试。
+
+Docker 镜像仍安装 Chromium，便于临时设置 `ONEGL_BROWSER=chromium` 排查浏览器兼容问题；生产默认不再是 Chromium。
+
 ## Kubernetes
 
 模板位于 `deploy/kubernetes/`。
