@@ -29,6 +29,7 @@ services:
       - "127.0.0.1:${ONEGL_PUBLIC_API_PORT:-3200}:3200"
     volumes:
       - onegl-data:/var/lib/onegl
+    shm_size: "512mb"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3200/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s
