@@ -1,6 +1,51 @@
 import { inspectSession } from "./doubao.js";
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
 
+// 等待 composer（输入框）出现后再做判定。
+//
+// 原因（实测 2026-09-18）：豆包 chat 页是客户端渲染，page.goto 以
+// domcontentloaded 返回时 composer 尚未挂载（composerCount=0，
+// inspectSession 返回 state="unknown"），实测约 1.5s 后才出现。
+// preflight 的 fail-closed 语义要求「不能描述页面状态就不要提交」，
+// 但「页面还没渲染完」不等于「页面状态未知」——必须先给它加载的机会，
+// 否则会把正常的冷启动误判成 PAGE_CHANGED。
+const PREFLIGHT_COMPOSER_WAIT_MS = (() => {
+  const raw = process.env.ONEGL_PREFLIGHT_COMPOSER_WAIT_MS;
+  if (raw == null || raw === "") return 30_000;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 1_000 ? parsed : 30_000;
+})();
+
+/** 轮询直到出现可见且可编辑的 composer；超时返回 false，不抛错。 */
+async function waitForComposer(page, timeoutMs = PREFLIGHT_COMPOSER_WAIT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  // 第一轮立即检查，避免页面其实已经就绪时白等一个 poll 周期。
+  for (;;) {
+    const found = await page
+      .evaluate(() => {
+        const visible = (element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return (
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            style.opacity !== "0" &&
+            rect.width > 0 &&
+            rect.height > 0
+          );
+        };
+        return [...document.querySelectorAll(
+          'textarea, [contenteditable="true"], [role="textbox"]',
+        )].some(visible);
+      })
+      .catch(() => false);
+    if (found) return true;
+    if (Date.now() >= deadline) return false;
+    await page.waitForTimeout(500);
+  }
+}
+
 function intEnv(name, fallback, min = 0) {
   const raw = process.env[name];
   if (raw == null || raw === "") return fallback;
@@ -118,6 +163,9 @@ function throwForSessionState(state) {
 export async function prepareFrontEndForRun(page, config, options = {}) {
   const guard = { ...frontEndGuardConfig(), ...options };
   const initialUrl = page.url();
+  // 先确保页面已渲染出 composer，再做状态判定（见文件顶部注释）。
+  // 超时只是让下面的 fail-closed 分支去报错，语义不变。
+  await waitForComposer(page);
   let session = await inspectSession(page);
   throwForSessionState(session);
 
@@ -153,6 +201,7 @@ export async function prepareFrontEndForRun(page, config, options = {}) {
     await page.goto(config.doubaoUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
     navigatedToChatRoot = true;
     await page.waitForTimeout(1_000);
+    await waitForComposer(page);
     session = await inspectSession(page);
     throwForSessionState(session);
     snapshot = await frontEndSnapshot(page);

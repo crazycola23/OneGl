@@ -71,6 +71,15 @@ async function firstVisibleEditable(page) {
   return null;
 }
 
+// composer 出现的最长等待：冷启动首屏需完整下载并执行前端 JS。
+// 通过 ONEGL_COMPOSER_WAIT_MS 可调，下限 1000ms。
+const COMPOSER_WAIT_MS = (() => {
+  const raw = process.env.ONEGL_COMPOSER_WAIT_MS;
+  if (raw == null || raw === "") return 30_000;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 1_000 ? parsed : 30_000;
+})();
+
 async function waitForTextbox(page, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -105,7 +114,24 @@ export async function openDoubao(page, config) {
     );
   }
 
+  // 先给一个固定的水合下限（保留原有行为），再条件等待 composer 真正挂载。
+  //
+  // 原因（实测 2026-09-18）：page.goto 用 waitUntil="domcontentloaded"，
+  // 返回时 document.readyState 仍为 interactive，composer 尚未挂载
+  // （composerCount=0，inspectSession 返回 state="unknown"）；
+  // 实测约 1.5s 后才出现第一个可见 textarea。此前只等固定 1200ms，
+  // 冷启动（新 context + 空缓存）路径必然踩空，导致下游
+  // front-end-guard 的 fail-closed 判定抛 PAGE_CHANGED。
+  //
+  // 超时不抛错：下游 front-end-guard 已有明确的 fail-closed 分支，
+  // 这里只负责「让页面有机会加载完」，不改变错误语义。
   await page.waitForTimeout(1_200);
+  const composer = await waitForTextbox(page, COMPOSER_WAIT_MS);
+  if (!composer) {
+    console.warn(
+      `[doubao] composer 未在 ${COMPOSER_WAIT_MS}ms 内出现，交由 front-end preflight 判定`,
+    );
+  }
 }
 
 export async function inspectSession(page) {
