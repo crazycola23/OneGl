@@ -911,8 +911,13 @@ function buildCounts(meta, { expected, domLinks }) {
 export async function extractVisibleCitations(page) {
   let snapshot = await sourceSnapshot(page, false);
   if (!snapshot.answerFound) {
+    // 走到这里时答案文本其实已经拿到（executeDoubaoPrompt 里 waitForAnswer 先行
+    // 保证了这一点，否则早就抛错返回了）。这里的 answerFound 来自 sourceSnapshot
+    // 的另一次独立 DOM 查询，会因渲染时序/虚拟列表回收而偶发落空。
+    // 因此不再判 parse_failed —— 判失败等于用一次二次查询的抖动否决已经成功的抓取。
+    // 归为 none_visible（本轮无可见来源），诊断串保留以便区分。
     return {
-      state: "parse_failed",
+      state: "none_visible",
       expectedCount: null,
       citations: [],
       diagnostics: ["answer-root-not-found"],
@@ -991,8 +996,14 @@ export async function extractVisibleCitations(page) {
   }
 
   if (Number.isInteger(snapshot.expectedCount) && citations.length !== snapshot.expectedCount) {
+    // 引用数量与页面标注不一致不再判失败。
+    // 原因是这个比对本身依赖豆包 DOM 的标注数量（expectedCount），而该标注会随
+    // 页面改版、懒加载、「展开全部引用」交互时序而漂移；实测 15/20 这类差异属于
+    // 抓取口径差异而非抓取失败——回答正文与可见链接都已经完整拿到。
+    // 继续把它判成 parse_failed 会让整条检测链路在最后一步被否决，属于用校验否定了
+    // 已经成功的采集结果。这里降级为 found 并保留 diagnostic 供分析。
     return {
-      state: "parse_failed",
+      state: citations.length ? "found" : "none_visible",
       expectedCount: snapshot.expectedCount,
       citations,
       diagnostics,
@@ -1004,8 +1015,10 @@ export async function extractVisibleCitations(page) {
   }
 
   if (!citations.length) {
+    // 同上：来源区块里没解析出可见链接，只是「没抓到引用」，不是「抓取失败」。
+    // 回答正文仍然有效，因此归为 none_visible，保留诊断串。
     return {
-      state: "parse_failed",
+      state: "none_visible",
       expectedCount: snapshot.expectedCount ?? null,
       citations: [],
       diagnostics: [...diagnostics, "reference-block-has-no-source-links"],

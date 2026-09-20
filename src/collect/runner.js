@@ -385,11 +385,15 @@ export async function runOnePrompt({
       `${JSON.stringify(result.citations, null, 2)}\n`,
     );
 
-    const partial = result.citationState === "parse_failed";
+    // 回答与引用抓取完成即视为成功。
+    // 这里原先还有一层降级：citationState === "parse_failed" 时把 run 记成 partial
+    // 并挂 CITATION_PARSE_FAILED。该判据已在上游（doubao.js / doubao-web.js）移除：
+    // 引用数量与页面标注不一致、来源区块缺失、内联链接回退，都属于抓取口径差异，
+    // 不应否决已经成功的采集结果。诊断信息仍然写进 citationDiagnostics，可查可分析。
     const networkPatch = networkEvidencePatch(networkEvidence);
     ok = true;
     saved = await store.updateRun(run.id, {
-      status: partial ? "partial" : "success",
+      status: "success",
       completedAt: new Date().toISOString(),
       provider: result.provider ?? provider.provider,
       model: result.model ?? provider.model,
@@ -410,10 +414,8 @@ export async function runOnePrompt({
       ...networkPatch,
       searchQueries: mergeSearchQueries(result.webQueries, networkPatch.searchQueries),
       ...applyBrandDetection(context.brandRules ?? null, answer),
-      errorCode: partial ? ErrorCode.CITATION_PARSE_FAILED : null,
-      errorMessage: partial
-        ? "回答已抓到，但可见引用数量与页面标注不一致。"
-        : null,
+      errorCode: null,
+      errorMessage: null,
     });
   } catch (error) {
     networkEvidence = await finalizeNetworkEvidence(networkCollector);

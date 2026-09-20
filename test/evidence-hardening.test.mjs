@@ -65,7 +65,7 @@ test("a leftover user-only bubble does not count as an empty conversation", asyn
   assert.equal(page.calls.fills.includes("绝不能发送这个 prompt"), false);
 });
 
-test("inline links without the verified reference block remain diagnostic evidence only", () => {
+test("inline links without the verified reference block are kept as diagnostic evidence, not downgraded", () => {
   const hardened = hardenDoubaoCitationFallback({
     answer: "答案正文",
     citations: [{ url: "https://example.com/a" }],
@@ -75,11 +75,30 @@ test("inline links without the verified reference block remain diagnostic eviden
     citationSelectorUsed: "inline-links",
   });
 
-  assert.equal(hardened.citationState, "parse_failed");
-  assert.equal(hardened.expectedCitationCount, null);
+  // 内联链接回退是抓取策略的降级，不是抓取失败：正文与链接都已拿到。
+  // 因此状态不被改写为 parse_failed，也不再清空 expectedCitationCount；
+  // 但诊断信息必须完整保留（标明走了内联回退、是否观测到链接）。
+  assert.equal(hardened.citationState, "found");
+  assert.equal(hardened.expectedCitationCount, 1);
   assert.equal(hardened.citations.length, 1);
+  assert.ok(hardened.citationDiagnostics.includes("inline-link-fallback"));
   assert.ok(hardened.citationDiagnostics.includes("reference-block-not-found"));
   assert.ok(hardened.citationDiagnostics.includes("inline-links-observed"));
+});
+
+test("an inline-links fallback with no parsed link is reported as empty rather than failed", () => {
+  const hardened = hardenDoubaoCitationFallback({
+    answer: "答案正文",
+    citations: [],
+    citationState: "found",
+    expectedCitationCount: null,
+    citationDiagnostics: [],
+    citationSelectorUsed: "inline-links",
+  });
+
+  assert.equal(hardened.citationState, "found");
+  assert.ok(hardened.citationDiagnostics.includes("inline-links-empty"));
+  assert.equal(hardened.citationDiagnostics.includes("inline-links-observed"), false);
 });
 
 test("verified reference-block citation results are not downgraded", () => {
