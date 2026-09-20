@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import { chromium, firefox } from "playwright-core";
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
@@ -50,6 +51,108 @@ async function stopVirtualDisplay(child) {
   if (child.exitCode === null && child.signalCode === null) {
     child.kill("SIGKILL");
     await Promise.race([once(child, "exit").catch(() => undefined), sleep(1_000)]);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Camoufox orphan reaping
+//
+// Playwright owns only the launcher process it spawned. In the camoufox + Xvfb
+// ("virtual") topology the browser forks a tree of helper processes
+// (`-contentproc ... tab|rdd|utility|socket`) that Playwright never tracks.
+// `browser.close()` merely *asks* the main process to quit; when any helper
+// refuses to exit the tree survives as orphans, eating a session slot in the
+// single-threaded auth-session broker and eventually stalling every later
+// login behind a queue that never drains.
+//
+// Playwright gives each launch a unique temporary profile directory named
+// `playwright_firefoxdev_profile-XXXXXX`, and camoufox passes it to every
+// process in the tree via `-profile <path>`. That name is therefore a stable,
+// collision-free handle for the whole tree, and it is available without
+// relying on Playwright internals.
+// ---------------------------------------------------------------------------
+
+const PROFILE_DIR_PREFIX = "playwright_firefoxdev_profile-";
+const PROFILE_TMP_DIR = process.env.TMPDIR || "/tmp";
+
+async function listProfileDirs() {
+  if (process.platform !== "linux") return new Set();
+  try {
+    const entries = await readdir(PROFILE_TMP_DIR, { withFileTypes: true });
+    return new Set(
+      entries
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith(PROFILE_DIR_PREFIX))
+        .map((entry) => `${PROFILE_TMP_DIR}/${entry.name}`),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Linux 下按 profile 路径反查进程 PID。
+ * 读 /proc/<pid>/cmdline 而非 `ps`：容器镜像里不一定装了 procps，/proc 则始终可用。
+ */
+async function findPidsByProfile(profilePath) {
+  if (process.platform !== "linux" || !profilePath) return [];
+  let pids = [];
+  try {
+    pids = (await readdir("/proc")).filter((name) => /^\d+$/.test(name));
+  } catch {
+    return [];
+  }
+  const matched = [];
+  await Promise.all(
+    pids.map(async (pid) => {
+      try {
+        const raw = await readFile(`/proc/${pid}/cmdline`, "utf8");
+        // cmdline 以 NUL 分隔，直接 includes 即可命中 "-profile <path>"
+        if (raw.includes(profilePath)) matched.push(Number(pid));
+      } catch {
+        // 进程已退出 / 权限不足 —— 忽略
+      }
+    }),
+  );
+  return matched;
+}
+
+/**
+ * 强制回收某个 camoufox profile 对应的整个进程树。
+ * 返回 { found, killed }，供调用方记录（失败不抛，避免影响主流程收尾）。
+ */
+async function reapBrowserTree(profilePath, { graceMs = 3_000 } = {}) {
+  const found = await findPidsByProfile(profilePath);
+  if (found.length === 0) return { found: 0, killed: 0 };
+
+  // 先 SIGTERM 让主进程有机会带子进程优雅退出
+  for (const pid of found) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      /* 已退出 */
+    }
+  }
+  await sleep(graceMs);
+
+  const survivors = await findPidsByProfile(profilePath);
+  for (const pid of survivors) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* 已退出 */
+    }
+  }
+  if (survivors.length > 0) await sleep(500);
+
+  return { found: found.length, killed: survivors.length };
+}
+
+async function removeProfileDir(profilePath) {
+  if (!profilePath) return;
+  try {
+    await rm(profilePath, { recursive: true, force: true });
+  } catch {
+    /* 目录可能已被 Playwright 清理 */
   }
 }
 
@@ -197,6 +300,9 @@ export async function launchBrowserSession(
 ) {
   let browser;
   let virtualDisplay;
+  let profilesBefore = new Set();
+  let profilesAfter = new Set();
+  let profilePath = null;
   const headless = forceHeadful ? false : config.headless;
   // Validate the encryption contract even for a fresh remote-auth session. Otherwise a browser
   // could accept a login and only discover at save time that the required key is absent/invalid.
@@ -215,6 +321,9 @@ export async function launchBrowserSession(
         mode,
         virtualDisplay: virtualDisplay?.display ?? null,
       });
+      // 记录启动前的 profile 目录集合，启动后 diff 出本次会话专属的那个。
+      // 这是回收整棵 camoufox 进程树（含 Playwright 不管理的 contentproc）的唯一钥匙。
+      profilesBefore = await listProfileDirs();
       // Camoufox's Python launcher returns snake_case keys, but Playwright's Node API
       // expects camelCase ones. Passing the raw object makes Playwright ignore the
       // Camoufox executable path and fail with "Executable doesn't exist".
@@ -225,6 +334,9 @@ export async function launchBrowserSession(
         firefoxUserPrefs: options.firefox_user_prefs,
         headless: options.headless ?? (mode === "headless"),
       });
+      profilesAfter = await listProfileDirs();
+      profilePath =
+        [...profilesAfter].find((dir) => !profilesBefore.has(dir)) ?? null;
     } else {
       const launcher = config.browser === "chromium" ? chromium : firefox;
       browser = await launcher.launch({
@@ -277,11 +389,26 @@ export async function launchBrowserSession(
       async close() {
         await context.close().catch(() => undefined);
         await browser.close().catch(() => undefined);
+        // Playwright 只保证自己 spawn 的 launcher 退出；camoufox 的 contentproc 树不在其管辖内。
+        // 若整棵树没退干净，按 profile 反查并强杀，否则会话槽位会被孤儿进程长期占住。
+        if (profilePath) {
+          const reaped = await reapBrowserTree(profilePath).catch(() => null);
+          if (reaped && reaped.found > 0) {
+            process.emitWarning?.(
+              `camoufox tree still alive after browser.close(); reaped ${reaped.found} process(es)`,
+            );
+          }
+          await removeProfileDir(profilePath);
+        }
         await virtualDisplay?.close().catch(() => undefined);
       },
     };
   } catch (error) {
     await browser?.close().catch(() => undefined);
+    if (profilePath) {
+      await reapBrowserTree(profilePath).catch(() => undefined);
+      await removeProfileDir(profilePath);
+    }
     await virtualDisplay?.close().catch(() => undefined);
     throw error;
   }

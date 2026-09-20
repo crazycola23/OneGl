@@ -176,6 +176,135 @@ async function markLoginConnected(runtime) {
  * surface, but it does not expose arbitrary click/type/browser-control endpoints. The product UI
  * can display screenshots (typically the provider QR/login modal) and poll auth state.
  */
+
+/**
+ * 判断登录浮层（含二维码）是否已经真正出现。
+ *
+ * ★ 为什么必须有这个判据（2026-09-20 实测）：
+ * 只「点了登录按钮」不等于「二维码已经可见」。真实浏览器实测：
+ * 点击后浮层文本为「使用豆包或飞书账号登录 / 手机号登录 / … / 打开 豆包 / 飞书 App 扫码登录」，
+ * 二维码容器是 `div[class*="qrcode"]`（实测 class = `qrcode-DeN5Ny`，164x162）。
+ * 若只点一次就 return，camoufox 冷启动或浮层动画未完成时会出现
+ * 「会话仍在 waiting_for_login，但截图里没有二维码」，用户无从扫码。
+ *
+ * 判据只看「浮层存在 + 二维码容器可见 + 提示扫码文案」，不依赖 hash 后缀类名。
+ */
+async function loginSurfaceVisible(page) {
+  return page
+    .evaluate(() => {
+      const visible = (element) => {
+        if (!(element instanceof HTMLElement)) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          style.opacity !== "0" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+
+      const overlay = [
+        ...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .semi-modal, .modal'),
+      ].filter(visible);
+      const overlayText = overlay
+        .map((el) => (el.innerText || el.textContent || "").replace(/\s+/g, " "))
+        .join(" ");
+      const overlayPresent = overlay.length > 0 && /登录|扫码/.test(overlayText);
+
+      // 二维码容器：class 带 qrcode/qr-code（后缀是构建 hash，不能写死）+ 尺寸足够大。
+      const qr = [
+        ...document.querySelectorAll(
+          '[class*="qrcode"], [class*="qr-code"], [class*="QRCode"], canvas, svg',
+        ),
+      ].some((el) => {
+        if (!visible(el)) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width >= 80 && rect.height >= 80;
+      });
+
+      const hint = /打开.{0,10}(豆包|飞书).{0,10}(App)?\s*扫码|扫码登录|二维码/.test(overlayText);
+
+      // ★ 二维码过期探测（2026-09-20 实测）。
+      //
+      // 豆包的扫码二维码有效期很短，过期后二维码区域会被替换为一张「二维码失效 /
+      // 点击刷新」占位图 —— 它仍然是一个 80x80 以上的可见容器，所以单看 `qr`
+      // 判据会把「失效」误判为「可用」。用户点进 GEO 页面时若码已过期，就只能
+      // 看到这张不会自己更新的占位图，无法完成扫码。
+      //
+      // 过期文案由豆包前端渲染在二维码容器内，用文本判定即可，无需依赖构建 hash 类名。
+      const expired = /二维码失效|二维码已过期|已失效.{0,4}点击刷新|点击刷新/.test(overlayText);
+      return { overlayPresent, qr, hint, expired, ok: overlayPresent && qr && !expired };
+    })
+    .catch(() => ({ overlayPresent: false, qr: false, hint: false, expired: false, ok: false }));
+}
+
+/**
+ * 二维码过期时点击刷新，让浮层重新生成一张可扫的码。
+ *
+ * 为什么需要这一步：`capture()` 的业务是「只要没登录就一直截图给用户看」。
+ * 若码过期后不刷新，用户看到的永远是那张「点击刷新」占位图，
+ * 表现为「二维码一直显示失效」。刷新是幂等的安全操作（只触发前端重新请求二维码），
+ * 因此任何失败都只记录、不打断会话。
+ *
+ * 返回 true 表示确实执行过一次刷新点击。
+ */
+async function refreshQrIfExpired(page) {
+  const probe = await loginSurfaceVisible(page);
+  if (!probe.overlayPresent || !probe.expired) return false;
+
+  // 候选一：豆包把整块失效占位图做成了可点区域（实测文案「点击刷新」在容器内）。
+  // 候选二：显式的刷新按钮/链接。
+  const candidates = [
+    page.getByText("点击刷新", { exact: false }),
+    page.getByText("刷新", { exact: false }),
+    page.getByRole("button", { name: /刷新/ }),
+  ];
+
+  for (const locator of candidates) {
+    let count = 0;
+    try {
+      count = Math.min(await locator.count(), 5);
+    } catch {
+      continue;
+    }
+    for (let index = 0; index < count; index += 1) {
+      const candidate = locator.nth(index);
+      if (!(await candidate.isVisible().catch(() => false))) continue;
+      // 与 openLoginSurface 同理：camoufox 下必须绕过稳定性预检。
+      try {
+        await candidate.click({ force: true, timeout: 5_000 });
+        return true;
+      } catch {
+        try {
+          await candidate.dispatchEvent("click", undefined, { timeout: 5_000 });
+          return true;
+        } catch {
+          /* 试下一个候选 */
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * 打开登录浮层，并等到二维码真正渲染出来。
+ *
+ * 背景（2026-09-20 实测）：此前实现「点一次候选按钮就 return」，实测会在三种情况下失效：
+ *   1. 点击命中的是不可用/被遮挡的节点，浮层未打开；
+ *   2. 浮层已打开但二维码尚未渲染，截图里看不到码；
+ *   3. ★ camoufox（生产默认引擎）下 `locator.click()` 持续超时 —— 豆包登录按钮的
+ *      class 带自定义动画（`samantha-button-…`），Playwright 的「稳定性 + 可命中性」
+ *      预检永远等不过去，5s 后抛 Timeout，浮层自然打不开。
+ *      实测四种策略对比：
+ *        locator.click()            → 超时，二维码不出现
+ *        locator.click({force:true}) → ✅ 浮层 + 二维码（div[class*="qrcode"] 164x162）
+ *        page.mouse.click(x, y)     → 点击落空，无浮层
+ *        dispatchEvent("click")     → ✅ 浮层 + 二维码
+ *      因此这里以 `click({ force: true })` 为主、`dispatchEvent("click")` 为兜底。
+ */
 async function openLoginSurface(page) {
   const state = await inspectSession(page).catch(() => ({ state: "unknown" }));
   if (state.state === "healthy") return;
@@ -184,18 +313,49 @@ async function openLoginSurface(page) {
     page.getByRole("button", { name: "登录", exact: true }),
     page.getByText("登录", { exact: true }),
   ];
+  // 点击后最多轮询 15 次：浮层动画 + 二维码请求都需要时间。
+  // 用「次数」而非墙钟兜底，避免 waitForTimeout 被替身实现为瞬时返回时死循环。
+  const MAX_PROBES = 15;
+
   for (const locator of candidates) {
+    let count = 0;
     try {
-      const count = Math.min(await locator.count(), 5);
-      for (let index = 0; index < count; index += 1) {
-        const candidate = locator.nth(index);
-        if (!await candidate.isVisible().catch(() => false)) continue;
-        await candidate.click();
-        await page.waitForTimeout(800);
-        return;
-      }
+      count = Math.min(await locator.count(), 5);
     } catch {
-      // Try the next semantic login control. Never fall back to arbitrary coordinates/selectors.
+      continue;
+    }
+    for (let index = 0; index < count; index += 1) {
+      const candidate = locator.nth(index);
+      if (!(await candidate.isVisible().catch(() => false))) continue;
+
+      // ① 首选 force click：跳过稳定性/可命中性预检（camoufox 下必需）。
+      let clicked = false;
+      try {
+        await candidate.click({ force: true, timeout: 5_000 });
+        clicked = true;
+      } catch {
+        // ② 兜底：直接派发 DOM click 事件。
+        try {
+          await candidate.dispatchEvent("click", undefined, { timeout: 5_000 });
+          clicked = true;
+        } catch {
+          clicked = false;
+        }
+      }
+      if (!clicked) continue;
+
+      let probe = { ok: false, overlayPresent: false };
+      for (let attempt = 0; attempt < MAX_PROBES; attempt += 1) {
+        await page.waitForTimeout(400);
+        probe = await loginSurfaceVisible(page);
+        if (probe.ok) return;
+      }
+      // 浮层打开了但二维码还没出来：再多给一点时间，不让调用方空等。
+      if (probe.overlayPresent) {
+        await page.waitForTimeout(2_000);
+        const settled = await loginSurfaceVisible(page);
+        if (settled.ok) return;
+      }
     }
   }
 }
@@ -221,6 +381,22 @@ async function capture(runtime) {
     }
 
     const page = runtime.session.page;
+
+    // ★ 二维码过期自愈（2026-09-20）。
+    //
+    // 放在截图之前：豆包的扫码码有效期很短，过期后二维码区域会变成一张
+    // 「二维码失效 / 点击刷新」占位图。若不刷新，GEO 前端拿到的永远是一张
+    // 不可扫的图（前端只是 <img> 展示，用户点不动），表现为流程走不通。
+    // 先刷新再截图，用户看到的就是刚生成的新码。
+    //
+    // 仅在「浮层已开且探到过期文案」时才点击；探测与点击失败都不打断会话。
+    const refreshed = await refreshQrIfExpired(page).catch(() => false);
+    if (refreshed) {
+      // 给前端重新请求并渲染二维码留出时间，否则截到的仍是旧占位图。
+      await page.waitForTimeout(1_500);
+      runtime.qrRefreshedAt = new Date().toISOString();
+    }
+
     runtime.screenshot = await page.screenshot({ type: "png", fullPage: false }).catch(() => runtime.screenshot);
     runtime.lastCheckedAt = new Date().toISOString();
     const persisted = await touchRuntime(runtime, { screenshot: runtime.screenshot });

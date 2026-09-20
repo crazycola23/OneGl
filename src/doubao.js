@@ -159,16 +159,49 @@ export async function inspectSession(page) {
 
     const routerLogin =
       window._ROUTER_DATA?.loaderData?.chat_layout?.userSetting?.data?.is_login;
-    const cookieNames = document.cookie
+    // ★ 登录判据必须看「值」，不能只看 cookie 是否存在（2026-09-20 实测修正）。
+    //
+    // 匿名访问（全新 context、无任何 storage state）www.doubao.com 时实测：
+    //   passport_csrf_token         = "d733ee7e…"（32 位）—— CSRF 令牌，未登录也会下发
+    //   passport_csrf_token_default = 同上
+    //   flow_cur_user_sec_id        = ""（空串占位）
+    //   x-tt-multi-sids             = 不存在
+    //   flow_multi_user_sec_info    = 不存在
+    //
+    // 旧判据只要 cookie「名字存在」就算已登录 ⇒ 匿名也 loggedIn=true ⇒
+    // remote-auth 首次轮询即判 healthy，会话从 starting 直接跳 connected，
+    // 二维码永远不会出现，用户根本无从扫码（GEO 侧表现为「未扫码也绑定成功」）。
+    //
+    // 因此：CSRF 令牌一律不承载登录语义；会话 cookie 必须取到非空值才算数。
+    //
+    // 下面这份「正向名单」里的名字，在同一次匿名探针的 10 个 cookie 中
+    // 全部不存在（只有 flow_cur_user_sec_id 存在但为空串），
+    // 因此把它们纳入判据不会重新引入匿名误判，只会让真实登录更容易被识别。
+    const cookieEntries = document.cookie
       .split(";")
-      .map((entry) => entry.split("=")[0].trim().toLowerCase())
-      .filter(Boolean);
-    const passportCookie = cookieNames.some((name) =>
-      name === "x-tt-multi-sids" ||
-      name === "flow_cur_user_sec_id" ||
-      name === "flow_multi_user_sec_info" ||
-      name === "passport_csrf_token" ||
-      name === "passport_csrf_token_default",
+      .map((entry) => {
+        const index = entry.indexOf("=");
+        return index < 0
+          ? { name: entry.trim().toLowerCase(), value: "" }
+          : {
+              name: entry.slice(0, index).trim().toLowerCase(),
+              value: entry.slice(index + 1).trim(),
+            };
+      })
+      .filter((entry) => entry.name.length > 0);
+    const cookieValue = (name) =>
+      cookieEntries.find((entry) => entry.name === name)?.value ?? "";
+    const SESSION_COOKIES = [
+      "x-tt-multi-sids",
+      "flow_multi_user_sec_info",
+      "flow_cur_user_sec_id",
+      "sessionid",
+      "sessionid_ss",
+      "sid_tt",
+    ];
+    // 只有真正承载用户会话的 cookie 才算登录凭证，且必须非空。
+    const passportCookie = SESSION_COOKIES.some(
+      (name) => cookieValue(name).length > 0,
     );
     let loginStorage = false;
     try {
