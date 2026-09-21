@@ -2,6 +2,7 @@ import "dotenv/config";
 import crypto from "node:crypto";
 import http from "node:http";
 
+import { accountInflightState } from "./accounts/inflight.js";
 import { parseBatchCreate, parseKeywordsCreate, parseLimit, parseProjectCreate } from "./api/contracts.js";
 import { handleGeoIntelligenceRoute } from "./api/geo-intelligence-routes.js";
 import { ApiHttpError, errorPayload, readJsonBody, sendBuffer, sendJson } from "./api/http.js";
@@ -29,6 +30,8 @@ import {
   listTenantProjects,
   listTenants,
   listWebhookEndpoints,
+  reactivateTenantAccount,
+  reclaimTenantAccount,
   requireMaster,
   requireScope,
   resolveTenant,
@@ -46,6 +49,7 @@ import {
   shutdownRemoteAuthSessions,
   startRemoteAuthSession,
 } from "./api/remote-auth.js";
+import { loadConfig } from "./config.js";
 import { createPool, isDatabaseConfigured } from "./db/pool.js";
 import {
   batchDetail,
@@ -388,6 +392,37 @@ async function routeApi(req, res, url) {
     });
     return sendJson(res, 201, {
       data: { account_id: account.external_id, provider: account.provider ?? provider, label: account.label ?? null },
+    });
+  }
+
+  // 路径参数与 GET /v1/accounts 暴露的 account_id 同一身份（external_id），不暴露内部 account_key。
+  const reclaimAccount = pathname.match(/^\/v1\/accounts\/([^/]+)$/);
+  if (req.method === "DELETE" && reclaimAccount) {
+    requireScope(auth, "accounts:write");
+    const externalId = decodeURIComponent(reclaimAccount[1]);
+    const { dataDir } = loadConfig();
+    return sendJson(res, 200, {
+      data: await reclaimTenantAccount(db, { tenantId: tenant.id, externalId, dataDir }),
+    });
+  }
+
+  // 软删的反向操作，与 DELETE 同权；只翻状态列，不重建磁盘登录态，所以恢复后仍需重新扫码。
+  const reactivateAccount = pathname.match(/^\/v1\/accounts\/([^/]+)\/reactivate$/);
+  if (req.method === "POST" && reactivateAccount) {
+    requireScope(auth, "accounts:write");
+    const externalId = decodeURIComponent(reactivateAccount[1]);
+    return sendJson(res, 200, {
+      data: await reactivateTenantAccount(db, { tenantId: tenant.id, externalId }),
+    });
+  }
+
+  // 回收前的只读判据：与上面的软删共用 account_id 身份，不做任何写入、不动队列、不停 worker。
+  const inflightAccount = pathname.match(/^\/v1\/accounts\/([^/]+)\/inflight$/);
+  if (req.method === "GET" && inflightAccount) {
+    requireScope(auth, "accounts:read");
+    const externalId = decodeURIComponent(inflightAccount[1]);
+    return sendJson(res, 200, {
+      data: await accountInflightState(db, { tenantId: tenant.id, externalId }),
     });
   }
 

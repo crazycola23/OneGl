@@ -4,6 +4,7 @@ import { applyErrorContractOpenApi } from "./error-contract-openapi.js";
 import { applyMonitoringContractOpenApi } from "./monitoring-contract-openapi.js";
 import { applyObservabilityOpenApi } from "./observability-openapi.js";
 import { openApiDocument as baseOpenApiDocument } from "./base-openapi.js";
+import { applyReportContractOpenApi } from "./report-contract-openapi.js";
 import { applyResourceContractOpenApi } from "./resource-contract-openapi.js";
 import { applySaasOpenApi } from "./saas-openapi.js";
 import { applySaasPatchOpenApi } from "./saas-patch-openapi.js";
@@ -16,6 +17,7 @@ export function buildOpenApiDocument() {
   applyCustomerDashboardOpenApi(document);
   applySaasPatchOpenApi(document);
   applyMonitoringContractOpenApi(document);
+  applyReportContractOpenApi(document);
   applyContractHardeningOpenApi(document);
   applyResourceContractOpenApi(document);
   applyStatusContractOpenApi(document);

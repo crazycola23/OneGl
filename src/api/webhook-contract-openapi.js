@@ -3,6 +3,7 @@ const EVENT_TYPES = [
   "execution.partial",
   "execution.failed",
   "execution.cancelled",
+  "report.revision.ready",
   "account.action_required",
   "account.ready",
 ];

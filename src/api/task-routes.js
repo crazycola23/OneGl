@@ -13,9 +13,19 @@ import {
   listMonitorExecutions,
   updateMonitorPlan,
 } from "../monitoring/plans.js";
-import { addKeywords, countActiveKeywords } from "../project/keywords.js";
+import { addQuestionEntries, countActiveKeywords } from "../project/keywords.js";
 import { batchProgress, enqueueBatch, stopBatch } from "../queue/batches.js";
 import { pauseBatch, resumeBatch } from "../queue/batch-control.js";
+import { evaluateBatchDetail } from "../report/evaluation.js";
+import { buildOptimizationHtmlReport } from "../report/html-report-optimization.js";
+import { buildReportContract, contractToRenderDetail } from "../reporting/report-contract.js";
+import {
+  buildLiveReportContract,
+  createReportRevision,
+  getReportRevision,
+  listReportRevisions,
+  revisionSummary,
+} from "../reporting/revisions.js";
 import { createSamplingBatch } from "../sampling/batch.js";
 import {
   archiveTask,
@@ -33,6 +43,8 @@ import {
   listTasks,
   normalizeTaskInput,
   publicId,
+  publicResultFields,
+  replaceTaskQuestions,
   reportForExecution,
   syncTaskQuestions,
   taskHasExecutions,
@@ -55,6 +67,23 @@ function positiveLimit(raw, fallback = 100, max = 500) {
     throw new ApiHttpError(400, "invalid_request", `limit must be an integer between 1 and ${max}`);
   }
   return value;
+}
+
+/** Same opaque-cursor shape as the paginated history lists, scoped to this collection kind. */
+function encodeRevisionCursor(id) {
+  return Buffer.from(JSON.stringify({ v: 1, k: "revisions", i: Number(id) }), "utf8").toString("base64url");
+}
+
+function decodeRevisionCursor(raw) {
+  try {
+    const parsed = JSON.parse(Buffer.from(String(raw), "base64url").toString("utf8"));
+    if (parsed?.v !== 1 || parsed?.k !== "revisions" || !Number.isInteger(parsed?.i) || parsed.i <= 0) {
+      throw new Error("invalid cursor");
+    }
+    return parsed.i;
+  } catch {
+    throw new ApiHttpError(400, "invalid_cursor", "cursor is invalid for this collection");
+  }
 }
 
 async function validateAccountIds(db, tenantId, accountIds) {
@@ -82,8 +111,14 @@ async function createTaskResource(db, tenant, raw) {
       displayName: input.name,
       externalId: `task:${taskId}`,
     });
-    await addKeywords(client, { projectId, input: input.questions.join("\n") });
-    await createTaskRow(client, { tenantId: tenant.id, projectId, publicTaskId: taskId, input });
+    const saved = await addQuestionEntries(client, { projectId, entries: input.questionEntries });
+    const created = await createTaskRow(client, { tenantId: tenant.id, projectId, publicTaskId: taskId, input });
+    await replaceTaskQuestions(client, {
+      tenantId: tenant.id,
+      internalTaskId: Number(created.id),
+      entries: input.questionEntries,
+      keywords: saved.keywords,
+    });
     const task = await getTask(client, tenant.id, taskId);
     await client.query("COMMIT");
     return task;
@@ -115,7 +150,13 @@ async function updateTaskResource(db, tenant, taskId, raw) {
 
   if (Object.hasOwn(raw, "questions")) {
     await syncTaskQuestions(db, internal.project_id, input.questions);
-    await addKeywords(db, { projectId: internal.project_id, input: input.questions.join("\n") });
+    const saved = await addQuestionEntries(db, { projectId: internal.project_id, entries: input.questionEntries });
+    await replaceTaskQuestions(db, {
+      tenantId: tenant.id,
+      internalTaskId: internal.id,
+      entries: input.questionEntries,
+      keywords: saved.keywords,
+    });
   }
   await db.query("UPDATE projects SET target_brand = $2, updated_at = now() WHERE id = $1", [internal.project_id, input.targetBrand]);
   await db.query("UPDATE service_project_bindings SET display_name = $3 WHERE tenant_id = $1 AND project_id = $2", [tenant.id, internal.project_id, input.name]);
@@ -308,7 +349,7 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
     return sendJson(res, 201, { data: await createTaskResource(db, tenant, {
       name: `${source.name} 副本`,
       target_brand: source.target_brand,
-      questions: source.questions,
+      questions: source.question_entries?.length ? source.question_entries : source.questions,
       platforms: source.platforms,
       account_ids: source.account_ids,
       sampling: source.sampling,
@@ -384,6 +425,7 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
         question: result.question,
         status: "pending",
         citations: [],
+        ...publicResultFields(result),
       } });
     }
     const run = await getRun(db, result.run_id);
@@ -403,6 +445,7 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
       citations,
       started_at: run.started_at,
       finished_at: run.finished_at,
+      ...publicResultFields(result),
     } });
   }
 
@@ -415,6 +458,113 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
     return handleTaskRoute({ req, res, url, db, auth, tenant });
   }
 
+  const executionReportContract = pathname.match(/^\/v1\/executions\/(exe_[a-f0-9]+)\/report\/contract$/);
+  if (req.method === "GET" && executionReportContract) {
+    requireScope(auth, "reports:read");
+    const reportId = await reportForExecution(db, tenant.id, executionReportContract[1]);
+    if (!reportId) throw new ApiHttpError(404, "report_not_found", "report was not found");
+    url.pathname = `/v1/reports/${reportId}/contract`;
+    return handleTaskRoute({ req, res, url, db, auth, tenant });
+  }
+
+  const reportContract = pathname.match(/^\/v1\/reports\/(rpt_[a-f0-9]+)\/contract$/);
+  if (req.method === "GET" && reportContract) {
+    requireScope(auth, "reports:read");
+    const report = await getReport(db, tenant.id, reportContract[1]);
+    if (!report) throw new ApiHttpError(404, "report_not_found", "report was not found");
+    const { contract } = await buildLiveReportContract(db, { tenantId: tenant.id, report });
+    return sendJson(res, 200, { data: contract });
+  }
+
+  const reportRevisions = pathname.match(/^\/v1\/reports\/(rpt_[a-f0-9]+)\/revisions$/);
+  if (reportRevisions) {
+    const report = await getReport(db, tenant.id, reportRevisions[1]);
+    if (!report) throw new ApiHttpError(404, "report_not_found", "report was not found");
+    if (req.method === "POST") {
+      requireScope(auth, "reports:read");
+      const { contract } = await buildLiveReportContract(db, { tenantId: tenant.id, report });
+      const saved = await createReportRevision(db, { tenantId: tenant.id, report, contract });
+      return sendJson(res, saved.created ? 201 : 200, { data: {
+        ...revisionSummary(saved.row),
+        created: saved.created,
+        replayed: !saved.created,
+        contract: saved.row.payload,
+      } });
+    }
+    if (req.method === "GET") {
+      requireScope(auth, "reports:read");
+      const limit = positiveLimit(url.searchParams.get("limit"), 100, 500);
+      const rawCursor = url.searchParams.get("cursor");
+      let cursor = null;
+      if (rawCursor) {
+        const decoded = decodeRevisionCursor(rawCursor);
+        cursor = decoded;
+      }
+      const rows = await listReportRevisions(db, { tenantId: tenant.id, reportId: report.id, limit, cursor });
+      const visible = rows.slice(0, limit);
+      const hasMore = rows.length > limit;
+      return sendJson(res, 200, {
+        data: visible.map(revisionSummary),
+        meta: {
+          has_more: hasMore,
+          next_cursor: hasMore && visible.length ? encodeRevisionCursor(visible[visible.length - 1].id) : null,
+        },
+      });
+    }
+  }
+
+  const reportRevisionArtifact = pathname.match(
+    /^\/v1\/reports\/(rpt_[a-f0-9]+)\/revisions\/([1-9]\d{0,8})\/artifact$/,
+  );
+  const reportRevisionRoute = pathname.match(/^\/v1\/reports\/(rpt_[a-f0-9]+)\/revisions\/([1-9]\d{0,8})$/);
+  if (req.method === "GET" && (reportRevisionRoute || reportRevisionArtifact)) {
+    requireScope(auth, "reports:read");
+    const match = (reportRevisionRoute ?? reportRevisionArtifact)[1];
+    const revision = Number((reportRevisionRoute ?? reportRevisionArtifact)[2]);
+    const report = await getReport(db, tenant.id, match);
+    if (!report) throw new ApiHttpError(404, "report_not_found", "report was not found");
+    const row = await getReportRevision(db, { tenantId: tenant.id, reportId: report.id, revision });
+    if (!row) throw new ApiHttpError(404, "revision_not_found", "report revision was not found");
+    if (!reportRevisionArtifact) {
+      return sendJson(res, 200, { data: { ...revisionSummary(row), contract: row.payload } });
+    }
+
+    const format = (url.searchParams.get("format") ?? "json").toLowerCase();
+    const baseHeaders = {
+      etag: `"${row.content_hash}"`,
+      "cache-control": "private, no-cache",
+      "x-content-type-options": "nosniff",
+    };
+    if (format === "json") {
+      const body = JSON.stringify(row.payload, null, 2);
+      res.writeHead(200, {
+        ...baseHeaders,
+        "content-type": "application/json; charset=utf-8",
+        "content-length": Buffer.byteLength(body),
+        "content-disposition": `attachment; filename="report-${report.public_id}-r${revision}.json"`,
+      });
+      res.end(body);
+      return true;
+    }
+    if (format !== "html") {
+      throw new ApiHttpError(400, "invalid_request", "format must be json or html");
+    }
+    const detail = contractToRenderDetail(row.payload);
+    const html = buildOptimizationHtmlReport(detail, evaluateBatchDetail(detail), {
+      generatedAt: new Date(row.created_at).toISOString(),
+      title: `${detail.report?.batch?.name ?? report.public_id} · revision ${revision}`,
+      subtitle: `冻结快照 ${row.public_id}（content_hash ${row.content_hash.slice(0, 12)}…）`,
+    });
+    res.writeHead(200, {
+      ...baseHeaders,
+      "content-type": "text/html; charset=utf-8",
+      "content-length": Buffer.byteLength(html),
+      "content-disposition": `attachment; filename="report-${report.public_id}-r${revision}.html"`,
+    });
+    res.end(html);
+    return true;
+  }
+
   const reportRoute = pathname.match(/^\/v1\/reports\/(rpt_[a-f0-9]+)$/);
   if (req.method === "GET" && reportRoute) {
     requireScope(auth, "reports:read");
@@ -422,6 +572,8 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
     if (!report) throw new ApiHttpError(404, "report_not_found", "report was not found");
     const terminal = ["completed", "partial", "failed", "aborted"].includes(report.batch_status);
     const detail = await batchDetail(db, Number(report.batch_id));
+    const execution = await getExecution(db, tenant.id, report.execution_public_id);
+    const contract = buildReportContract({ detail, execution, report, revision: 0 });
     return sendJson(res, 200, { data: {
       report_id: report.public_id,
       task_id: report.task_public_id,
@@ -433,6 +585,11 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
       sources: detail.sources ?? null,
       intelligence: detail.intelligence ?? null,
       created_at: report.created_at,
+      contract_url: `/v1/reports/${report.public_id}/contract`,
+      versions: contract.versions,
+      collection: contract.collection,
+      analysis: contract.analysis,
+      readiness: contract.readiness,
     } });
   }
 

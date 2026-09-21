@@ -1,6 +1,6 @@
 import { ApiHttpError, sendJson } from "./http.js";
 import { requireScope } from "./service-store.js";
-import { getExecution, getExecutionInternal, getTask, getTaskInternal } from "../tasks/service.js";
+import { getExecution, getExecutionInternal, getTask, getTaskInternal, publicResultFields } from "../tasks/service.js";
 
 function encodeCursor(kind, id) {
   return Buffer.from(JSON.stringify({ v: 1, k: kind, i: Number(id) }), "utf8").toString("base64url");
@@ -99,9 +99,17 @@ export async function handleSaasPaginationRoute({ req, res, url, db, auth, tenan
     const cursor = decodeCursor(url.searchParams.get("cursor"), "results");
     const { rows } = await db.query(
       `SELECT sr.id, sr.public_id AS result_id, sr.question, sr.platform,
-              r.status AS run_status, r.brand_mentioned, r.mention_count, r.finished_at
+              sr.external_id, sr.repetition_index, sr.repetition_count,
+              r.status AS run_status, r.brand_mentioned, r.mention_count, r.finished_at,
+              r.error_code AS run_error_code, r.error_message AS run_error_message,
+              b.status AS batch_status,
+              t.public_id AS task_public_id,
+              e.public_id AS execution_public_id
          FROM service_task_results sr
          LEFT JOIN runs r ON r.local_run_id = sr.run_id
+         LEFT JOIN sampling_batches b ON b.id = sr.batch_id
+         JOIN service_task_executions e ON e.id = sr.execution_id
+         JOIN service_tasks t ON t.id = e.task_id
         WHERE sr.tenant_id = $1 AND sr.execution_id = $2
           AND ($3::bigint IS NULL OR sr.id > $3)
         ORDER BY sr.id ASC
@@ -117,6 +125,7 @@ export async function handleSaasPaginationRoute({ req, res, url, db, auth, tenan
       mention_count: row.mention_count == null ? null : Number(row.mention_count),
       finished_at: row.finished_at,
       result_url: `/v1/results/${row.result_id}`,
+      ...publicResultFields(row),
     }));
     const hasMore = rows.length > limit;
     const visible = rows.slice(0, limit);

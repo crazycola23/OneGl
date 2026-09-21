@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { stat, unlink } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -49,4 +49,33 @@ export async function hasStoredState(dataDir, accountKey) {
   } catch {
     return false;
   }
+}
+
+export function accountStorageStatePaths(dataDir, accountKey) {
+  const plaintextPath = accountStatePath(dataDir, accountKey);
+  // 密文文件名沿用 config.js 的规则：明文路径加 .enc 后缀，即 <account_key>.storage.json.enc。
+  return [plaintextPath, `${plaintextPath}.enc`];
+}
+
+/** 删除账号在磁盘上的登录态；文件名一律由 account_key 派生，缺失文件不算错误。 */
+export async function removeAccountStorageStates(dataDir, accountKey) {
+  const key = normalizeAccountKey(accountKey);
+  const directory = path.resolve(accountAuthDir(dataDir));
+  const removed = [];
+  for (const candidate of accountStorageStatePaths(dataDir, key)) {
+    // 目录穿越兜底：目标必须落在 accounts 目录的直接子层，绝不接受任何输入把删除带出目录。
+    if (path.dirname(path.resolve(candidate)) !== directory) {
+      throw new Error(`拒绝删除账号目录之外的登录态：${candidate}`);
+    }
+    try {
+      await unlink(candidate);
+      removed.push(candidate);
+    } catch (error) {
+      // ENOENT 是常态（明文/密文只会存在一种），其余错误也不应阻断软删。
+      if (error?.code !== "ENOENT") {
+        console.warn(`[accounts] 登录态清理跳过 ${path.basename(candidate)}：${error?.message ?? error}`);
+      }
+    }
+  }
+  return removed;
 }

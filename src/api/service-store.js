@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 
+import { removeAccountStorageStates } from "../accounts/registry.js";
 import { ApiHttpError } from "./http.js";
 
 const DEFAULT_SCOPES = Object.freeze([
@@ -244,6 +245,90 @@ export async function ensureTenantAccount(pool, { tenantId, provider = "doubao",
     [tenantId, provider, accountKey, external, label],
   );
   return rows[0];
+}
+
+/** 账号回收：软删 accounts 行 + 清磁盘登录态；保留 accounts / service_account_bindings 行，历史 runs 按 account_key 归属，删行会让历史不可追溯。 */
+export async function reclaimTenantAccount(
+  pool,
+  { tenantId, provider = "doubao", externalId, dataDir },
+) {
+  const external = String(externalId ?? "").trim();
+  if (!external) throw new ApiHttpError(422, "invalid_account_id", "account_id is required");
+
+  const { rows } = await pool.query(
+    `SELECT b.account_key
+       FROM service_account_bindings b
+       JOIN accounts a ON a.provider = b.provider AND a.account_key = b.account_key
+      WHERE b.tenant_id = $1 AND b.provider = $2 AND b.external_id = $3`,
+    [tenantId, provider, external],
+  );
+  const accountKey = rows[0]?.account_key;
+  if (!accountKey) throw new ApiHttpError(404, "account_not_found", `account ${external} was not found`);
+
+  // accounts 没有专用回收时间列，复用 updated_at 当标记位；不加 migration。
+  // WHERE 条件取「还没进回收态」，所以幂等重复调用会返回 reclaimed=false。
+  const { rows: updated, rowCount } = await pool.query(
+    `UPDATE accounts
+        SET enabled = false, status = 'disabled', storage_state_present = false, updated_at = now()
+      WHERE provider = $1 AND account_key = $2 AND (enabled OR status <> 'disabled')
+      RETURNING updated_at`,
+    [provider, accountKey],
+  );
+  const removed = await removeAccountStorageStates(dataDir, accountKey);
+
+  return {
+    account_id: external,
+    provider,
+    reclaimed: rowCount > 0,
+    reclaimed_at: rowCount > 0 ? updated[0]?.updated_at ?? null : null,
+    storage_state_removed: removed.length > 0,
+    storage_state_files_removed: removed.length,
+    enabled: false,
+    status: "disabled",
+    reclaim_marked_by: "updated_at",
+  };
+}
+
+/**
+ * 账号恢复：reclaimTenantAccount 的反向操作，只翻状态列。
+ * 恢复不等于恢复登录态：磁盘凭证已随软删删除，这里不重建文件，调用方仍需重新扫码登录，
+ * 所以落点是 login_required 而不是 healthy（healthy 会被判为可执行，等于伪造登录态）。
+ */
+export async function reactivateTenantAccount(pool, { tenantId, provider = "doubao", externalId }) {
+  const external = String(externalId ?? "").trim();
+  if (!external) throw new ApiHttpError(422, "invalid_account_id", "account_id is required");
+
+  const { rows } = await pool.query(
+    `SELECT b.account_key, a.enabled, a.status, a.storage_state_present
+       FROM service_account_bindings b
+       JOIN accounts a ON a.provider = b.provider AND a.account_key = b.account_key
+      WHERE b.tenant_id = $1 AND b.provider = $2 AND b.external_id = $3`,
+    [tenantId, provider, external],
+  );
+  const current = rows[0];
+  if (!current) throw new ApiHttpError(404, "account_not_found", `account ${external} was not found`);
+
+  // WHERE 取「还在回收态」：幂等重复调用不改行，也不会把 enabled 的健康账号降级成 login_required。
+  const { rows: updated, rowCount } = await pool.query(
+    `UPDATE accounts
+        SET enabled = true, status = 'login_required', storage_state_present = false, updated_at = now()
+      WHERE provider = $1 AND account_key = $2 AND (NOT enabled OR status = 'disabled')
+      RETURNING enabled, status, storage_state_present`,
+    [provider, current.account_key],
+  );
+  // 未翻状态时回显库里的现值，而不是目标值，否则调用方会误以为健康账号被改成了 login_required。
+  const state = rowCount > 0
+    ? updated[0]
+    : { enabled: current.enabled, status: current.status, storage_state_present: current.storage_state_present };
+
+  return {
+    account_id: external,
+    provider,
+    enabled: state.enabled,
+    status: state.status,
+    storage_state_present: state.storage_state_present,
+    reactivated: rowCount > 0,
+  };
 }
 
 export async function listTenantAccounts(pool, tenantId) {

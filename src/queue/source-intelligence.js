@@ -1,5 +1,6 @@
 import { Queue } from "bullmq";
 import { getRedis, isQueueConfigured, sourceIntelligenceQueueName } from "./connection.js";
+import { publishReportRevisionForBatch } from "../reporting/revisions.js";
 
 const BATCHES_WITH_ANALYZABLE_RESULTS = new Set(["completed", "partial"]);
 const TERMINAL_JOB_STATES = new Set(["completed", "failed"]);
@@ -226,7 +227,7 @@ export async function finishSourceIntelligence(
   pool,
   batchId,
   generation,
-  { status, error = null, batchFinishedAt = null },
+  { status, error = null, batchFinishedAt = null, log = () => undefined },
 ) {
   if (!["completed", "partial", "failed"].includes(status)) {
     throw new Error(`Invalid source intelligence terminal status: ${status}`);
@@ -242,7 +243,20 @@ export async function finishSourceIntelligence(
         AND ($5::timestamptz IS NULL OR finished_at = $5::timestamptz)`,
     [batchId, generation, status, error, batchFinishedAt],
   );
-  return rowCount > 0;
+  if (rowCount <= 0) return false;
+
+  // This is the one moment a SaaS report stops changing on its own, so it is the moment a
+  // frozen revision is worth publishing. A failure here must never rewrite the analysis
+  // outcome the caller just won, so it is reported but not propagated.
+  await publishReportRevisionForBatch(pool, { batchId, log }).catch((publishError) => {
+    log({
+      event: "report-revision-publish-failed",
+      batch_id: batchId,
+      generation,
+      error: publishError instanceof Error ? publishError.message : String(publishError),
+    });
+  });
+  return true;
 }
 
 export async function sourceIntelligenceState(pool, batchId) {

@@ -18,15 +18,31 @@ const PROJECT_UPSERT = `
   RETURNING id
 `;
 
+// prompts identity is (project_id, prompt_md5) for pool rows and
+// (project_id, prompt_md5, external_id) for caller-tagged rows (migration 0023), because
+// those are two partial unique indexes the ON CONFLICT target has to match exactly.
 const PROMPT_UPSERT = `
   INSERT INTO prompts (project_id, prompt, external_id, enabled)
   VALUES ($1, $2, $3, $4)
-  ON CONFLICT (project_id, prompt_md5) DO UPDATE
+  ON CONFLICT (project_id, prompt_md5) WHERE external_id IS NULL DO UPDATE
     SET updated_at = now(),
         external_id = COALESCE(EXCLUDED.external_id, prompts.external_id),
         enabled = EXCLUDED.enabled
   RETURNING id
 `;
+
+const PROMPT_UPSERT_WITH_EXTERNAL_ID = `
+  INSERT INTO prompts (project_id, prompt, external_id, enabled)
+  VALUES ($1, $2, $3, $4)
+  ON CONFLICT (project_id, prompt_md5, external_id) WHERE external_id IS NOT NULL DO UPDATE
+    SET updated_at = now(),
+        enabled = EXCLUDED.enabled
+  RETURNING id
+`;
+
+function promptUpsertSql(externalId) {
+  return externalId == null ? PROMPT_UPSERT : PROMPT_UPSERT_WITH_EXTERNAL_ID;
+}
 
 const ACCOUNT_UPSERT = `
   INSERT INTO accounts (account_key, provider)
@@ -249,7 +265,7 @@ export async function persistRun({
     const projectResult = await client.query(PROJECT_UPSERT, [projectName, null]);
     const projectId = projectResult.rows[0].id;
 
-    const promptResult = await client.query(PROMPT_UPSERT, [
+    const promptResult = await client.query(promptUpsertSql(prompt?.externalId ?? null), [
       projectId,
       run?.prompt ?? "",
       prompt?.externalId ?? null,

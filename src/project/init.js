@@ -76,7 +76,7 @@ const PROJECT_UPSERT = `
 const PROMPT_POOL_UPSERT = `
   INSERT INTO prompts (project_id, prompt, category, pool_version, source)
   VALUES ($1, $2, $3, $4, 'pool')
-  ON CONFLICT (project_id, prompt_md5) DO UPDATE
+  ON CONFLICT (project_id, prompt_md5) WHERE external_id IS NULL DO UPDATE
     SET updated_at = now(),
         category = COALESCE(EXCLUDED.category, prompts.category),
         pool_version = COALESCE(EXCLUDED.pool_version, prompts.pool_version),

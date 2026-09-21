@@ -28,6 +28,8 @@ const profile = profileFile ? JSON.parse(await readFile(profileFile, "utf8")) : 
 const snapshot = JSON.parse(await readFile(inputFile, "utf8"));
 
 // 兼容旧 export-batch 快照结构，并统一成 Dashboard / API 使用的 batchDetail 形状。
+// intelligence 缺失时 src/report/brand-source-intelligence.js 会直接返回空串，
+// 「AI 搜索品牌与引用情报」整节就会静默消失，所以旧快照必须显式回退而不是假装存在。
 const detail = {
   report: snapshot.report ?? {},
   runs: Array.isArray(snapshot.runs) ? snapshot.runs : [],
@@ -36,7 +38,15 @@ const detail = {
     articles: snapshot.report?.topArticles ?? [],
     totals: snapshot.report?.citations ?? { citations: 0, articles: 0, domains: 0 },
   },
+  intelligence: snapshot.intelligence ?? null,
 };
+
+if (!detail.intelligence) {
+  console.warn(
+    "[build-report-html] 快照缺少 intelligence（引用页品牌与结构情报）；"
+      + "请用当前版本的 tools/export-batch.js 重新导出，否则该节不会出现在 HTML 中。",
+  );
+}
 
 const evaluation = evaluateBatchDetail(detail);
 const html = buildOptimizationHtmlReport(detail, evaluation, {

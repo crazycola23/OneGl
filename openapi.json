@@ -128,6 +128,30 @@
           }
         }
       },
+      "ReportContractNotFound": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SaasError"
+            }
+          }
+        },
+        "description": "Report or revision was not found for this tenant",
+        "headers": {
+          "X-OneGl-Request-Id": {
+            "$ref": "#/components/headers/OneGlRequestId"
+          },
+          "X-RateLimit-Limit": {
+            "$ref": "#/components/headers/OneGlRateLimitLimit"
+          },
+          "X-RateLimit-Remaining": {
+            "$ref": "#/components/headers/OneGlRateLimitRemaining"
+          },
+          "X-RateLimit-Reset": {
+            "$ref": "#/components/headers/OneGlRateLimitReset"
+          }
+        }
+      },
       "SaasBadRequest": {
         "content": {
           "application/json": {
@@ -296,6 +320,170 @@
         },
         "required": [
           "account_id"
+        ],
+        "type": "object"
+      },
+      "AccountInflightResource": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "description": "Tenant account alias, i.e. the account_id returned by GET /v1/accounts",
+            "type": "string"
+          },
+          "queue": {
+            "additionalProperties": false,
+            "description": "BullMQ job counts of this account's own per-account queue",
+            "properties": {
+              "active": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "delayed": {
+                "description": "Includes jobs waiting out a retry backoff",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "waiting": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "waiting",
+              "active",
+              "delayed"
+            ],
+            "type": "object"
+          },
+          "reclaim_safe": {
+            "description": "True only when every queue and referencing count above is 0; an unobservable count answers 503 instead of being reported as 0",
+            "type": "boolean"
+          },
+          "referencing": {
+            "additionalProperties": false,
+            "description": "Enabled SaaS schedules and enabled monitoring plans whose account_ids still list this account",
+            "properties": {
+              "enabled_monitor_plans": {
+                "description": "All enabled plans referencing the account, including the plan behind each schedule",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "enabled_schedules": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "enabled_schedules",
+              "enabled_monitor_plans"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "account_id",
+          "queue",
+          "referencing",
+          "reclaim_safe"
+        ],
+        "type": "object"
+      },
+      "AccountReactivateResource": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "enabled": {
+            "description": "Always true after a successful reactivation; echoed from the row when nothing changed",
+            "type": "boolean"
+          },
+          "provider": {
+            "enum": [
+              "doubao"
+            ],
+            "type": "string"
+          },
+          "reactivated": {
+            "description": "Whether this call actually flipped the account row out of its reclaimed state",
+            "type": "boolean"
+          },
+          "status": {
+            "description": "login_required right after a real reactivation, because the reclaimed login state cannot be restored; a no-op call echoes the existing status instead of downgrading it",
+            "type": "string"
+          },
+          "storage_state_present": {
+            "description": "Always false right after a real reactivation: the storageState files were deleted by the reclaim and are not recreated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "account_id",
+          "provider",
+          "enabled",
+          "status",
+          "storage_state_present",
+          "reactivated"
+        ],
+        "type": "object"
+      },
+      "AccountReclaimResource": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "enabled": {
+            "const": false,
+            "type": "boolean"
+          },
+          "provider": {
+            "enum": [
+              "doubao"
+            ],
+            "type": "string"
+          },
+          "reclaim_marked_by": {
+            "const": "updated_at",
+            "description": "The accounts column carrying the reclaim timestamp",
+            "type": "string"
+          },
+          "reclaimed": {
+            "description": "Whether this call actually flipped the account row",
+            "type": "boolean"
+          },
+          "reclaimed_at": {
+            "description": "accounts.updated_at of this reclaim; null when this call changed nothing",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "const": "disabled",
+            "type": "string"
+          },
+          "storage_state_files_removed": {
+            "maximum": 2,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "storage_state_removed": {
+            "description": "Whether any on-disk storageState file was deleted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "account_id",
+          "provider",
+          "reclaimed",
+          "reclaimed_at",
+          "storage_state_removed",
+          "storage_state_files_removed",
+          "enabled",
+          "status",
+          "reclaim_marked_by"
         ],
         "type": "object"
       },
@@ -1968,6 +2156,11 @@
             "minimum": 0,
             "type": "integer"
           },
+          "not_collected": {
+            "description": "Assignments that will never be collected: skipped work plus failed runs once the execution is terminal.",
+            "minimum": 0,
+            "type": "integer"
+          },
           "percent": {
             "maximum": 100,
             "minimum": 0,
@@ -1992,7 +2185,8 @@
           "failed",
           "skipped",
           "remaining",
-          "percent"
+          "percent",
+          "not_collected"
         ],
         "type": "object"
       },
@@ -3048,6 +3242,2239 @@
         ],
         "type": "object"
       },
+      "ReportAnalysis": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "queued_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "Cited-page content analysis stage. Independent from collection: `collection` can be terminal while this is still `queued`.",
+            "enum": [
+              "idle",
+              "queued",
+              "running",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "generation",
+          "stale"
+        ],
+        "type": "object"
+      },
+      "ReportCollection": {
+        "additionalProperties": false,
+        "properties": {
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "progress": {
+            "additionalProperties": false,
+            "properties": {
+              "completed": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "failed": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "not_collected": {
+                "description": "Assignments that will never produce a collection record: skipped work plus failed runs on a terminal execution.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "skipped": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total",
+              "completed",
+              "failed",
+              "skipped",
+              "not_collected"
+            ],
+            "type": "object"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "queued",
+              "running",
+              "paused",
+              "completed",
+              "partial",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "progress"
+        ],
+        "type": "object"
+      },
+      "ReportContractQuery": {
+        "additionalProperties": false,
+        "properties": {
+          "ai_brand_mention_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ai_brand_mention_rate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "ai_brand_mentioned_runs": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "brand_evidence_source_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "citation_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "example_answer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "example_answer_contains_brand": {
+            "type": "boolean"
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "top_sources": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "citations": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "domain": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "citations"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "unique_source_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "valid_runs": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "valid_runs",
+          "ai_brand_mentioned_runs",
+          "citation_count",
+          "top_sources"
+        ],
+        "type": "object"
+      },
+      "ReportContractResource": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/ReportAnalysis"
+          },
+          "collection": {
+            "$ref": "#/components/schemas/ReportCollection"
+          },
+          "execution_id": {
+            "pattern": "^exe_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/ReportProvenance"
+          },
+          "quality": {
+            "additionalProperties": false,
+            "properties": {
+              "answer_capture_rate": {
+                "additionalProperties": false,
+                "properties": {
+                  "denominator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": [
+                      "rate",
+                      "count"
+                    ],
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "measured": {
+                    "description": "False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0.",
+                    "type": "boolean"
+                  },
+                  "numerator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "value": {
+                    "minimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "numerator",
+                  "denominator",
+                  "measured",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "brand_evidence_rate": {
+                "additionalProperties": false,
+                "properties": {
+                  "denominator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": [
+                      "rate",
+                      "count"
+                    ],
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "measured": {
+                    "description": "False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0.",
+                    "type": "boolean"
+                  },
+                  "numerator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "value": {
+                    "minimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "numerator",
+                  "denominator",
+                  "measured",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "citation_capture_rate": {
+                "additionalProperties": false,
+                "properties": {
+                  "denominator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": [
+                      "rate",
+                      "count"
+                    ],
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "measured": {
+                    "description": "False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0.",
+                    "type": "boolean"
+                  },
+                  "numerator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "value": {
+                    "minimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "numerator",
+                  "denominator",
+                  "measured",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "citation_evidence_rate": {
+                "additionalProperties": false,
+                "properties": {
+                  "denominator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": [
+                      "rate",
+                      "count"
+                    ],
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "measured": {
+                    "description": "False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0.",
+                    "type": "boolean"
+                  },
+                  "numerator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "value": {
+                    "minimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "numerator",
+                  "denominator",
+                  "measured",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "collection_gap_rate": {
+                "additionalProperties": false,
+                "properties": {
+                  "denominator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": [
+                      "rate",
+                      "count"
+                    ],
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "measured": {
+                    "description": "False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0.",
+                    "type": "boolean"
+                  },
+                  "numerator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "value": {
+                    "minimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "numerator",
+                  "denominator",
+                  "measured",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "page_analysis_coverage": {
+                "additionalProperties": false,
+                "properties": {
+                  "denominator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": [
+                      "rate",
+                      "count"
+                    ],
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "measured": {
+                    "description": "False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0.",
+                    "type": "boolean"
+                  },
+                  "numerator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "value": {
+                    "minimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "numerator",
+                  "denominator",
+                  "measured",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "prompt_brand_coverage": {
+                "additionalProperties": false,
+                "properties": {
+                  "denominator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": [
+                      "rate",
+                      "count"
+                    ],
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "measured": {
+                    "description": "False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0.",
+                    "type": "boolean"
+                  },
+                  "numerator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "value": {
+                    "minimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "numerator",
+                  "denominator",
+                  "measured",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "run_brand_mention_rate": {
+                "additionalProperties": false,
+                "properties": {
+                  "denominator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": [
+                      "rate",
+                      "count"
+                    ],
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "measured": {
+                    "description": "False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0.",
+                    "type": "boolean"
+                  },
+                  "numerator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "value": {
+                    "minimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "numerator",
+                  "denominator",
+                  "measured",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "tracked_citation_rate": {
+                "additionalProperties": false,
+                "properties": {
+                  "denominator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": [
+                      "rate",
+                      "count"
+                    ],
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "measured": {
+                    "description": "False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0.",
+                    "type": "boolean"
+                  },
+                  "numerator": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "value": {
+                    "minimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "numerator",
+                  "denominator",
+                  "measured",
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "run_brand_mention_rate",
+              "prompt_brand_coverage",
+              "citation_capture_rate",
+              "tracked_citation_rate",
+              "answer_capture_rate",
+              "collection_gap_rate",
+              "page_analysis_coverage",
+              "brand_evidence_rate",
+              "citation_evidence_rate"
+            ],
+            "type": "object"
+          },
+          "queries": {
+            "items": {
+              "$ref": "#/components/schemas/ReportContractQuery"
+            },
+            "type": "array"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/ReportReadiness"
+          },
+          "report_id": {
+            "pattern": "^rpt_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "revision": {
+            "description": "0 on the live contract endpoint; >= 1 once frozen as a revision.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/ReportContractRun"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "report-contract-v1",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ReportContractSource"
+            },
+            "type": "array"
+          },
+          "structure": {
+            "$ref": "#/components/schemas/ReportContractStructure"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ReportContractSummary"
+          },
+          "task_id": {
+            "pattern": "^tsk_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "totals": {
+            "additionalProperties": false,
+            "properties": {
+              "analyzed_sources": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "assignments": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "brand_evidence_sources": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "citations": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cited_articles": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cited_domains": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "collected_results": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "failed_runs": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "not_collected_results": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "queries": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unique_sources": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "valid_runs": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "assignments",
+              "valid_runs",
+              "citations",
+              "unique_sources"
+            ],
+            "type": "object"
+          },
+          "truncated": {
+            "additionalProperties": false,
+            "properties": {
+              "queries": {
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "returned": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "description": "True when the underlying query hit its own cap, so the list below is a Top-N and not a census.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "truncated",
+                  "returned"
+                ],
+                "type": "object"
+              },
+              "runs": {
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "returned": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "description": "True when the underlying query hit its own cap, so the list below is a Top-N and not a census.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "truncated",
+                  "returned"
+                ],
+                "type": "object"
+              },
+              "sourceArticles": {
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "returned": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "description": "True when the underlying query hit its own cap, so the list below is a Top-N and not a census.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "truncated",
+                  "returned"
+                ],
+                "type": "object"
+              },
+              "sourceDomains": {
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "returned": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "description": "True when the underlying query hit its own cap, so the list below is a Top-N and not a census.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "truncated",
+                  "returned"
+                ],
+                "type": "object"
+              },
+              "sources": {
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "returned": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "description": "True when the underlying query hit its own cap, so the list below is a Top-N and not a census.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "truncated",
+                  "returned"
+                ],
+                "type": "object"
+              },
+              "topArticles": {
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "returned": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "description": "True when the underlying query hit its own cap, so the list below is a Top-N and not a census.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "truncated",
+                  "returned"
+                ],
+                "type": "object"
+              },
+              "topDomains": {
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "returned": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "description": "True when the underlying query hit its own cap, so the list below is a Top-N and not a census.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "truncated",
+                  "returned"
+                ],
+                "type": "object"
+              },
+              "trackedArticles": {
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "returned": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "description": "True when the underlying query hit its own cap, so the list below is a Top-N and not a census.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "truncated",
+                  "returned"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "versions": {
+            "$ref": "#/components/schemas/ReportVersions"
+          }
+        },
+        "required": [
+          "report_id",
+          "task_id",
+          "execution_id",
+          "revision",
+          "schema_version",
+          "versions",
+          "provenance",
+          "collection",
+          "analysis",
+          "readiness",
+          "summary",
+          "queries",
+          "sources",
+          "structure",
+          "quality",
+          "runs",
+          "truncated",
+          "totals"
+        ],
+        "type": "object"
+      },
+      "ReportContractRun": {
+        "additionalProperties": false,
+        "properties": {
+          "answer_chars": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attempt": {
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "brand_mentioned": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "captured_citation_count": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "citation_state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "conversation_reset": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "conversation_reset_confirmed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expected_citation_count": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mention_count": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "question": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "question_external_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repetition_count": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "repetition_index": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "result_id": {
+            "pattern": "^res_[a-f0-9]{32}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "running",
+              "success",
+              "partial",
+              "failed",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "question",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ReportContractSource": {
+        "additionalProperties": false,
+        "properties": {
+          "average_position": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "canonical_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "citation_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "final_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "original_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReportContractSourcePage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prompt_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "run_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "citation_count",
+          "run_count",
+          "prompt_count",
+          "prompts"
+        ],
+        "type": "object"
+      },
+      "ReportContractSourcePage": {
+        "additionalProperties": false,
+        "properties": {
+          "author_present": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "brand_contexts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "brand_detection_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "brand_first_mention_position": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "brand_locations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "brand_matched_terms": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "brand_mention_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "brand_mentioned": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "content_excerpt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_profile": {
+            "additionalProperties": true,
+            "description": "Provider page-content profile as captured; keys are informational and not part of the stable contract.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "faq_heading_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "fetch_state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "h1_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "h2_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "h3_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "list_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "modified_at_raw": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outline": {
+            "items": {
+              "additionalProperties": true,
+              "properties": {
+                "level": {
+                  "type": [
+                    "integer",
+                    "number"
+                  ]
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "paragraph_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "published_at_raw": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "table_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "text_length": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ReportContractStructure": {
+        "additionalProperties": false,
+        "properties": {
+          "analyzedSources": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "averageH2Count": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "averageTextLength": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "citedSources": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "commonStructures": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "count"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "coverageRate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "profileTypes": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "count"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "withAuthorRate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "withFaqRate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "withH2Rate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "withListRate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "withPublishedDateRate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "withTableRate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "ReportContractSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "batch": {
+            "additionalProperties": false,
+            "properties": {
+              "aborted_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "completed_jobs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "failed_jobs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "finished_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "project_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provider": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "queued_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repeats": {
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "requested_jobs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "sampling_method": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "skipped_jobs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_brand": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "byAccount": {
+            "description": "Per-collector-slot numbers. OneGl's internal account keys are never exposed; `slot` is an opaque label stable within one report.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "citations": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "mention_rate": {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "mentioned": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "prompts": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "slot": {
+                  "pattern": "^account-[0-9]+$",
+                  "type": "string"
+                },
+                "valid_runs": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "slot",
+                "valid_runs",
+                "mentioned",
+                "prompts",
+                "citations"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "byCategory": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "mention_rate": {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "mentioned": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "valid_runs": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "valid_runs",
+                "mentioned"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "citationFactors": {
+            "additionalProperties": true,
+            "description": "Candidate-to-citation factor analysis. Internal identifiers are removed; the remaining statistical keys are documented in docs/CITATION_FACTOR_ANALYSIS.md.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "citations": {
+            "additionalProperties": false,
+            "properties": {
+              "articles": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "coverage": {
+                "minimum": 0,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "domains": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "validRuns": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total",
+              "articles",
+              "domains"
+            ],
+            "type": "object"
+          },
+          "failures": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "error_code": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "runs": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "runs"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "intelligence": {
+            "additionalProperties": false,
+            "properties": {
+              "attributionNote": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "brandEvidenceSources": {
+                "items": {
+                  "$ref": "#/components/schemas/ReportContractSource"
+                },
+                "type": "array"
+              },
+              "coverage": {
+                "additionalProperties": false,
+                "properties": {
+                  "analysisRate": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "analyzedSources": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "answerValidRuns": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "brandEvidenceRate": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "brandEvidenceSources": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "citationEvidenceRate": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "citationValidRuns": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "citedSources": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "domains": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "brand_evidence_sources": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "citations": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "domain": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "prompt_count": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "sources": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "citations",
+                    "sources",
+                    "prompt_count",
+                    "brand_evidence_sources"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "version": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "prompts": {
+            "additionalProperties": false,
+            "properties": {
+              "mentionCoverage": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "mentioned": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total",
+              "mentioned"
+            ],
+            "type": "object"
+          },
+          "runs": {
+            "additionalProperties": false,
+            "properties": {
+              "assignmentsRun": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "failed": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "mentionRate": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "mentioned": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "partial": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unconfirmedReset": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "valid": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "assignmentsRun",
+              "valid",
+              "partial",
+              "failed",
+              "mentioned"
+            ],
+            "type": "object"
+          },
+          "sourceArticles": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "canonical_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "citations": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "domain": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "is_tracked": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "prompts": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "runs": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "sourceDomains": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "articles": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "citations": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "domain": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "prompts": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "runs": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "sourceTotals": {
+            "additionalProperties": false,
+            "properties": {
+              "articles": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "citations": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "domains": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "citations",
+              "articles",
+              "domains"
+            ],
+            "type": "object"
+          },
+          "topArticles": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "canonical_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "citations": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "domain": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "runs": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "citations",
+                "runs"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "topDomains": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "articles": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "citations": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "domain": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "runs": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "citations",
+                "articles",
+                "runs"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "tracked": {
+            "additionalProperties": false,
+            "properties": {
+              "articles": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "account_count": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "canonical_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "citations": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "domain": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "first_seen_at": {
+                      "format": "date-time",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "last_seen_at": {
+                      "format": "date-time",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "prompts": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "runs": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "title": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "citations",
+                    "runs",
+                    "prompts"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "citationRate": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "cited": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total",
+              "cited",
+              "articles"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "batch",
+          "runs",
+          "prompts",
+          "citations",
+          "tracked",
+          "topArticles",
+          "topDomains",
+          "byCategory",
+          "byAccount",
+          "failures"
+        ],
+        "type": "object"
+      },
       "ReportListItem": {
         "properties": {
           "created_at": {
@@ -3136,8 +5563,83 @@
         ],
         "type": "object"
       },
+      "ReportProvenance": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_version": {
+            "const": "report-contract-v1",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "provider": {
+            "const": "doubao_web",
+            "type": "string"
+          },
+          "source": {
+            "const": "onegl",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "contract_version",
+          "generated_at",
+          "source"
+        ],
+        "type": "object"
+      },
+      "ReportReadiness": {
+        "additionalProperties": false,
+        "properties": {
+          "explainable": {
+            "const": true,
+            "type": "boolean"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "description": "Derived from collection *and* analysis. `complete` is only reachable once cited-page analysis has finished for the current collection.",
+            "enum": [
+              "empty",
+              "collecting",
+              "collecting_complete",
+              "analysis_running",
+              "complete",
+              "complete_with_gaps",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "explainable",
+          "notes"
+        ],
+        "type": "object"
+      },
       "ReportResource": {
         "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/ReportAnalysis"
+          },
+          "collection": {
+            "$ref": "#/components/schemas/ReportCollection"
+          },
+          "contract_url": {
+            "examples": [
+              "/v1/reports/rpt_0123456789abcdef0123456789abcdef/contract"
+            ],
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -3165,6 +5667,9 @@
               "object",
               "null"
             ]
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/ReportReadiness"
           },
           "report_id": {
             "pattern": "^rpt_[a-f0-9]{32}$",
@@ -3197,6 +5702,9 @@
           "task_id": {
             "pattern": "^tsk_[a-f0-9]{32}$",
             "type": "string"
+          },
+          "versions": {
+            "$ref": "#/components/schemas/ReportVersions"
           }
         },
         "required": [
@@ -3206,17 +5714,213 @@
           "status",
           "execution_status",
           "report_url",
-          "created_at"
+          "created_at",
+          "versions",
+          "collection",
+          "analysis",
+          "readiness"
+        ],
+        "type": "object"
+      },
+      "ReportRevisionCreated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ReportRevisionResource"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "contract": {
+                "$ref": "#/components/schemas/ReportContractResource"
+              },
+              "created": {
+                "type": "boolean"
+              },
+              "replayed": {
+                "description": "True when the computed content hash matched the latest revision, so no new row was written.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "created",
+              "replayed",
+              "contract"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ReportRevisionResource": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_completed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "analysis_generation": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "analysis_status": {
+            "enum": [
+              "idle",
+              "queued",
+              "running",
+              "completed",
+              "partial",
+              "failed",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "artifact_urls": {
+            "additionalProperties": false,
+            "properties": {
+              "html": {
+                "type": "string"
+              },
+              "json": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "json",
+              "html"
+            ],
+            "type": "object"
+          },
+          "collected_until": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "collection_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "execution_id": {
+            "pattern": "^exe_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "readiness_status": {
+            "enum": [
+              "empty",
+              "collecting",
+              "collecting_complete",
+              "analysis_running",
+              "complete",
+              "complete_with_gaps",
+              "failed",
+              "cancelled",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "report_id": {
+            "pattern": "^rpt_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "revision_id": {
+            "pattern": "^rrev_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "task_id": {
+            "pattern": "^tsk_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision_id",
+          "report_id",
+          "execution_id",
+          "revision",
+          "schema_version",
+          "content_hash",
+          "created_at",
+          "artifact_urls"
+        ],
+        "type": "object"
+      },
+      "ReportVersions": {
+        "additionalProperties": false,
+        "properties": {
+          "intelligence": {
+            "description": "Version of the cited-page intelligence producer, or null when analysis has not produced a payload yet.",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "renderer": {
+            "type": "string"
+          },
+          "schema": {
+            "const": "report-contract-v1",
+            "type": "string"
+          },
+          "summary": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema",
+          "summary",
+          "renderer"
         ],
         "type": "object"
       },
       "ResultListItem": {
         "properties": {
+          "assignment_status": {
+            "enum": [
+              "not_started",
+              "running",
+              "collected",
+              "not_collected",
+              "cancelled"
+            ],
+            "type": "string"
+          },
           "brand_mentioned": {
             "type": [
               "boolean",
               "null"
             ]
+          },
+          "execution_id": {
+            "pattern": "^exe_[a-f0-9]{32}$",
+            "type": "string"
           },
           "finished_at": {
             "format": "date-time",
@@ -3241,6 +5945,26 @@
           "question": {
             "type": "string"
           },
+          "question_external_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repetition_count": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "repetition_index": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "result_id": {
             "pattern": "^res_[a-f0-9]{32}$",
             "type": "string"
@@ -3257,6 +5981,20 @@
               "failed"
             ],
             "type": "string"
+          },
+          "task_id": {
+            "pattern": "^tsk_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "terminal_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TerminalReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -3264,7 +6002,10 @@
           "question",
           "platform",
           "status",
-          "result_url"
+          "result_url",
+          "task_id",
+          "execution_id",
+          "assignment_status"
         ],
         "type": "object"
       },
@@ -3299,6 +6040,16 @@
             ],
             "type": "object"
           },
+          "assignment_status": {
+            "enum": [
+              "not_started",
+              "running",
+              "collected",
+              "not_collected",
+              "cancelled"
+            ],
+            "type": "string"
+          },
           "citations": {
             "items": {
               "$ref": "#/components/schemas/CitationResource"
@@ -3325,6 +6076,26 @@
           "question": {
             "type": "string"
           },
+          "question_external_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repetition_count": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "repetition_index": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "result_id": {
             "pattern": "^res_[a-f0-9]{32}$",
             "type": "string"
@@ -3349,6 +6120,16 @@
           "task_id": {
             "pattern": "^tsk_[a-f0-9]{32}$",
             "type": "string"
+          },
+          "terminal_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TerminalReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -3358,7 +6139,8 @@
           "platform",
           "question",
           "status",
-          "citations"
+          "citations",
+          "assignment_status"
         ],
         "type": "object"
       },
@@ -3500,6 +6282,7 @@
               "execution.partial",
               "execution.failed",
               "execution.cancelled",
+              "report.revision.ready",
               "account.action_required",
               "account.ready",
               "webhook.test"
@@ -3810,14 +6593,21 @@
             "uniqueItems": true
           },
           "questions": {
+            "description": "Either plain strings (legacy, de-duplicated by text) or per-observation objects. Entries carrying `external_id` are never de-duplicated by text, so N questions x R repetitions can be submitted as N*R rows. `external_id` requires `sampling.repeats` to stay 1.",
             "items": {
-              "minLength": 1,
-              "type": "string"
+              "oneOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/components/schemas/TaskQuestionEntry"
+                }
+              ]
             },
             "maxItems": 5000,
             "minItems": 1,
-            "type": "array",
-            "uniqueItems": true
+            "type": "array"
           },
           "sampling": {
             "$ref": "#/components/schemas/TaskSamplingInput"
@@ -3898,6 +6688,49 @@
         },
         "type": "object"
       },
+      "TaskQuestionEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "maxLength": 200,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "external_id": {
+            "description": "Caller-owned stable id for this single observation. When present, identical texts are kept apart.",
+            "pattern": "^[A-Za-z0-9._:-]{1,200}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repetition_count": {
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "repetition_index": {
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "Question asked to the provider.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
       "TaskResource": {
         "properties": {
           "account_ids": {
@@ -3937,6 +6770,51 @@
           "platforms": {
             "items": {
               "type": "string"
+            },
+            "type": "array"
+          },
+          "question_entries": {
+            "description": "Echo of the submitted question entries, in caller order.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "external_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "question": {
+                  "type": "string"
+                },
+                "repetition_count": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "repetition_index": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
             },
             "type": "array"
           },
@@ -4301,6 +7179,32 @@
           "enabled",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "TerminalReason": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "Stable reason code. Sourced from the collector run error when one exists, otherwise from the batch terminal cause.",
+            "examples": [
+              "collection_failed",
+              "execution_cancelled",
+              "assignment_skipped",
+              "account_access_restricted"
+            ],
+            "type": "string"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message"
         ],
         "type": "object"
       },
@@ -4731,6 +7635,106 @@
         ]
       }
     },
+    "/v1/accounts/{accountId}": {
+      "delete": {
+        "description": "Soft delete only: the accounts row is flipped to enabled=false / status=disabled and both the accounts row and the service_account_bindings row are kept, because historical runs are attributed by internal account key and deleting rows would make history untraceable. The account's Playwright storageState files (plaintext and encrypted) are removed from disk, and the resident collection worker for that account is retired by the next 60s account sweep without a process restart. Per-account Redis queues and already-scheduled monitor plans are not deleted: a later plan run for this account fails closed on account status. Idempotent: a repeated call returns 200 with reclaimed=false and storage_state_removed=false. reclaimed_at is sourced from accounts.updated_at because the accounts table has no dedicated reclaim column; it is null when this call changed nothing.",
+        "operationId": "deleteAccountsByAccountId",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AccountReclaimResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Account reclaim result",
+            "headers": {
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Reclaim a tenant account: soft disable, drop login state, retire its worker",
+        "tags": [
+          "Accounts"
+        ]
+      },
+      "parameters": [
+        {
+          "description": "Tenant account alias, i.e. the account_id returned by GET /v1/accounts (the upstream external_id), not an internal key",
+          "in": "path",
+          "name": "accountId",
+          "required": true,
+          "schema": {
+            "minLength": 1,
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/v1/accounts/{accountId}/auth-sessions": {
       "parameters": [
         {
@@ -4842,6 +7846,205 @@
           }
         },
         "summary": "Start constrained remote login session",
+        "tags": [
+          "Accounts"
+        ]
+      }
+    },
+    "/v1/accounts/{accountId}/inflight": {
+      "get": {
+        "description": "Read-only pre-reclaim gate: no database write, no queue mutation, no worker shutdown. queue counts are the BullMQ job counts of this account's own queue (one queue per account key, default prefix onegl-run-<account_key>); referencing counts the enabled SaaS schedules and the enabled monitoring plans that still list this account in their account_ids, because an enabled plan keeps materializing batches into that account queue after the account is soft-deleted. reclaim_safe is computed server-side and is true only when every one of those counts is 0. Any count that cannot be observed answers 503 queue_unavailable instead of 0: a silently zero queue would be read as permission to reclaim, and reclaiming is irreversible. Note that this covers work already inside Redis plus enabled references only; it does not cover batches that were created but not started yet.",
+        "operationId": "getAccountsByAccountIdInflight",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AccountInflightResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Account in-flight state",
+            "headers": {
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Read whether a tenant account can be reclaimed safely",
+        "tags": [
+          "Accounts"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "accountId",
+          "required": true,
+          "schema": {
+            "minLength": 1,
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/v1/accounts/{accountId}/reactivate": {
+      "parameters": [
+        {
+          "description": "Tenant account alias, i.e. the account_id returned by GET /v1/accounts (the upstream external_id), not an internal key",
+          "in": "path",
+          "name": "accountId",
+          "required": true,
+          "schema": {
+            "minLength": 1,
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "description": "Inverse of DELETE /v1/accounts/{accountId}: flips the accounts row to enabled=true / status=login_required / storage_state_present=false and never touches service_account_bindings or the account's other columns. Reactivation is not login restoration: the reclaimed Playwright storageState files are gone for good, so the account answers login_required and has to be scanned in again through POST /v1/accounts/{accountId}/auth-sessions before it can run. It is deliberately not set to healthy, because healthy would mark the account executable without any valid login state. There is no worker operation here: the resident worker comes back on its own, since the collection process re-reads accounts.enabled=true on its 60s account sweep. Idempotent: an account that is already enabled and not disabled is returned unchanged with reactivated=false, and its status is never downgraded to login_required.",
+        "operationId": "createAccountsByAccountIdReactivate",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AccountReactivateResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Account reactivation result",
+            "headers": {
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Reactivate a reclaimed tenant account",
         "tags": [
           "Accounts"
         ]
@@ -6914,6 +10117,106 @@
         }
       ]
     },
+    "/v1/executions/{executionId}/report/contract": {
+      "get": {
+        "description": "Separates collection state, cited-page analysis state and report readiness, and carries no internal OneGl identifiers. Equivalent to GET /v1/reports/{reportId}/contract.",
+        "operationId": "getExecutionReportContract",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ReportContractResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Report contract",
+            "headers": {
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ReportContractNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Get the strictly-typed report contract for an execution",
+        "tags": [
+          "Reports"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "executionId",
+          "required": true,
+          "schema": {
+            "example": "exe_0123456789abcdef0123456789abcdef",
+            "pattern": "^exe_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/v1/executions/{executionId}/results": {
       "get": {
         "description": "List stable result IDs for every question/platform execution unit",
@@ -8890,6 +12193,749 @@
           "schema": {
             "example": "rpt_0123456789abcdef0123456789abcdef",
             "pattern": "^rpt_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/v1/reports/{reportId}/contract": {
+      "get": {
+        "description": "Live (recomputed) contract for the report. Collection, cited-page analysis and readiness are reported separately; `truncated` declares every list cap so a Top-15 cannot be read as a full census.",
+        "operationId": "getReportContract",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ReportContractResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Report contract",
+            "headers": {
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ReportContractNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Get the strictly-typed report contract",
+        "tags": [
+          "Reports"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "reportId",
+          "required": true,
+          "schema": {
+            "example": "rpt_0123456789abcdef0123456789abcdef",
+            "pattern": "^rpt_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/v1/reports/{reportId}/revisions": {
+      "get": {
+        "description": "Newest revision first. Revision rows are immutable: `content_hash` is the sha256 of the canonical JSON payload.",
+        "operationId": "listReportRevisions",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque next_cursor returned by the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/ReportRevisionResource"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/PageMeta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Report revisions",
+            "headers": {
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ReportContractNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "List frozen report revisions",
+        "tags": [
+          "Reports"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "reportId",
+          "required": true,
+          "schema": {
+            "example": "rpt_0123456789abcdef0123456789abcdef",
+            "pattern": "^rpt_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "description": "Idempotent by content: when the computed content hash equals the latest revision's hash, the existing revision is returned with `created: false` instead of writing a duplicate snapshot.",
+        "operationId": "createReportRevision",
+        "parameters": [
+          {
+            "description": "Recommended. Reusing the same key with the same request replays the first response; reusing it with a different body returns idempotency_conflict.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ReportRevisionCreated"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Existing revision reused",
+            "headers": {
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ReportRevisionCreated"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Revision created",
+            "headers": {
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ReportContractNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/SaasConflict"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Freeze the current report contract as an immutable revision",
+        "tags": [
+          "Reports"
+        ]
+      }
+    },
+    "/v1/reports/{reportId}/revisions/{revision}": {
+      "get": {
+        "description": "Get one frozen report revision including its stored contract",
+        "operationId": "getReportRevision",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "analysis_completed_at": {
+                          "format": "date-time",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "analysis_generation": {
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "analysis_status": {
+                          "enum": [
+                            "idle",
+                            "queued",
+                            "running",
+                            "completed",
+                            "partial",
+                            "failed",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "artifact_urls": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "html": {
+                              "type": "string"
+                            },
+                            "json": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "json",
+                            "html"
+                          ],
+                          "type": "object"
+                        },
+                        "collected_until": {
+                          "format": "date-time",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "collection_status": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "content_hash": {
+                          "pattern": "^[a-f0-9]{64}$",
+                          "type": "string"
+                        },
+                        "contract": {
+                          "$ref": "#/components/schemas/ReportContractResource"
+                        },
+                        "created_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "execution_id": {
+                          "pattern": "^exe_[a-f0-9]{32}$",
+                          "type": "string"
+                        },
+                        "readiness_status": {
+                          "enum": [
+                            "empty",
+                            "collecting",
+                            "collecting_complete",
+                            "analysis_running",
+                            "complete",
+                            "complete_with_gaps",
+                            "failed",
+                            "cancelled",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "report_id": {
+                          "pattern": "^rpt_[a-f0-9]{32}$",
+                          "type": "string"
+                        },
+                        "revision": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "revision_id": {
+                          "pattern": "^rrev_[a-f0-9]{32}$",
+                          "type": "string"
+                        },
+                        "schema_version": {
+                          "type": "string"
+                        },
+                        "task_id": {
+                          "pattern": "^tsk_[a-f0-9]{32}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "revision_id",
+                        "report_id",
+                        "execution_id",
+                        "revision",
+                        "schema_version",
+                        "content_hash",
+                        "created_at",
+                        "artifact_urls",
+                        "contract"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Report revision",
+            "headers": {
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ReportContractNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Get one frozen report revision including its stored contract",
+        "tags": [
+          "Reports"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "reportId",
+          "required": true,
+          "schema": {
+            "example": "rpt_0123456789abcdef0123456789abcdef",
+            "pattern": "^rpt_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        },
+        {
+          "description": "1-based immutable revision number of this report.",
+          "in": "path",
+          "name": "revision",
+          "required": true,
+          "schema": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        }
+      ]
+    },
+    "/v1/reports/{reportId}/revisions/{revision}/artifact": {
+      "get": {
+        "description": "Serves the stored snapshot as an attachment with `ETag` equal to the revision content hash and `Cache-Control: private, no-cache`. Never recomputed from live tables.",
+        "operationId": "getReportRevisionArtifact",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportContractResource"
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Frozen revision payload",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "example": "private, no-cache",
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "example": "attachment; filename=\"report-rpt_0123456789abcdef0123456789abcdef-r1.json\"",
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Quoted revision content hash.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "example": "nosniff",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ReportContractNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Download a frozen revision artifact",
+        "tags": [
+          "Reports"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "reportId",
+          "required": true,
+          "schema": {
+            "example": "rpt_0123456789abcdef0123456789abcdef",
+            "pattern": "^rpt_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        },
+        {
+          "description": "1-based immutable revision number of this report.",
+          "in": "path",
+          "name": "revision",
+          "required": true,
+          "schema": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "json serves the stored bytes verbatim; html renders the stored contract through the report renderer.",
+          "in": "query",
+          "name": "format",
+          "required": false,
+          "schema": {
+            "default": "json",
+            "enum": [
+              "json",
+              "html"
+            ],
             "type": "string"
           }
         }
@@ -12259,6 +16305,97 @@
           }
         },
         "summary": "Receive execution.partial webhook",
+        "tags": [
+          "Webhooks"
+        ]
+      }
+    },
+    "report.revision.ready": {
+      "post": {
+        "description": "Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.",
+        "operationId": "receiveReportRevisionReadyWebhook",
+        "parameters": [
+          {
+            "description": "Public event type delivered by OneGl.",
+            "in": "header",
+            "name": "X-OneGl-Event",
+            "required": true,
+            "schema": {
+              "const": "report.revision.ready",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable public event ID used for consumer deduplication.",
+            "in": "header",
+            "name": "X-OneGl-Event-Id",
+            "required": true,
+            "schema": {
+              "pattern": "^evt_[a-f0-9]{32}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Webhook envelope/signature version.",
+            "in": "header",
+            "name": "X-OneGl-Webhook-Version",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unix timestamp in seconds used as the first signature input segment.",
+            "in": "header",
+            "name": "X-OneGl-Timestamp",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest.",
+            "in": "header",
+            "name": "X-OneGl-Signature",
+            "required": true,
+            "schema": {
+              "pattern": "^v1=[a-f0-9]{64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "event": {
+                  "value": {
+                    "created_at": "2026-09-17T00:00:00.000Z",
+                    "data": {},
+                    "id": "evt_0123456789abcdef0123456789abcdef",
+                    "occurred_at": "2026-09-17T00:00:00.000Z",
+                    "type": "report.revision.ready"
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/SaasWebhookEvent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Event accepted"
+          },
+          "204": {
+            "description": "Event accepted with no response body"
+          }
+        },
+        "summary": "Receive report.revision.ready webhook",
         "tags": [
           "Webhooks"
         ]

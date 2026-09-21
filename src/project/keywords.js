@@ -38,7 +38,7 @@ export function parseKeywordInput(input) {
 const REVIVE_KEYWORD = `
   INSERT INTO prompts (project_id, prompt, category, source, enabled)
   VALUES ($1, $2, $3, 'manual', true)
-  ON CONFLICT (project_id, prompt_md5) DO UPDATE
+  ON CONFLICT (project_id, prompt_md5) WHERE external_id IS NULL DO UPDATE
     SET updated_at = now(),
         deleted_at = NULL,
         enabled = true,
@@ -46,6 +46,30 @@ const REVIVE_KEYWORD = `
         source = CASE WHEN prompts.source = 'pool' THEN prompts.source ELSE 'manual' END
   RETURNING id, (xmax = 0) AS inserted
 `;
+
+/**
+ * SaaS batches may submit the same question text more than once when each submission is a
+ * separate observation. `external_id` is the only thing that tells those rows apart, so the
+ * upsert key has to include it. prompts_project_prompt_external_key (migration 0023) is the
+ * partial unique index this conflict target infers.
+ */
+const REVIVE_KEYWORD_WITH_EXTERNAL_ID = `
+  INSERT INTO prompts (project_id, prompt, category, source, enabled, external_id)
+  VALUES ($1, $2, $3, 'manual', true, $4)
+  ON CONFLICT (project_id, prompt_md5, external_id) WHERE external_id IS NOT NULL DO UPDATE
+    SET updated_at = now(),
+        deleted_at = NULL,
+        enabled = true,
+        category = COALESCE(EXCLUDED.category, prompts.category),
+        source = CASE WHEN prompts.source = 'pool' THEN prompts.source ELSE 'manual' END
+  RETURNING id, (xmax = 0) AS inserted
+`;
+
+async function reviveKeyword(client, { projectId, keyword, category = null, externalId = null }) {
+  return externalId
+    ? client.query(REVIVE_KEYWORD_WITH_EXTERNAL_ID, [projectId, keyword, category, externalId])
+    : client.query(REVIVE_KEYWORD, [projectId, keyword, category]);
+}
 
 async function writeKeywords(client, { projectId, input, category = null }) {
   const { keywords, duplicates } = parseKeywordInput(input);
@@ -57,7 +81,7 @@ async function writeKeywords(client, { projectId, input, category = null }) {
   let added = 0;
   let revived = 0;
   for (const keyword of keywords) {
-    const result = await client.query(REVIVE_KEYWORD, [projectId, keyword, category]);
+    const result = await reviveKeyword(client, { projectId, keyword, category });
     if (result.rows[0].inserted) added += 1;
     else revived += 1;
     saved.push({ id: Number(result.rows[0].id), keyword, isNew: result.rows[0].inserted });
@@ -70,6 +94,64 @@ async function writeKeywords(client, { projectId, input, category = null }) {
     skipped: keywords.length - saved.length,
     keywords: saved,
   };
+}
+
+/**
+ * Write an already-parsed question list. Unlike {@link writeKeywords} this never de-duplicates
+ * by text: identity is (text, external_id), which is what lets a caller send the same question
+ * once per repetition and still get one result row per observation.
+ *
+ * `entries` is `[{ text, externalId?, category? }]` in caller order. The returned `keywords`
+ * are `[{ id, keyword, externalId, isNew }]` in the same order.
+ */
+export async function writeQuestionEntries(client, { projectId, entries = [] }) {
+  const saved = [];
+  let added = 0;
+  let revived = 0;
+  for (const entry of entries) {
+    const keyword = String(entry?.text ?? "").trim();
+    if (!keyword) continue;
+    const externalId = entry?.externalId == null ? null : String(entry.externalId).trim() || null;
+    const result = await reviveKeyword(client, {
+      projectId,
+      keyword,
+      category: entry?.category ?? null,
+      externalId,
+    });
+    if (result.rows[0].inserted) added += 1;
+    else revived += 1;
+    saved.push({
+      id: Number(result.rows[0].id),
+      keyword,
+      externalId,
+      isNew: Boolean(result.rows[0].inserted),
+    });
+  }
+  return { added, revived, duplicates: 0, skipped: 0, keywords: saved };
+}
+
+/**
+ * Write a question entry list using a caller-owned PostgreSQL transaction.
+ */
+export async function addQuestionEntriesInTransaction(client, args) {
+  return writeQuestionEntries(client, args);
+}
+
+export async function addQuestionEntries(pool, args) {
+  if (typeof pool?.release === "function") return writeQuestionEntries(pool, args);
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await writeQuestionEntries(client, args);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

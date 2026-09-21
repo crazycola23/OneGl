@@ -1,10 +1,16 @@
 import "dotenv/config";
 import { writeFile } from "node:fs/promises";
 import { createPool } from "../src/db/pool.js";
+import { batchDetail } from "../src/db/dashboard.js";
 import { buildBatchReport } from "../src/db/report.js";
 
 /**
  * 导出一个抽样批次的完整数据快照，供生成客户交付用的 HTML 报告使用。
+ *
+ * 快照同时携带 buildBatchReport 的明细（runs/citations/domains，历史字段）与
+ * Dashboard / API 使用的 batchDetail 形状（sources/intelligence）。少了后两者时，
+ * tools/build-report-html.js 无法渲染「AI 搜索品牌与引用情报」整节。
+ *
  * 用法：node tools/export-batch.js <batchId> <输出文件>
  */
 const batchId = Number(process.argv[2] ?? 1);
@@ -12,7 +18,8 @@ const outFile = process.argv[3] ?? `batch-${batchId}.json`;
 
 const pool = createPool();
 try {
-  const report = await buildBatchReport(pool, batchId);
+  const detail = await batchDetail(pool, batchId);
+  const report = detail.report ?? await buildBatchReport(pool, batchId);
 
   const runs = (
     await pool.query(
@@ -86,12 +93,25 @@ try {
 
   await writeFile(
     outFile,
-    JSON.stringify({ report, runs, citations, domains }, null, 2),
-    "utf8",
+    JSON.stringify(
+      {
+        report,
+        runs,
+        citations,
+        domains,
+        // batchDetail 形状：Dashboard / API / build-report-html 都以这两个键为准。
+        sources: detail.sources ?? null,
+        intelligence: detail.intelligence ?? null,
+      },
+      null,
+      2,
+    ),
   );
   console.log(`已导出 ${outFile}`);
   console.log(
-    `runs=${runs.length} citations=${citations.length} domains=${domains.length}`,
+    `runs=${runs.length} citations=${citations.length} domains=${domains.length} `
+      + `引用页=${detail.sources?.articles?.length ?? 0} 引用域=${detail.sources?.domains?.length ?? 0} `
+      + `intelligence=${detail.intelligence ? `v${detail.intelligence.version}` : "缺失"}`,
   );
 } finally {
   await pool.end();

@@ -88,6 +88,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/accounts/{accountId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tenant account alias, i.e. the account_id returned by GET /v1/accounts (the upstream external_id), not an internal key */
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Reclaim a tenant account: soft disable, drop login state, retire its worker
+         * @description Soft delete only: the accounts row is flipped to enabled=false / status=disabled and both the accounts row and the service_account_bindings row are kept, because historical runs are attributed by internal account key and deleting rows would make history untraceable. The account's Playwright storageState files (plaintext and encrypted) are removed from disk, and the resident collection worker for that account is retired by the next 60s account sweep without a process restart. Per-account Redis queues and already-scheduled monitor plans are not deleted: a later plan run for this account fails closed on account status. Idempotent: a repeated call returns 200 with reclaimed=false and storage_state_removed=false. reclaimed_at is sourced from accounts.updated_at because the accounts table has no dedicated reclaim column; it is null when this call changed nothing.
+         */
+        delete: operations["deleteAccountsByAccountId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/accounts/{accountId}/auth-sessions": {
         parameters: {
             query?: never;
@@ -104,6 +127,51 @@ export interface paths {
          * @description Starts an isolated browser session and exposes screenshots/status only. No arbitrary browser-control endpoint is provided.
          */
         post: operations["createAccountsByAccountIdAuthSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/inflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Read whether a tenant account can be reclaimed safely
+         * @description Read-only pre-reclaim gate: no database write, no queue mutation, no worker shutdown. queue counts are the BullMQ job counts of this account's own queue (one queue per account key, default prefix onegl-run-<account_key>); referencing counts the enabled SaaS schedules and the enabled monitoring plans that still list this account in their account_ids, because an enabled plan keeps materializing batches into that account queue after the account is soft-deleted. reclaim_safe is computed server-side and is true only when every one of those counts is 0. Any count that cannot be observed answers 503 queue_unavailable instead of 0: a silently zero queue would be read as permission to reclaim, and reclaiming is irreversible. Note that this covers work already inside Redis plus enabled references only; it does not cover batches that were created but not started yet.
+         */
+        get: operations["getAccountsByAccountIdInflight"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/accounts/{accountId}/reactivate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tenant account alias, i.e. the account_id returned by GET /v1/accounts (the upstream external_id), not an internal key */
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reactivate a reclaimed tenant account
+         * @description Inverse of DELETE /v1/accounts/{accountId}: flips the accounts row to enabled=true / status=login_required / storage_state_present=false and never touches service_account_bindings or the account's other columns. Reactivation is not login restoration: the reclaimed Playwright storageState files are gone for good, so the account answers login_required and has to be scanned in again through POST /v1/accounts/{accountId}/auth-sessions before it can run. It is deliberately not set to healthy, because healthy would mark the account executable without any valid login state. There is no worker operation here: the resident worker comes back on its own, since the collection process re-reads accounts.enabled=true on its 60s account sweep. Idempotent: an account that is already enabled and not disabled is returned unchanged with reactivated=false, and its status is never downgraded to login_required.
+         */
+        post: operations["createAccountsByAccountIdReactivate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -500,6 +568,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/executions/{executionId}/report/contract": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                executionId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get the strictly-typed report contract for an execution
+         * @description Separates collection state, cited-page analysis state and report readiness, and carries no internal OneGl identifiers. Equivalent to GET /v1/reports/{reportId}/contract.
+         */
+        get: operations["getExecutionReportContract"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/executions/{executionId}/results": {
         parameters: {
             query?: never;
@@ -813,6 +903,105 @@ export interface paths {
          * @description Returns status=generating while execution is active. The same report_id becomes status=ready at a terminal execution state.
          */
         get: operations["getReportsByReportId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/reports/{reportId}/contract": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reportId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get the strictly-typed report contract
+         * @description Live (recomputed) contract for the report. Collection, cited-page analysis and readiness are reported separately; `truncated` declares every list cap so a Top-15 cannot be read as a full census.
+         */
+        get: operations["getReportContract"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/reports/{reportId}/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reportId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * List frozen report revisions
+         * @description Newest revision first. Revision rows are immutable: `content_hash` is the sha256 of the canonical JSON payload.
+         */
+        get: operations["listReportRevisions"];
+        put?: never;
+        /**
+         * Freeze the current report contract as an immutable revision
+         * @description Idempotent by content: when the computed content hash equals the latest revision's hash, the existing revision is returned with `created: false` instead of writing a duplicate snapshot.
+         */
+        post: operations["createReportRevision"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/reports/{reportId}/revisions/{revision}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reportId: string;
+                /** @description 1-based immutable revision number of this report. */
+                revision: number;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get one frozen report revision including its stored contract
+         * @description Get one frozen report revision including its stored contract
+         */
+        get: operations["getReportRevision"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/reports/{reportId}/revisions/{revision}/artifact": {
+        parameters: {
+            query?: {
+                /** @description json serves the stored bytes verbatim; html renders the stored contract through the report renderer. */
+                format?: "json" | "html";
+            };
+            header?: never;
+            path: {
+                reportId: string;
+                /** @description 1-based immutable revision number of this report. */
+                revision: number;
+            };
+            cookie?: never;
+        };
+        /**
+         * Download a frozen revision artifact
+         * @description Serves the stored snapshot as an attachment with `ETag` equal to the revision content hash and `Cache-Control: private, no-cache`. Never recomputed from live tables.
+         */
+        get: operations["getReportRevisionArtifact"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1298,6 +1487,26 @@ export interface webhooks {
         patch?: never;
         trace?: never;
     };
+    "report.revision.ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Receive report.revision.ready webhook
+         * @description Receiver-side contract for OneGl SaaS webhooks. Verify X-OneGl-Signature as HMAC-SHA256 over `<X-OneGl-Timestamp>.<raw request body>` using the endpoint signing secret, reject stale timestamps, and deduplicate by X-OneGl-Event-Id before applying side effects.
+         */
+        post: operations["receiveReportRevisionReadyWebhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export interface components {
     schemas: {
@@ -1309,6 +1518,62 @@ export interface components {
              * @enum {string}
              */
             provider: "doubao";
+        };
+        AccountInflightResource: {
+            /** @description Tenant account alias, i.e. the account_id returned by GET /v1/accounts */
+            account_id: string;
+            /** @description BullMQ job counts of this account's own per-account queue */
+            queue: {
+                active: number;
+                /** @description Includes jobs waiting out a retry backoff */
+                delayed: number;
+                waiting: number;
+            };
+            /** @description True only when every queue and referencing count above is 0; an unobservable count answers 503 instead of being reported as 0 */
+            reclaim_safe: boolean;
+            /** @description Enabled SaaS schedules and enabled monitoring plans whose account_ids still list this account */
+            referencing: {
+                /** @description All enabled plans referencing the account, including the plan behind each schedule */
+                enabled_monitor_plans: number;
+                enabled_schedules: number;
+            };
+        };
+        AccountReactivateResource: {
+            account_id: string;
+            /** @description Always true after a successful reactivation; echoed from the row when nothing changed */
+            enabled: boolean;
+            /** @enum {string} */
+            provider: "doubao";
+            /** @description Whether this call actually flipped the account row out of its reclaimed state */
+            reactivated: boolean;
+            /** @description login_required right after a real reactivation, because the reclaimed login state cannot be restored; a no-op call echoes the existing status instead of downgrading it */
+            status: string;
+            /** @description Always false right after a real reactivation: the storageState files were deleted by the reclaim and are not recreated */
+            storage_state_present: boolean;
+        };
+        AccountReclaimResource: {
+            account_id: string;
+            /** @constant */
+            enabled: false;
+            /** @enum {string} */
+            provider: "doubao";
+            /**
+             * @description The accounts column carrying the reclaim timestamp
+             * @constant
+             */
+            reclaim_marked_by: "updated_at";
+            /** @description Whether this call actually flipped the account row */
+            reclaimed: boolean;
+            /**
+             * Format: date-time
+             * @description accounts.updated_at of this reclaim; null when this call changed nothing
+             */
+            reclaimed_at: string | null;
+            /** @constant */
+            status: "disabled";
+            storage_state_files_removed: number;
+            /** @description Whether any on-disk storageState file was deleted */
+            storage_state_removed: boolean;
         };
         AccountResource: {
             account_id?: string;
@@ -1676,6 +1941,8 @@ export interface components {
         ExecutionProgress: {
             completed: number;
             failed: number;
+            /** @description Assignments that will never be collected: skipped work plus failed runs once the execution is terminal. */
+            not_collected: number;
             percent: number;
             remaining: number;
             skipped: number;
@@ -1994,6 +2261,467 @@ export interface components {
             /** @enum {string} */
             status: "ready" | "not_ready";
         };
+        ReportAnalysis: {
+            error?: string | null;
+            /** Format: date-time */
+            finished_at?: string | null;
+            generation: number;
+            /** Format: date-time */
+            queued_at?: string | null;
+            stale: boolean;
+            /** Format: date-time */
+            started_at?: string | null;
+            /**
+             * @description Cited-page content analysis stage. Independent from collection: `collection` can be terminal while this is still `queued`.
+             * @enum {string}
+             */
+            status: "idle" | "queued" | "running" | "completed" | "partial" | "failed";
+        };
+        ReportCollection: {
+            /** Format: date-time */
+            finished_at?: string | null;
+            progress: {
+                completed: number;
+                failed: number;
+                /** @description Assignments that will never produce a collection record: skipped work plus failed runs on a terminal execution. */
+                not_collected: number;
+                skipped: number;
+                total: number;
+            };
+            /** Format: date-time */
+            started_at?: string | null;
+            /** @enum {string} */
+            status: "pending" | "queued" | "running" | "paused" | "completed" | "partial" | "failed" | "cancelled";
+        };
+        ReportContractQuery: {
+            ai_brand_mention_count?: number;
+            ai_brand_mention_rate?: number | null;
+            ai_brand_mentioned_runs: number;
+            brand_evidence_source_count?: number;
+            category?: string | null;
+            citation_count: number;
+            example_answer?: string | null;
+            example_answer_contains_brand?: boolean;
+            prompt?: string | null;
+            top_sources: {
+                citations: number;
+                domain?: string | null;
+                title?: string | null;
+                url?: string | null;
+            }[];
+            unique_source_count?: number;
+            valid_runs: number;
+        };
+        ReportContractResource: {
+            analysis: components["schemas"]["ReportAnalysis"];
+            collection: components["schemas"]["ReportCollection"];
+            execution_id: string;
+            provenance: components["schemas"]["ReportProvenance"];
+            quality: {
+                answer_capture_rate: {
+                    denominator: number;
+                    /** @enum {string} */
+                    kind: "rate" | "count";
+                    label?: string | null;
+                    /** @description False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0. */
+                    measured: boolean;
+                    numerator: number;
+                    value: number | null;
+                };
+                brand_evidence_rate: {
+                    denominator: number;
+                    /** @enum {string} */
+                    kind: "rate" | "count";
+                    label?: string | null;
+                    /** @description False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0. */
+                    measured: boolean;
+                    numerator: number;
+                    value: number | null;
+                };
+                citation_capture_rate: {
+                    denominator: number;
+                    /** @enum {string} */
+                    kind: "rate" | "count";
+                    label?: string | null;
+                    /** @description False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0. */
+                    measured: boolean;
+                    numerator: number;
+                    value: number | null;
+                };
+                citation_evidence_rate: {
+                    denominator: number;
+                    /** @enum {string} */
+                    kind: "rate" | "count";
+                    label?: string | null;
+                    /** @description False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0. */
+                    measured: boolean;
+                    numerator: number;
+                    value: number | null;
+                };
+                collection_gap_rate: {
+                    denominator: number;
+                    /** @enum {string} */
+                    kind: "rate" | "count";
+                    label?: string | null;
+                    /** @description False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0. */
+                    measured: boolean;
+                    numerator: number;
+                    value: number | null;
+                };
+                page_analysis_coverage: {
+                    denominator: number;
+                    /** @enum {string} */
+                    kind: "rate" | "count";
+                    label?: string | null;
+                    /** @description False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0. */
+                    measured: boolean;
+                    numerator: number;
+                    value: number | null;
+                };
+                prompt_brand_coverage: {
+                    denominator: number;
+                    /** @enum {string} */
+                    kind: "rate" | "count";
+                    label?: string | null;
+                    /** @description False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0. */
+                    measured: boolean;
+                    numerator: number;
+                    value: number | null;
+                };
+                run_brand_mention_rate: {
+                    denominator: number;
+                    /** @enum {string} */
+                    kind: "rate" | "count";
+                    label?: string | null;
+                    /** @description False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0. */
+                    measured: boolean;
+                    numerator: number;
+                    value: number | null;
+                };
+                tracked_citation_rate: {
+                    denominator: number;
+                    /** @enum {string} */
+                    kind: "rate" | "count";
+                    label?: string | null;
+                    /** @description False when the denominator is 0. `value: null` plus `measured: false` means 'not measurable', which is different from 0. */
+                    measured: boolean;
+                    numerator: number;
+                    value: number | null;
+                };
+            };
+            queries: components["schemas"]["ReportContractQuery"][];
+            readiness: components["schemas"]["ReportReadiness"];
+            report_id: string;
+            /** @description 0 on the live contract endpoint; >= 1 once frozen as a revision. */
+            revision: number;
+            runs: components["schemas"]["ReportContractRun"][];
+            /** @constant */
+            schema_version: "report-contract-v1";
+            sources: components["schemas"]["ReportContractSource"][];
+            structure: components["schemas"]["ReportContractStructure"];
+            summary: components["schemas"]["ReportContractSummary"];
+            task_id: string;
+            totals: {
+                analyzed_sources?: number;
+                assignments: number;
+                brand_evidence_sources?: number;
+                citations: number;
+                cited_articles?: number;
+                cited_domains?: number;
+                collected_results?: number;
+                failed_runs?: number;
+                not_collected_results?: number;
+                queries?: number;
+                unique_sources: number;
+                valid_runs: number;
+            };
+            truncated: {
+                queries?: {
+                    limit?: number | null;
+                    returned: number;
+                    /** @description True when the underlying query hit its own cap, so the list below is a Top-N and not a census. */
+                    truncated: boolean;
+                };
+                runs?: {
+                    limit?: number | null;
+                    returned: number;
+                    /** @description True when the underlying query hit its own cap, so the list below is a Top-N and not a census. */
+                    truncated: boolean;
+                };
+                sourceArticles?: {
+                    limit?: number | null;
+                    returned: number;
+                    /** @description True when the underlying query hit its own cap, so the list below is a Top-N and not a census. */
+                    truncated: boolean;
+                };
+                sourceDomains?: {
+                    limit?: number | null;
+                    returned: number;
+                    /** @description True when the underlying query hit its own cap, so the list below is a Top-N and not a census. */
+                    truncated: boolean;
+                };
+                sources?: {
+                    limit?: number | null;
+                    returned: number;
+                    /** @description True when the underlying query hit its own cap, so the list below is a Top-N and not a census. */
+                    truncated: boolean;
+                };
+                topArticles?: {
+                    limit?: number | null;
+                    returned: number;
+                    /** @description True when the underlying query hit its own cap, so the list below is a Top-N and not a census. */
+                    truncated: boolean;
+                };
+                topDomains?: {
+                    limit?: number | null;
+                    returned: number;
+                    /** @description True when the underlying query hit its own cap, so the list below is a Top-N and not a census. */
+                    truncated: boolean;
+                };
+                trackedArticles?: {
+                    limit?: number | null;
+                    returned: number;
+                    /** @description True when the underlying query hit its own cap, so the list below is a Top-N and not a census. */
+                    truncated: boolean;
+                };
+            };
+            versions: components["schemas"]["ReportVersions"];
+        };
+        ReportContractRun: {
+            answer_chars?: number | null;
+            attempt?: number | null;
+            brand_mentioned?: boolean | null;
+            captured_citation_count?: number | null;
+            category?: string | null;
+            citation_state?: string | null;
+            conversation_reset?: boolean | null;
+            conversation_reset_confirmed?: boolean | null;
+            error_code?: string | null;
+            expected_citation_count?: number | null;
+            /** Format: date-time */
+            finished_at?: string | null;
+            mention_count?: number | null;
+            question: string | null;
+            question_external_id?: string | null;
+            repetition_count?: number | null;
+            repetition_index?: number | null;
+            result_id?: string | null;
+            /** Format: date-time */
+            started_at?: string | null;
+            /** @enum {string|null} */
+            status: "pending" | "running" | "success" | "partial" | "failed" | null;
+        };
+        ReportContractSource: {
+            average_position?: number | null;
+            canonical_url?: string | null;
+            citation_count: number;
+            domain?: string | null;
+            final_url?: string | null;
+            original_url?: string | null;
+            page?: components["schemas"]["ReportContractSourcePage"] | null;
+            prompt_count: number;
+            prompts: string[];
+            run_count: number;
+            title?: string | null;
+        };
+        ReportContractSourcePage: {
+            author_present?: boolean | null;
+            brand_contexts?: {
+                [key: string]: unknown;
+            }[];
+            brand_detection_version?: string | null;
+            brand_first_mention_position?: number | null;
+            brand_locations?: string[];
+            brand_matched_terms?: string[];
+            brand_mention_count?: number | null;
+            brand_mentioned?: boolean | null;
+            content_excerpt?: string | null;
+            /** @description Provider page-content profile as captured; keys are informational and not part of the stable contract. */
+            content_profile?: {
+                [key: string]: unknown;
+            } | null;
+            faq_heading_count?: number | null;
+            fetch_state?: string | null;
+            h1_count?: number | null;
+            h2_count?: number | null;
+            h3_count?: number | null;
+            list_count?: number | null;
+            modified_at_raw?: string | null;
+            outline?: ({
+                level?: number;
+                text?: string | null;
+            } & {
+                [key: string]: unknown;
+            })[];
+            paragraph_count?: number | null;
+            published_at_raw?: string | null;
+            table_count?: number | null;
+            text_length?: number | null;
+        };
+        ReportContractStructure: {
+            analyzedSources?: number;
+            averageH2Count?: number | null;
+            averageTextLength?: number | null;
+            citedSources?: number;
+            commonStructures?: {
+                count: number;
+                label: string;
+            }[];
+            coverageRate?: number | null;
+            profileTypes?: {
+                count: number;
+                label: string;
+            }[];
+            withAuthorRate?: number | null;
+            withFaqRate?: number | null;
+            withH2Rate?: number | null;
+            withListRate?: number | null;
+            withPublishedDateRate?: number | null;
+            withTableRate?: number | null;
+        } | null;
+        ReportContractSummary: {
+            batch: {
+                /** Format: date-time */
+                aborted_at?: string | null;
+                completed_jobs?: number | null;
+                /** Format: date-time */
+                created_at?: string | null;
+                failed_jobs?: number | null;
+                /** Format: date-time */
+                finished_at?: string | null;
+                name?: string | null;
+                project_name?: string | null;
+                provider?: string | null;
+                /** Format: date-time */
+                queued_at?: string | null;
+                repeats?: number | null;
+                requested_jobs?: number | null;
+                sampling_method?: string | null;
+                skipped_jobs?: number | null;
+                /** Format: date-time */
+                started_at?: string | null;
+                status?: string | null;
+                target_brand?: string | null;
+            };
+            /** @description Per-collector-slot numbers. OneGl's internal account keys are never exposed; `slot` is an opaque label stable within one report. */
+            byAccount: {
+                citations: number;
+                mention_rate?: number | null;
+                mentioned: number;
+                prompts: number;
+                slot: string;
+                valid_runs: number;
+            }[];
+            byCategory: {
+                category?: string | null;
+                mention_rate?: number | null;
+                mentioned: number;
+                valid_runs: number;
+            }[];
+            /** @description Candidate-to-citation factor analysis. Internal identifiers are removed; the remaining statistical keys are documented in docs/CITATION_FACTOR_ANALYSIS.md. */
+            citationFactors?: {
+                [key: string]: unknown;
+            } | null;
+            citations: {
+                articles: number;
+                coverage?: number | null;
+                domains: number;
+                total: number;
+                validRuns?: number;
+            };
+            failures: {
+                error_code?: string | null;
+                runs: number;
+            }[];
+            intelligence?: {
+                attributionNote?: string | null;
+                brandEvidenceSources?: components["schemas"]["ReportContractSource"][];
+                coverage?: {
+                    analysisRate?: number | null;
+                    analyzedSources?: number;
+                    answerValidRuns?: number;
+                    brandEvidenceRate?: number | null;
+                    brandEvidenceSources?: number;
+                    citationEvidenceRate?: number | null;
+                    citationValidRuns?: number;
+                    citedSources?: number;
+                } | null;
+                domains?: {
+                    brand_evidence_sources: number;
+                    citations: number;
+                    domain?: string | null;
+                    prompt_count: number;
+                    sources: number;
+                }[];
+                version?: number | null;
+            };
+            prompts: {
+                mentionCoverage?: number | null;
+                mentioned: number;
+                total: number;
+            };
+            runs: {
+                assignmentsRun: number;
+                failed: number;
+                mentionRate?: number | null;
+                mentioned: number;
+                partial: number;
+                unconfirmedReset?: number;
+                valid: number;
+            };
+            sourceArticles?: {
+                canonical_url?: string | null;
+                citations?: number;
+                domain?: string | null;
+                is_tracked?: boolean | null;
+                prompts?: number | null;
+                runs?: number | null;
+                title?: string | null;
+            }[];
+            sourceDomains?: {
+                articles?: number | null;
+                citations?: number;
+                domain?: string | null;
+                prompts?: number | null;
+                runs?: number | null;
+            }[];
+            sourceTotals?: {
+                articles: number;
+                citations: number;
+                domains: number;
+            };
+            topArticles: {
+                canonical_url?: string | null;
+                citations: number;
+                domain?: string | null;
+                runs: number;
+                title?: string | null;
+            }[];
+            topDomains: {
+                articles: number;
+                citations: number;
+                domain?: string | null;
+                runs: number;
+            }[];
+            tracked: {
+                articles: {
+                    account_count?: number;
+                    canonical_url?: string | null;
+                    citations: number;
+                    domain?: string | null;
+                    /** Format: date-time */
+                    first_seen_at?: string | null;
+                    /** Format: date-time */
+                    last_seen_at?: string | null;
+                    prompts: number;
+                    runs: number;
+                    title?: string | null;
+                }[];
+                citationRate?: number | null;
+                cited: number;
+                total: number;
+            };
+        };
         ReportListItem: {
             /** Format: date-time */
             created_at: string;
@@ -2020,7 +2748,31 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        ReportProvenance: {
+            /** @constant */
+            contract_version: "report-contract-v1";
+            /** Format: date-time */
+            generated_at: string;
+            /** @constant */
+            provider: "doubao_web";
+            /** @constant */
+            source: "onegl";
+        };
+        ReportReadiness: {
+            /** @constant */
+            explainable: true;
+            notes: string[];
+            /**
+             * @description Derived from collection *and* analysis. `complete` is only reachable once cited-page analysis has finished for the current collection.
+             * @enum {string}
+             */
+            status: "empty" | "collecting" | "collecting_complete" | "analysis_running" | "complete" | "complete_with_gaps" | "failed" | "cancelled";
+        };
         ReportResource: {
+            analysis: components["schemas"]["ReportAnalysis"];
+            collection: components["schemas"]["ReportCollection"];
+            /** @example /v1/reports/rpt_0123456789abcdef0123456789abcdef/contract */
+            contract_url?: string;
             /** Format: date-time */
             created_at: string;
             execution_id: string;
@@ -2029,6 +2781,7 @@ export interface components {
             intelligence?: {
                 [key: string]: unknown;
             } | null;
+            readiness: components["schemas"]["ReportReadiness"];
             report_id: string;
             report_url: string;
             sources?: {
@@ -2040,19 +2793,67 @@ export interface components {
                 [key: string]: unknown;
             } | null;
             task_id: string;
+            versions: components["schemas"]["ReportVersions"];
+        };
+        ReportRevisionCreated: components["schemas"]["ReportRevisionResource"] & {
+            contract: components["schemas"]["ReportContractResource"];
+            created: boolean;
+            /** @description True when the computed content hash matched the latest revision, so no new row was written. */
+            replayed: boolean;
+        };
+        ReportRevisionResource: {
+            /** Format: date-time */
+            analysis_completed_at?: string | null;
+            analysis_generation?: number | null;
+            /** @enum {string|null} */
+            analysis_status?: "idle" | "queued" | "running" | "completed" | "partial" | "failed" | null;
+            artifact_urls: {
+                html: string;
+                json: string;
+            };
+            /** Format: date-time */
+            collected_until?: string | null;
+            collection_status?: string | null;
+            content_hash: string;
+            /** Format: date-time */
+            created_at: string;
+            execution_id: string;
+            /** @enum {string|null} */
+            readiness_status?: "empty" | "collecting" | "collecting_complete" | "analysis_running" | "complete" | "complete_with_gaps" | "failed" | "cancelled" | null;
+            report_id: string;
+            revision: number;
+            revision_id: string;
+            schema_version: string;
+            task_id?: string;
+        };
+        ReportVersions: {
+            /** @description Version of the cited-page intelligence producer, or null when analysis has not produced a payload yet. */
+            intelligence?: number | null;
+            renderer: string;
+            /** @constant */
+            schema: "report-contract-v1";
+            summary: number;
         };
         ResultListItem: {
+            /** @enum {string} */
+            assignment_status: "not_started" | "running" | "collected" | "not_collected" | "cancelled";
             brand_mentioned?: boolean | null;
+            execution_id: string;
             /** Format: date-time */
             finished_at?: string | null;
             mention_count?: number | null;
             /** @enum {string} */
             platform: "doubao";
             question: string;
+            question_external_id?: string | null;
+            repetition_count?: number | null;
+            repetition_index?: number | null;
             result_id: string;
             result_url: string;
             /** @enum {string} */
             status: "pending" | "running" | "success" | "partial" | "failed";
+            task_id: string;
+            terminal_reason?: components["schemas"]["TerminalReason"] | null;
         };
         ResultResource: {
             answer?: {
@@ -2060,6 +2861,8 @@ export interface components {
                 mention_count: number | null;
                 text: string | null;
             };
+            /** @enum {string} */
+            assignment_status: "not_started" | "running" | "collected" | "not_collected" | "cancelled";
             citations: components["schemas"]["CitationResource"][];
             execution_id: string;
             /** Format: date-time */
@@ -2067,12 +2870,16 @@ export interface components {
             /** @enum {string} */
             platform: "doubao";
             question: string;
+            question_external_id?: string | null;
+            repetition_count?: number | null;
+            repetition_index?: number | null;
             result_id: string;
             /** Format: date-time */
             started_at?: string | null;
             /** @enum {string} */
             status: "pending" | "running" | "success" | "partial" | "failed";
             task_id: string;
+            terminal_reason?: components["schemas"]["TerminalReason"] | null;
         };
         RevokedResource: {
             /** @constant */
@@ -2125,7 +2932,7 @@ export interface components {
             /** Format: date-time */
             occurred_at: string;
             /** @enum {string} */
-            type: "execution.completed" | "execution.partial" | "execution.failed" | "execution.cancelled" | "account.action_required" | "account.ready" | "webhook.test";
+            type: "execution.completed" | "execution.partial" | "execution.failed" | "execution.cancelled" | "report.revision.ready" | "account.action_required" | "account.ready" | "webhook.test";
         };
         ScheduleDeleteResource: {
             /** @constant */
@@ -2197,7 +3004,8 @@ export interface components {
              *     ]
              */
             platforms: "doubao"[];
-            questions: string[];
+            /** @description Either plain strings (legacy, de-duplicated by text) or per-observation objects. Entries carrying `external_id` are never de-duplicated by text, so N questions x R repetitions can be submitted as N*R rows. `external_id` requires `sampling.repeats` to stay 1. */
+            questions: (string | components["schemas"]["TaskQuestionEntry"])[];
             sampling?: components["schemas"]["TaskSamplingInput"];
             target_brand?: string | null;
         };
@@ -2211,6 +3019,15 @@ export interface components {
             sampling?: components["schemas"]["TaskSamplingInput"];
             target_brand?: string | null;
         };
+        TaskQuestionEntry: {
+            category?: string | null;
+            /** @description Caller-owned stable id for this single observation. When present, identical texts are kept apart. */
+            external_id?: string | null;
+            repetition_count?: number | null;
+            repetition_index?: number | null;
+            /** @description Question asked to the provider. */
+            text: string;
+        };
         TaskResource: {
             account_ids: string[];
             /** Format: date-time */
@@ -2220,6 +3037,15 @@ export interface components {
             latest_execution_id?: string | null;
             name: string;
             platforms: string[];
+            /** @description Echo of the submitted question entries, in caller order. */
+            question_entries?: {
+                category?: string | null;
+                external_id?: string | null;
+                question?: string;
+                repetition_count?: number | null;
+                repetition_index?: number | null;
+                text: string;
+            }[];
             questions: string[];
             revision: number;
             sampling: components["schemas"]["TaskSampling"];
@@ -2324,6 +3150,17 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        TerminalReason: {
+            /**
+             * @description Stable reason code. Sourced from the collector run error when one exists, otherwise from the batch terminal cause.
+             * @example collection_failed
+             * @example execution_cancelled
+             * @example assignment_skipped
+             * @example account_access_restricted
+             */
+            code: string;
+            message: string | null;
+        };
         WebhookCreate: {
             description?: string | null;
             /**
@@ -2417,6 +3254,19 @@ export interface components {
             };
             content: {
                 "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description Report or revision was not found for this tenant */
+        ReportContractNotFound: {
+            headers: {
+                "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["SaasError"];
             };
         };
         /** @description Invalid SaaS API request */
@@ -2677,6 +3527,54 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    deleteAccountsByAccountId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tenant account alias, i.e. the account_id returned by GET /v1/accounts (the upstream external_id), not an internal key */
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Account reclaim result */
+            200: {
+                headers: {
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AccountReclaimResource"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     createAccountsByAccountIdAuthSessions: {
         parameters: {
             query?: never;
@@ -2710,6 +3608,101 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getAccountsByAccountIdInflight: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Account in-flight state */
+            200: {
+                headers: {
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AccountInflightResource"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createAccountsByAccountIdReactivate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tenant account alias, i.e. the account_id returned by GET /v1/accounts (the upstream external_id), not an internal key */
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Account reactivation result */
+            200: {
+                headers: {
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AccountReactivateResource"];
+                    };
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -3707,6 +4700,53 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    getExecutionReportContract: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                executionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Report contract */
+            200: {
+                headers: {
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ReportContractResource"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["ReportContractNotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     getExecutionsByExecutionIdResults: {
         parameters: {
             query?: {
@@ -4638,6 +5678,302 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["SaasNotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getReportContract: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reportId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Report contract */
+            200: {
+                headers: {
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ReportContractResource"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["ReportContractNotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listReportRevisions: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque next_cursor returned by the previous page. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                reportId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Report revisions */
+            200: {
+                headers: {
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ReportRevisionResource"][];
+                        meta: components["schemas"]["PageMeta"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["ReportContractNotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createReportRevision: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Recommended. Reusing the same key with the same request replays the first response; reusing it with a different body returns idempotency_conflict. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                reportId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Existing revision reused */
+            200: {
+                headers: {
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ReportRevisionCreated"];
+                    };
+                };
+            };
+            /** @description Revision created */
+            201: {
+                headers: {
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ReportRevisionCreated"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["ReportContractNotFound"];
+            409: components["responses"]["SaasConflict"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getReportRevision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reportId: string;
+                /** @description 1-based immutable revision number of this report. */
+                revision: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Report revision */
+            200: {
+                headers: {
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            /** Format: date-time */
+                            analysis_completed_at?: string | null;
+                            analysis_generation?: number | null;
+                            /** @enum {string|null} */
+                            analysis_status?: "idle" | "queued" | "running" | "completed" | "partial" | "failed" | null;
+                            artifact_urls: {
+                                html: string;
+                                json: string;
+                            };
+                            /** Format: date-time */
+                            collected_until?: string | null;
+                            collection_status?: string | null;
+                            content_hash: string;
+                            contract: components["schemas"]["ReportContractResource"];
+                            /** Format: date-time */
+                            created_at: string;
+                            execution_id: string;
+                            /** @enum {string|null} */
+                            readiness_status?: "empty" | "collecting" | "collecting_complete" | "analysis_running" | "complete" | "complete_with_gaps" | "failed" | "cancelled" | null;
+                            report_id: string;
+                            revision: number;
+                            revision_id: string;
+                            schema_version: string;
+                            task_id?: string;
+                        };
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["ReportContractNotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getReportRevisionArtifact: {
+        parameters: {
+            query?: {
+                /** @description json serves the stored bytes verbatim; html renders the stored contract through the report renderer. */
+                format?: "json" | "html";
+            };
+            header?: never;
+            path: {
+                reportId: string;
+                /** @description 1-based immutable revision number of this report. */
+                revision: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Frozen revision payload */
+            200: {
+                headers: {
+                    "Cache-Control"?: string;
+                    "Content-Disposition"?: string;
+                    /** @description Quoted revision content hash. */
+                    ETag?: string;
+                    "X-Content-Type-Options"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportContractResource"];
+                    "text/html": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["ReportContractNotFound"];
             /** @description API request rate limit exceeded. */
             429: {
                 headers: {
@@ -6109,6 +7445,46 @@ export interface operations {
             header: {
                 /** @description Public event type delivered by OneGl. */
                 "X-OneGl-Event": "execution.partial";
+                /** @description Stable public event ID used for consumer deduplication. */
+                "X-OneGl-Event-Id": string;
+                /** @description Webhook envelope/signature version. */
+                "X-OneGl-Webhook-Version": "1";
+                /** @description Unix timestamp in seconds used as the first signature input segment. */
+                "X-OneGl-Timestamp": string;
+                /** @description `v1=` followed by the lowercase hexadecimal HMAC-SHA256 digest. */
+                "X-OneGl-Signature": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaasWebhookEvent"];
+            };
+        };
+        responses: {
+            /** @description Event accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Event accepted with no response body */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    receiveReportRevisionReadyWebhook: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Public event type delivered by OneGl. */
+                "X-OneGl-Event": "report.revision.ready";
                 /** @description Stable public event ID used for consumer deduplication. */
                 "X-OneGl-Event-Id": string;
                 /** @description Webhook envelope/signature version. */

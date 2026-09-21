@@ -8,6 +8,7 @@ const IDEMPOTENT_POST_PATHS = [
   /^\/v1\/tasks\/tsk_[a-f0-9]+\/clone$/,
   /^\/v1\/tasks\/tsk_[a-f0-9]+\/executions$/,
   /^\/v1\/tasks\/tsk_[a-f0-9]+\/schedules$/,
+  /^\/v1\/reports\/rpt_[a-f0-9]+\/revisions$/,
 ];
 
 function canonicalize(value) {

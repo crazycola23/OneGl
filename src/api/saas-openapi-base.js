@@ -396,6 +396,7 @@ export function applySaasOpenApi(document) {
             "execution.partial",
             "execution.failed",
             "execution.cancelled",
+            "report.revision.ready",
             "account.action_required",
             "account.ready",
             "webhook.test",

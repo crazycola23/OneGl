@@ -257,6 +257,49 @@ export const openApiDocument = {
         responses: { 201: jsonResponse("Account binding") },
       },
     },
+    "/v1/accounts/{accountId}": {
+      parameters: [
+        {
+          name: "accountId",
+          in: "path",
+          required: true,
+          description: "Tenant account alias, i.e. the account_id returned by GET /v1/accounts (the upstream external_id), not an internal key",
+          schema: { type: "string", minLength: 1 },
+        },
+      ],
+      delete: {
+        summary: "Reclaim a tenant account: soft disable, drop login state, retire its worker",
+        description:
+          "Soft delete only: the accounts row is flipped to enabled=false / status=disabled and both the accounts row and the service_account_bindings row are kept, because historical runs are attributed by internal account key and deleting rows would make history untraceable. The account's Playwright storageState files (plaintext and encrypted) are removed from disk, and the resident collection worker for that account is retired by the next 60s account sweep without a process restart. Per-account Redis queues and already-scheduled monitor plans are not deleted: a later plan run for this account fails closed on account status. Idempotent: a repeated call returns 200 with reclaimed=false and storage_state_removed=false. reclaimed_at is sourced from accounts.updated_at because the accounts table has no dedicated reclaim column; it is null when this call changed nothing.",
+        responses: { 200: jsonResponse("Account reclaim result") },
+      },
+    },
+    "/v1/accounts/{accountId}/reactivate": {
+      parameters: [
+        {
+          name: "accountId",
+          in: "path",
+          required: true,
+          description: "Tenant account alias, i.e. the account_id returned by GET /v1/accounts (the upstream external_id), not an internal key",
+          schema: { type: "string", minLength: 1 },
+        },
+      ],
+      post: {
+        summary: "Reactivate a reclaimed tenant account",
+        description:
+          "Inverse of DELETE /v1/accounts/{accountId}: flips the accounts row to enabled=true / status=login_required / storage_state_present=false and never touches service_account_bindings or the account's other columns. Reactivation is not login restoration: the reclaimed Playwright storageState files are gone for good, so the account answers login_required and has to be scanned in again through POST /v1/accounts/{accountId}/auth-sessions before it can run. It is deliberately not set to healthy, because healthy would mark the account executable without any valid login state. There is no worker operation here: the resident worker comes back on its own, since the collection process re-reads accounts.enabled=true on its 60s account sweep. Idempotent: an account that is already enabled and not disabled is returned unchanged with reactivated=false, and its status is never downgraded to login_required.",
+        responses: { 200: jsonResponse("Account reactivation result") },
+      },
+    },
+    "/v1/accounts/{accountId}/inflight": {
+      parameters: [{ name: "accountId", in: "path", required: true, schema: { type: "string", minLength: 1 } }],
+      get: {
+        summary: "Read whether a tenant account can be reclaimed safely",
+        description:
+          "Read-only pre-reclaim gate: no database write, no queue mutation, no worker shutdown. queue counts are the BullMQ job counts of this account's own queue (one queue per account key, default prefix onegl-run-<account_key>); referencing counts the enabled SaaS schedules and the enabled monitoring plans that still list this account in their account_ids, because an enabled plan keeps materializing batches into that account queue after the account is soft-deleted. reclaim_safe is computed server-side and is true only when every one of those counts is 0. Any count that cannot be observed answers 503 queue_unavailable instead of 0: a silently zero queue would be read as permission to reclaim, and reclaiming is irreversible. Note that this covers work already inside Redis plus enabled references only; it does not cover batches that were created but not started yet.",
+        responses: { 200: jsonResponse("Account in-flight state") },
+      },
+    },
     "/v1/accounts/{accountId}/auth-sessions": {
       parameters: [{ name: "accountId", in: "path", required: true, schema: { type: "string" } }],
       post: {

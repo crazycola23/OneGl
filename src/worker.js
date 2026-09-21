@@ -15,6 +15,7 @@ import {
   recordAccountSuccess,
   safetyConfig,
 } from "./accounts/safety.js";
+import { reclaimStaleAccountWorkers } from "./accounts/worker-reconcile.js";
 import { launchBrowserSession } from "./browser.js";
 import {
   brandRulesFromConfig,
@@ -525,6 +526,18 @@ async function startWorkerFor(accountKey) {
   log({ event: "worker-started", queue: name, account_key: accountKey });
 }
 
+/** 与 startWorkerFor 对称：软删的账号必须能下线，否则常驻 worker 会带着已回收的登录态继续采集。 */
+async function stopWorkerFor(accountKey) {
+  const worker = workers.get(accountKey);
+  if (!worker) return;
+  // 先摘 map 再 close：close 要等在跑的任务收尾，期间这个 key 不该被重复停止或重新启动。
+  workers.delete(accountKey);
+  await worker.close().catch(() => undefined);
+  await closeSession(accountKey);
+  // Redis 队列 onegl-run-<key> 有意保留：删它等于丢弃未完成任务，需要单独的操作窗口。
+  log({ event: "worker-stopped", queue: accountQueueName(accountKey), account_key: accountKey });
+}
+
 function runSourceIntelligenceChild(batchId) {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -671,6 +684,9 @@ async function discoverAccounts() {
     await startWorkerFor(row.account_key);
   }
   listeningAccounts = rows.map((row) => row.account_key);
+  // 停线放在 listeningAccounts 刷新之后：心跳立刻反映账号已下线，慢 close 也不拖住新账号接入。
+  const stopped = await reclaimStaleAccountWorkers(workers.keys(), listeningAccounts, stopWorkerFor);
+  if (stopped.length) log({ event: "accounts-reclaimed", account_keys: stopped.join(",") });
   return listeningAccounts;
 }
 
