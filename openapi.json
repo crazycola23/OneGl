@@ -4325,6 +4325,18 @@
               "null"
             ]
           },
+          "login_state": {
+            "description": "Whether this run was observed from a signed-in account or the anonymous surface.",
+            "enum": [
+              "account",
+              "anonymous",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "mention_count": {
             "minimum": 0,
             "type": [
@@ -5582,6 +5594,20 @@
             "format": "date-time",
             "type": "string"
           },
+          "login_states": {
+            "description": "Observation surfaces that contributed to this report. Two entries mean the rates blend signed-out and account samples.",
+            "items": {
+              "enum": [
+                "account",
+                "anonymous"
+              ],
+              "type": "string"
+            },
+            "maxItems": 2,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
           "provider": {
             "enum": [
               "doubao_web",
@@ -5596,6 +5622,7 @@
         },
         "required": [
           "provider",
+          "login_states",
           "contract_version",
           "generated_at",
           "source"

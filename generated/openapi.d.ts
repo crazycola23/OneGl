@@ -2500,6 +2500,11 @@ export interface components {
             expected_citation_count?: number | null;
             /** Format: date-time */
             finished_at?: string | null;
+            /**
+             * @description Whether this run was observed from a signed-in account or the anonymous surface.
+             * @enum {string|null}
+             */
+            login_state?: "account" | "anonymous" | null;
             mention_count?: number | null;
             question: string | null;
             question_external_id?: string | null;
@@ -2753,6 +2758,8 @@ export interface components {
             contract_version: "report-contract-v1";
             /** Format: date-time */
             generated_at: string;
+            /** @description Observation surfaces that contributed to this report. Two entries mean the rates blend signed-out and account samples. */
+            login_states: ("account" | "anonymous")[];
             /** @enum {string} */
             provider: "doubao_web" | "qianwen_web";
             /** @constant */

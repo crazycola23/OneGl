@@ -60,12 +60,12 @@ const RUN_UPSERT = `
     local_run_id, artifact_path,
     sampling_batch_id, account_key, conversation_reset_confirmed,
     brand_mentioned, mention_count, first_mention_position, matched_terms, brand_detection_version,
-    run_token, job_id, attempt
+    run_token, job_id, attempt, login_state
   )
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
           $11, $12, $13, $14, $15, $16::jsonb, $17, $18,
           $19, $20, $21, $22, $23, $24, $25::jsonb, $26,
-          $27, $28, $29)
+          $27, $28, $29, $30)
   ON CONFLICT (local_run_id) DO UPDATE
     SET prompt_id = EXCLUDED.prompt_id,
         provider = EXCLUDED.provider,
@@ -87,6 +87,7 @@ const RUN_UPSERT = `
         sampling_batch_id = EXCLUDED.sampling_batch_id,
         account_key = EXCLUDED.account_key,
         conversation_reset_confirmed = EXCLUDED.conversation_reset_confirmed,
+        login_state = EXCLUDED.login_state,
         brand_mentioned = EXCLUDED.brand_mentioned,
         mention_count = EXCLUDED.mention_count,
         first_mention_position = EXCLUDED.first_mention_position,
@@ -312,6 +313,10 @@ export async function persistRun({
       runToken ?? run?.runToken ?? null,
       jobId ?? run?.jobId ?? null,
       attempt ?? run?.attempt ?? 1,
+      // 'account' is the safe default: a run that never declared its surface was collected the
+      // way OneGl has always worked, and silently labelling it anonymous would invent a
+      // partition that was never measured.
+      run?.loginState === "anonymous" ? "anonymous" : "account",
     ]);
     const runId = runResult.rows[0].id;
 

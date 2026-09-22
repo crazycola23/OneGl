@@ -289,6 +289,9 @@ function contractRunRow(row = {}, identity = null) {
     expected_citation_count: nullableNumber(row.expected_citation_count),
     captured_citation_count: nullableNumber(row.captured_citation_count),
     citation_state: text(row.citation_state),
+    // Exposed per run so a consumer can never merge an anonymous-surface sample into an
+    // account-surface rate without seeing that it did.
+    login_state: text(row.login_state) ?? "account",
     conversation_reset: row.conversation_reset == null ? null : Boolean(row.conversation_reset),
     conversation_reset_confirmed: row.conversation_reset_confirmed == null
       ? null
@@ -579,6 +582,10 @@ export function buildReportContract({ detail, execution = null, report = {}, rev
     },
     provenance: {
       provider: reportContractProvider(batch),
+      // A report declares which observation surfaces contributed. One element is the normal
+      // case; two means the rates below blend signed-out and account samples, which is the
+      // thing a consumer must not do silently.
+      login_states: [...new Set(runs.map((row) => row.login_state ?? "account"))].sort(),
       contract_version: REPORT_CONTRACT_SCHEMA_VERSION,
       generated_at: generatedAt ?? new Date().toISOString(),
       source: REPORT_CONTRACT_SOURCE,

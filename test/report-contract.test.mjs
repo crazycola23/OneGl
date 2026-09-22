@@ -520,3 +520,21 @@ test("the OpenAPI provenance enum cannot promise a provenance the producer canno
   assert.equal(provider.const, undefined, "provenance must not be pinned to one platform");
   assert.ok(provider.enum.includes("qianwen_web"));
 });
+
+test("a report declares which observation surfaces contributed to it", () => {
+  const execution = { status: "completed", started_at: null, finished_at: null };
+
+  const accountOnly = buildReportContract({ detail: baseDetail(), execution, report: {} });
+  assert.deepEqual(accountOnly.provenance.login_states, ["account"],
+    "runs predating the surface column are account runs, not unknown ones");
+  assert.equal(accountOnly.runs[0].login_state, "account");
+
+  const mixed = baseDetail();
+  mixed.runs = [{ ...runRow(9), login_state: "anonymous" }, ...mixed.runs];
+  const blended = buildReportContract({ detail: mixed, execution, report: {} });
+  assert.deepEqual(
+    blended.provenance.login_states.slice().sort(),
+    ["account", "anonymous"],
+    "blending signed-out and account samples must be visible in provenance, not silently averaged",
+  );
+});

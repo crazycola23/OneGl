@@ -290,6 +290,9 @@ export async function runOnePrompt({
   const jobId = context.jobId ?? null;
   const attempt = Number.isInteger(context.attempt) && context.attempt > 0 ? context.attempt : 1;
   const provider = getProviderAdapter(context.provider ?? config?.provider ?? "doubao");
+  // The observation surface comes from what the adapter declares, not from what a driver
+  // happened to report: an adapter that needs no stored session cannot produce an account run.
+  const loginState = provider.requiresStoredAuth === false ? "anonymous" : "account";
 
   const replay = await replayPendingPersistence({
     store,
@@ -323,6 +326,7 @@ export async function runOnePrompt({
     provider: provider.provider,
     model: provider.model,
     providerAccess: provider.access,
+    loginState,
     modelVersion: null,
   });
   if (validation) await store.updateRun(run.id, { validation });

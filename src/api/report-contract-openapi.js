@@ -107,10 +107,18 @@ const reportContractSchemas = {
 
   ReportProvenance: object({
     provider: { type: "string", enum: reportContractProviders() },
+    login_states: {
+      type: "array",
+      minItems: 1,
+      maxItems: 2,
+      uniqueItems: true,
+      items: { type: "string", enum: ["account", "anonymous"] },
+      description: "Observation surfaces that contributed to this report. Two entries mean the rates blend signed-out and account samples.",
+    },
     contract_version: { type: "string", const: "report-contract-v1" },
     generated_at: { type: "string", format: "date-time" },
     source: { type: "string", const: "onegl" },
-  }, { required: ["provider", "contract_version", "generated_at", "source"] }),
+  }, { required: ["provider", "login_states", "contract_version", "generated_at", "source"] }),
 
   ReportCollection: object({
     status: { type: "string", enum: ["pending", "queued", "running", "paused", "completed", "partial", "failed", "cancelled"] },
@@ -372,6 +380,11 @@ const reportContractSchemas = {
     expected_citation_count: nullableCount,
     captured_citation_count: nullableCount,
     citation_state: nullableString,
+    login_state: {
+      type: ["string", "null"],
+      enum: ["account", "anonymous", null],
+      description: "Whether this run was observed from a signed-in account or the anonymous surface.",
+    },
     conversation_reset: { type: ["boolean", "null"] },
     conversation_reset_confirmed: { type: ["boolean", "null"] },
     error_code: nullableString,
