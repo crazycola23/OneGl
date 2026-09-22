@@ -1,3 +1,5 @@
+import { reportContractProviders } from "../reporting/report-contract.js";
+
 /**
  * OpenAPI applier for the typed report contract, report revisions and the batch question
  * identity fields. Runs after `applySaasOpenApi` (so it can extend the SaaS resources
@@ -104,7 +106,7 @@ const reportContractSchemas = {
   }, { required: ["schema", "summary", "renderer"] }),
 
   ReportProvenance: object({
-    provider: { type: "string", const: "doubao_web" },
+    provider: { type: "string", enum: reportContractProviders() },
     contract_version: { type: "string", const: "report-contract-v1" },
     generated_at: { type: "string", format: "date-time" },
     source: { type: "string", const: "onegl" },

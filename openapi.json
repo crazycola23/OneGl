@@ -5583,7 +5583,10 @@
             "type": "string"
           },
           "provider": {
-            "const": "doubao_web",
+            "enum": [
+              "doubao_web",
+              "qianwen_web"
+            ],
             "type": "string"
           },
           "source": {

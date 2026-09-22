@@ -7,7 +7,9 @@ import {
   contractToRenderDetail,
   REPORT_CONTRACT_LIMITS,
   REPORT_CONTRACT_SCHEMA_VERSION,
+  reportContractProviders,
 } from "../src/reporting/report-contract.js";
+import { buildOpenApiDocument } from "../src/api/build-openapi.js";
 
 /** Every key the public contract must never emit, taken from the module's own denylist. */
 const FORBIDDEN_KEYS = [
@@ -90,7 +92,8 @@ function baseDetail(overrides = {}) {
       batch: {
         id: 42,
         name: "品牌监测批次",
-        provider: "doubao_web",
+        // sampling_batches.provider 存的是平台 id（"doubao"），不是出处标签。
+        provider: "doubao",
         status: "completed",
         sampling_method: "stratified",
         repeats: 1,
@@ -495,4 +498,25 @@ test("the content hash ignores the volatile revision and generated_at fields", (
   const changedIntelligence = structuredClone(base);
   changedIntelligence.summary.intelligence.brandEvidenceSources = [];
   assert.notEqual(contractContentHash(first), contractContentHash(changedIntelligence));
+});
+
+test("report provenance names the platform that actually produced the report", () => {
+  const execution = { status: "completed", started_at: null, finished_at: null };
+  const doubao = buildReportContract({ detail: baseDetail(), execution, report: {} });
+  // 已发布的 v1 取值必须保持不变，否则现有消费者读到的出处会漂移。
+  assert.equal(doubao.provenance.provider, "doubao_web");
+
+  const qianwenDetail = baseDetail();
+  qianwenDetail.report.batch.provider = "qianwen";
+  const qianwen = buildReportContract({ detail: qianwenDetail, execution, report: {} });
+  assert.equal(qianwen.provenance.provider, "qianwen_web");
+  assert.notEqual(qianwen.provenance.provider, doubao.provenance.provider);
+});
+
+test("the OpenAPI provenance enum cannot promise a provenance the producer cannot emit", () => {
+  const document = buildOpenApiDocument();
+  const provider = document.components.schemas.ReportProvenance.properties.provider;
+  assert.deepEqual(provider.enum, reportContractProviders());
+  assert.equal(provider.const, undefined, "provenance must not be pinned to one platform");
+  assert.ok(provider.enum.includes("qianwen_web"));
 });

@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 
+import { supportedProviderIds } from "../providers/index.js";
+
 /**
  * Public, strictly-typed report contract.
  *
@@ -20,6 +22,28 @@ export const REPORT_CONTRACT_PROVIDER = "doubao_web";
 export const REPORT_CONTRACT_SOURCE = "onegl";
 export const REPORT_CONTRACT_SUMMARY_VERSION = 1;
 export const REPORT_CONTRACT_RENDERER_VERSION = "optimization-html-v1";
+
+/**
+ * Which platform produced this report.
+ *
+ * The published v1 value for Doubao is "doubao_web", so a web surface is named
+ * `<provider>_web` and existing consumers keep reading the same string. Hardcoding it instead
+ * would stamp a Qianwen report as Doubao output, which is a provenance error rather than a
+ * formatting one.
+ */
+export function reportContractProvider(batch = {}) {
+  const provider = text(batch.provider);
+  return provider ? `${provider}_web` : REPORT_CONTRACT_PROVIDER;
+}
+
+/**
+ * Every value reportContractProvider can emit. The OpenAPI provenance schema reads this list,
+ * so the contract cannot promise a provenance the producer cannot generate - nor pin reports
+ * to one platform while the collector serves several.
+ */
+export function reportContractProviders() {
+  return supportedProviderIds().map((provider) => `${provider}_web`).sort();
+}
 
 /** Caps owned by the underlying queries; a consumer must not read a capped list as a census. */
 export const REPORT_CONTRACT_LIMITS = Object.freeze({
@@ -554,7 +578,7 @@ export function buildReportContract({ detail, execution = null, report = {}, rev
       renderer: REPORT_CONTRACT_RENDERER_VERSION,
     },
     provenance: {
-      provider: REPORT_CONTRACT_PROVIDER,
+      provider: reportContractProvider(batch),
       contract_version: REPORT_CONTRACT_SCHEMA_VERSION,
       generated_at: generatedAt ?? new Date().toISOString(),
       source: REPORT_CONTRACT_SOURCE,

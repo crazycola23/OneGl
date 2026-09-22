@@ -2753,8 +2753,8 @@ export interface components {
             contract_version: "report-contract-v1";
             /** Format: date-time */
             generated_at: string;
-            /** @constant */
-            provider: "doubao_web";
+            /** @enum {string} */
+            provider: "doubao_web" | "qianwen_web";
             /** @constant */
             source: "onegl";
         };
