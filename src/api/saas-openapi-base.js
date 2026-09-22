@@ -1,3 +1,4 @@
+import { defaultProviderId as DEFAULT_PROVIDER, supportedProviderIds as PROVIDERS } from "../providers/index.js";
 const commonHeaders = {
   "X-OneGl-API-Version": {
     description: "OpenAPI contract version served by this OneGl instance.",
@@ -149,7 +150,7 @@ export function applySaasOpenApi(document) {
           minItems: 1,
           maxItems: 20,
           uniqueItems: true,
-          items: { type: "string", enum: ["doubao"] },
+          items: { type: "string", enum: PROVIDERS() },
           default: ["doubao"],
         },
         account_ids: {
@@ -188,7 +189,7 @@ export function applySaasOpenApi(document) {
       description: "All fields are optional. Omitted fields inherit the saved Task configuration. Creating an Execution starts it immediately.",
       properties: {
         account_ids: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: { type: "string", minLength: 1 } },
-        platforms: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: { type: "string", enum: ["doubao"] } },
+        platforms: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: { type: "string", enum: PROVIDERS() } },
         sampling: { $ref: "#/components/schemas/TaskSamplingInput" },
         seed: { type: ["string", "null"], description: "Optional deterministic sampling seed." },
       },
@@ -230,7 +231,7 @@ export function applySaasOpenApi(document) {
       properties: {
         result_id: resultId,
         question: { type: "string" },
-        platform: { type: "string", enum: ["doubao"] },
+        platform: { type: "string", enum: PROVIDERS() },
         status: { type: "string", enum: ["pending", "running", "success", "partial", "failed"] },
         brand_mentioned: { type: ["boolean", "null"] },
         mention_count: { type: ["integer", "null"], minimum: 0 },
@@ -263,7 +264,7 @@ export function applySaasOpenApi(document) {
         result_id: resultId,
         task_id: taskId,
         execution_id: executionId,
-        platform: { type: "string", enum: ["doubao"] },
+        platform: { type: "string", enum: PROVIDERS() },
         question: { type: "string" },
         status: { type: "string", enum: ["pending", "running", "success", "partial", "failed"] },
         answer: {

@@ -157,9 +157,13 @@ async function getSession({ accountKey, provider }) {
   }
 
   const accountConfig = loadConfig({ accountKey, provider });
+  const adapter = getProviderAdapter(provider);
   const session = await launchBrowserSession(accountConfig);
-  await openProviderPage(session, accountConfig);
-  await markStorageStatePresent(pool, accountKey, session.hasStoredAuth, provider).catch(() => undefined);
+  await openProviderPage(session, accountConfig, adapter);
+  // 匿名面没有登录态可标记，写进去会让运营以为这个身份已经绑定成功。
+  if (adapter.requiresStoredAuth !== false) {
+    await markStorageStatePresent(pool, accountKey, session.hasStoredAuth, provider).catch(() => undefined);
+  }
 
   sessions.set(identity, session);
   log({
@@ -171,7 +175,13 @@ async function getSession({ accountKey, provider }) {
   return session;
 }
 
-async function openProviderPage(session, config) {
+async function openProviderPage(session, config, adapter) {
+  // A provider with no page-open step is an anonymous or API surface: nothing to navigate
+  // before the first prompt beyond what the adapter itself does.
+  if (typeof adapter?.openPage === "function") {
+    await adapter.openPage(session.page, config);
+    return;
+  }
   await openDoubao(session.page, config);
 }
 
@@ -186,7 +196,7 @@ async function prepareWindow(session, account) {
   if (!shouldRotateContext(session.contextPrompts, safety.roundPromptLimit)) return;
   const accountConfig = loadConfig(account);
   await session.rotateContext();
-  await openProviderPage(session, accountConfig);
+  await openProviderPage(session, accountConfig, getProviderAdapter(account.provider));
   log({
     event: "window-rotated",
     account_key: account.accountKey,

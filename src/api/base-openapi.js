@@ -1,3 +1,4 @@
+import { defaultProviderId as DEFAULT_PROVIDER, supportedProviderIds as PROVIDERS } from "../providers/index.js";
 const jsonResponse = (description, schema = { type: "object" }) => ({
   description,
   content: { "application/json": { schema } },
@@ -83,7 +84,7 @@ export const openApiDocument = {
         required: ["account_id"],
         properties: {
           account_id: { type: "string", minLength: 1 },
-          provider: { type: "string", enum: ["doubao"], default: "doubao" },
+          provider: { type: "string", enum: PROVIDERS(), default: DEFAULT_PROVIDER() },
           label: { type: ["string", "null"] },
         },
       },

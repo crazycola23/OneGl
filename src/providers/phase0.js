@@ -125,6 +125,27 @@ export function suggestSelector(entry) {
   return partial ? `[class*="${partial}"]` : null;
 }
 
+/**
+ * The container that groups citation cards, inferred from what the off-site links actually
+ * sit inside. Ranked by how many links it encloses, deepest shared ancestor first.
+ */
+export function suggestCitationBlocks(ancestors = []) {
+  const bySelector = new Map();
+  for (const chain of ancestors) {
+    chain.forEach((node, depth) => {
+      if (Number(node.linkCount) < 2) return;
+      if (node.tag === "body" || node.tag === "html") return;
+      const selector = suggestSelector({ data: node.data, classTokens: node.classTokens });
+      if (!selector) return;
+      const seen = bySelector.get(selector) ?? { selector, linkCount: 0, depth: 0 };
+      seen.linkCount = Math.max(seen.linkCount, Number(node.linkCount));
+      seen.depth = Math.max(seen.depth, depth);
+      bySelector.set(selector, seen);
+    });
+  }
+  return [...bySelector.values()].sort((a, b) => b.linkCount - a.linkCount).slice(0, 6);
+}
+
 export function suggestSelectors(entries) {
   const seen = new Set();
   const out = [];
@@ -209,8 +230,14 @@ export function captureOpenQuestions(capture = {}) {
 /**
  * Runs inside page.evaluate, so it must not close over anything from this module.
  * It only reports what is on the page; every judgement happens in Node above.
+ *
+ * `markers` is the important part: text you can already see on screen ("参考 10 篇资料",
+ * "停止回答", "回答由 AI 生成") is the most reliable way to locate the container that owns a
+ * feature, because it does not depend on any class or attribute surviving the next build.
+ * Doubao's reference block was found exactly this way. The tightest matching element is the
+ * one where no descendant also matches.
  */
-export function collectPageSignals() {
+export function collectPageSignals(markers = []) {
   const visible = (element) => {
     if (!(element instanceof HTMLElement)) return false;
     const style = getComputedStyle(element);
@@ -273,11 +300,72 @@ export function collectPageSignals() {
     })
     .filter(Boolean);
 
+  /**
+   * Citation cards are the one thing a GEO profile cannot guess: the link itself is easy, the
+   * container that groups them is what "the reference block exists" is decided against. So
+   * walk up from each off-site link and report what the ancestors are actually called.
+   */
+  const linkAncestors = [...document.querySelectorAll("a[href]")]
+    .filter((element) => {
+      try {
+        return /^https?:$/.test(new URL(element.href).protocol);
+      } catch {
+        return false;
+      }
+    })
+    .slice(0, 40)
+    .map((element) => {
+      const chain = [];
+      let node = element.parentElement;
+      for (let depth = 0; node && depth < 4; depth += 1) {
+        chain.push({
+          tag: node.tagName.toLowerCase(),
+          data: dataAttributes(node),
+          classTokens: tokens(node).slice(0, 6),
+          linkCount: node.querySelectorAll("a[href]").length,
+        });
+        node = node.parentElement;
+      }
+      return chain;
+    });
+
   let storageKeys = [];
   try {
     storageKeys = Object.keys(localStorage);
   } catch {
     storageKeys = [];
+  }
+
+  const markerHits = [];
+  for (const pattern of Array.isArray(markers) ? markers : []) {
+    let expression;
+    try {
+      expression = new RegExp(String(pattern), "i");
+    } catch {
+      continue;
+    }
+    const candidates = [...document.querySelectorAll("div, section, article, p, span, button")]
+      .filter((element) => expression.test(element.innerText || element.textContent || ""))
+      .filter((element) => {
+        for (const child of element.querySelectorAll("div, section, article, p, span")) {
+          if (expression.test(child.innerText || child.textContent || "")) return false;
+        }
+        return true;
+      })
+      .slice(0, 3);
+    for (const element of candidates) {
+      const ancestors = [];
+      let node = element.parentElement;
+      for (let depth = 0; node && depth < 5; depth += 1) {
+        ancestors.push({
+          tag: node.tagName.toLowerCase(),
+          data: dataAttributes(node),
+          classTokens: tokens(node).slice(0, 6),
+        });
+        node = node.parentElement;
+      }
+      markerHits.push({ pattern: String(pattern), ...describe(element), ancestors });
+    }
   }
 
   return {
@@ -298,6 +386,8 @@ export function collectPageSignals() {
       length: (element.innerText || element.textContent || "").trim().length,
     })),
     links,
+    linkAncestors,
+    markerHits,
     qrCandidates: [...all('[class*="qrcode" i], [class*="qr-code" i], canvas, svg')].map(describe),
     historyLength: history.length,
   };

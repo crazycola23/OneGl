@@ -1,3 +1,4 @@
+import { defaultProviderId as DEFAULT_PROVIDER, supportedProviderIds as PROVIDERS } from "../providers/index.js";
 const body = (schema) => ({
   required: true,
   content: { "application/json": { schema } },
@@ -34,7 +35,7 @@ const taskMutableProperties = () => ({
     minItems: 1,
     maxItems: 20,
     uniqueItems: true,
-    items: { type: "string", enum: ["doubao"] },
+    items: { type: "string", enum: PROVIDERS() },
   },
   account_ids: stringArray(),
   sampling: { $ref: "#/components/schemas/TaskSamplingInput" },

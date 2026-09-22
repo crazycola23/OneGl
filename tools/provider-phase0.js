@@ -9,6 +9,8 @@ import {
   collectPageSignals,
   externalLinkHosts,
   rankAnswerCandidates,
+  suggestCitationBlocks,
+  suggestSelector,
   suggestSelectors,
 } from "../src/providers/phase0.js";
 import { deriveSessionCookieCandidates } from "../src/providers/profile.js";
@@ -30,6 +32,14 @@ const args = process.argv.slice(2);
 function flag(name) {
   const index = args.indexOf(`--${name}`);
   return index >= 0 ? args[index + 1] : null;
+}
+/** Repeatable: --marker "参考.*篇资料" --marker "停止回答" */
+function flags(name) {
+  const out = [];
+  args.forEach((entry, index) => {
+    if (entry === `--${name}`) out.push(args[index + 1]);
+  });
+  return out.filter(Boolean);
 }
 
 const profileId = flag("profile") ?? "yuanbao-web";
@@ -88,6 +98,63 @@ async function settlePage(page, { timeoutMs = 45_000, stableSamples = 2 } = {}) 
   return last;
 }
 
+/**
+ * Diagnostic snapshot: what is actually blocking a submit. Reported at each step so the
+ * failure is attributable instead of guessed at.
+ */
+async function diagnose(page) {
+  return page.evaluate(() => {
+    const overlay = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"]')]
+      .filter((element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0;
+      })
+      .map((element) => (element.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80));
+    const editor = document.querySelector('[data-slate-editor="true"]');
+    const send = document.querySelector('[data-session-switch-target="send-query"]');
+    const active = document.activeElement;
+    return {
+      overlays: overlay,
+      editorPresent: Boolean(editor),
+      editorText: (editor?.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 60),
+      editorChildEditable: editor?.querySelector("[data-slate-node]")?.getAttribute("contenteditable") ?? null,
+      sendPresent: Boolean(send),
+      sendDisabled: send ? send.disabled === true || send.getAttribute("aria-disabled") === "true" : null,
+      sendClassHint: send ? /cursor-not-allowed/.test(send.className) : null,
+      focused: active ? `${active.tagName.toLowerCase()}${active.getAttribute("data-slate-editor") ? "(slate)" : ""}` : null,
+    };
+  }).catch((error) => ({ error: String(error) }));
+}
+
+const MARKERS = flags("marker");
+const gather = (page) => page.evaluate(collectPageSignals, MARKERS);
+
+/**
+ * Wait until the page stops looking like it is still generating.
+ *
+ * Text stability alone is not a completion criterion: one qianwen.com run stalled at a few
+ * hundred characters of body text for the whole window while its "停止回答" control was still
+ * up, because the deep-search phase produces no DOM growth. Providers that signal work with a
+ * visible control need that control's absence instead.
+ */
+async function waitSettled(page, { timeoutMs, inProgress = null, minWaitMs = 20_000 } = {}) {
+  const startedAt = Date.now();
+  // 先给生成一点起步时间。刚点完发送就去查"进行中控件"，查到的必然是 0，
+  // 于是会被判定成「已经完成」并在空答案上收尾 —— 第一次实测就是这么丢的答案。
+  await page.waitForTimeout(6_000);
+  let last = await settlePage(page, { timeoutMs: 20_000 });
+  while (Date.now() - startedAt < timeoutMs) {
+    const running = inProgress ? Number(await page.locator(inProgress).count().catch(() => 0)) : 0;
+    if (!running && Date.now() - startedAt >= minWaitMs) return last;
+    if (running) console.log("仍在生成中（命中进行中控件），继续等待…");
+    await page.waitForTimeout(3_000);
+    last = await settlePage(page, { timeoutMs: 10_000 });
+  }
+  console.log(`等待 ${timeoutMs}ms 超时，按当前状态收尾。`);
+  return last;
+}
+
 async function capture({ ignoreStoredAuth = true, waitForLogin = false, prompt = null } = {}) {
   const config = loadConfig({ provider: profile.provider, headless: ignoreStoredAuth && !waitForLogin });
   const session = await launchBrowserSession(config, { ignoreStoredAuth, forceHeadful: waitForLogin });
@@ -101,7 +168,7 @@ async function capture({ ignoreStoredAuth = true, waitForLogin = false, prompt =
       console.log("请在打开的窗口里完成登录（扫码或手机号）。本工具不代填、不解析验证码。");
       const deadline = Date.now() + 300_000;
       for (;;) {
-        const signals = await page.evaluate(collectPageSignals);
+        const signals = await gather(page);
         const diff = deriveSessionCookieCandidates(cookieMap(await readSnapshot("anonymous")), cookieMap(signals));
         if (diff.candidates.length) {
           console.log(`检测到 ${diff.candidates.length} 个登录后新增/变值的 cookie，停止等待。`);
@@ -120,17 +187,23 @@ async function capture({ ignoreStoredAuth = true, waitForLogin = false, prompt =
       const send = flag("send");
       const sendKey = flag("send-key");
       const dismiss = flag("dismiss");
-      if (dismiss) {
-        // 千问匿名首页会弹一个「工作助理再升级」营销浮层，它会吃掉回车。
-        await page.locator(dismiss).first().click({ force: true }).catch(() => undefined);
-        await page.waitForTimeout(1_000);
-      }
+      // 千问的营销浮层会占住指针并吃掉回车：先 Esc，再点任意"关闭"，然后确认它真没了。
+      await page.keyboard.press("Escape").catch(() => undefined);
+      await page.locator(dismiss ?? 'button:has-text("关闭"), [aria-label="关闭"]').first()
+        .click({ force: true }).catch(() => undefined);
+      await page.waitForTimeout(800);
       if (!composer) {
         console.error("chat 阶段需要 --composer <selector>，取值看 anonymous 阶段的 inputs。");
-        return { signals: await page.evaluate(collectPageSignals), page };
+        return { signals: await gather(page), page };
       }
+      console.log("清浮层后:", JSON.stringify(await diagnose(page)));
       const composerLocator = page.locator(composer).first();
-      await composerLocator.click({ force: true }).catch(() => undefined);
+      // 不用 force：force 会绕过命中检查，把事件打到仍盖在上面的浮层上，于是"点了编辑器"
+      // 其实没拿到焦点。失败就如实报出来。
+      await composerLocator.click({ timeout: 8_000 }).catch((error) => {
+        console.log(`composer 点击失败: ${String(error).split("\n")[0]}`);
+      });
+      console.log("点 composer 后:", JSON.stringify(await diagnose(page)));
       // 逐字键入而不是 fill()：fill 只改 DOM，不触发 Slate/ProseMirror 的 input 处理，
       // 于是应用自己认为输入框还是空的，发送键永远禁用 —— 豆包的提交实现同样是多策略
       // 键入，不是 fill。
@@ -138,7 +211,8 @@ async function capture({ ignoreStoredAuth = true, waitForLogin = false, prompt =
         await page.keyboard.insertText(prompt);
       });
       await page.waitForTimeout(1_500);
-      const afterTyping = await page.evaluate(collectPageSignals);
+      const afterTyping = await gather(page);
+      console.log("键入后:", JSON.stringify(await diagnose(page)));
       const sendAppeared = suggestSelectors(
         afterTyping.buttons.filter((entry) => /发送|send/i.test(`${entry.text} ${entry.aria ?? ""} ${entry.testid ?? ""}`)),
       );
@@ -153,18 +227,38 @@ async function capture({ ignoreStoredAuth = true, waitForLogin = false, prompt =
         await page.keyboard.press(sendKey);
       } else {
         console.error("需要 --send <selector> 或 --send-key Enter 之一。");
-        return { signals: await page.evaluate(collectPageSignals), page };
+        return { signals: await gather(page), page };
       }
-      await settlePage(page, { timeoutMs: Number(flag("wait") ?? 60_000) });
+      await waitSettled(page, {
+        timeoutMs: Number(flag("wait") ?? 60_000),
+        inProgress: flag("in-progress"),
+      });
     }
 
-    return { signals: await page.evaluate(collectPageSignals), page };
+    const signals = await gather(page);
+    const cardSelector = flag("card");
+    const cardDetails = cardSelector
+      ? await page.evaluate((selector) => [...document.querySelectorAll(selector)].slice(0, 8).map((element, index) => ({
+          index,
+          tag: element.tagName.toLowerCase(),
+          data: Object.fromEntries(
+            [...element.attributes].filter((a) => a.name.startsWith("data-")).map((a) => [a.name, a.value.slice(0, 40)]),
+          ),
+          classTokens: [...element.classList].slice(0, 6),
+          length: (element.innerText || "").trim().length,
+          head: (element.innerText || "").replace(/\s+/g, " ").trim().slice(0, 70),
+          externalLinks: [...element.querySelectorAll("a[href]")]
+            .map((link) => { try { return new URL(link.href).hostname; } catch { return null; } })
+            .filter((host, position, all) => host && all.indexOf(host) === position).slice(0, 12),
+        })), cardSelector).catch(() => [])
+      : [];
+    return { signals, cardDetails, page };
   } finally {
     await session.close().catch(() => undefined);
   }
 }
 
-function summarize(signals, { prompt = null, previous = null } = {}) {
+function summarize(signals, { prompt = null, previous = null, cardDetails = null } = {}) {
   const selfHost = (() => {
     try {
       return new URL(profile.entryUrl).hostname;
@@ -192,6 +286,23 @@ function summarize(signals, { prompt = null, previous = null } = {}) {
       sample: entry.text.slice(0, 80),
     })),
     citationCardHosts: externalLinkHosts(signals.links, selfHost ? [selfHost] : []),
+    citationBlockCandidates: suggestCitationBlocks(signals.linkAncestors),
+    // Which repeated card holds the assistant answer, and how the user's own bubble differs.
+    // Getting this wrong is what makes brand detection fire on our own question.
+    cardBlocks: cardDetails ?? [],
+    markerHits: (signals.markerHits ?? []).map((hit) => ({
+      pattern: hit.pattern,
+      selector: suggestSelector({ data: hit.data, classTokens: hit.classTokens, role: hit.role, aria: hit.aria }),
+      text: hit.text,
+      classTokens: hit.classTokens,
+      data: hit.data,
+      ancestors: (hit.ancestors ?? []).map((node) => ({
+        tag: node.tag,
+        selector: suggestSelector({ data: node.data, classTokens: node.classTokens }),
+        classTokens: node.classTokens,
+        data: node.data,
+      })),
+    })),
     qrSurfaceObserved: signals.qrCandidates.some((entry) => entry.width >= 80 && entry.height >= 80),
     loginSurfaceText: signals.dialogs
       .map((entry) => entry.text)
@@ -232,11 +343,11 @@ if (stage === "anonymous") {
     process.exit(1);
   }
   // 匿名面本来就没有登录态，不去读任何账号凭据文件。
-  const { signals } = await capture({
+  const { signals, cardDetails } = await capture({
     ignoreStoredAuth: profile.requiresStoredAuth === false,
     prompt,
   });
-  await writeSnapshot("chat", summarize(signals, { prompt }));
+  await writeSnapshot("chat", summarize(signals, { prompt, cardDetails }));
 } else if (stage === "report") {
   const [anonymous, loggedIn, chat] = await Promise.all([
     readSnapshot("anonymous"),

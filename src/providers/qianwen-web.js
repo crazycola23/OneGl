@@ -1,3 +1,5 @@
+import { executeQianwenPrompt, openQianwen } from "../qianwen.js";
+import { normalizeProviderResult, PROVIDER_ACCESS } from "./contract.js";
 import { CITATION_TIERS } from "./profile.js";
 
 /**
@@ -49,27 +51,23 @@ export const qianwenWebProfile = {
   },
 
   chat: {
-    // 以下两项是 2026-09-22 用 tools/provider-phase0.js 对 www.qianwen.com 匿名实测出来的，
-    // 不是推测：composer 是 Slate 编辑器，带 data-slate-editor="true" 与
-    // data-placeholder="向千问提问"（选前者，因为文案会被产品改）；发送按钮在输入前不存在，
-    // 输入后出现，稳定标识是 data-session-switch-target="send-query"，
-    // aria-label="发送消息"，且没有显式 role 属性。
+    // 以下全部是 2026-09-22 tools/provider-phase0.js 匿名实测结果，不是推测。
     composerSelectors: ['[data-slate-editor="true"]'],
     sendSelectors: ['[data-session-switch-target="send-query"]'],
-    // 未测出：匿名提交在探针里没走通 —— 首页有个「工作助理再升级」营销浮层（localStorage
-    // 键 qianwen_promotion_modal_frequency_v1 控制频控），它会占住指针并吃掉回车；强制点击后
-    // 发送按钮仍是禁用态（class 含 cursor-not-allowed 与 --ty-text-disabled）。
-    // 所以下面三项保持为空，档案也就保持 unvalidated。
-    answerSelectors: [],
-    inProgressPatterns: [],
-    userBubbleSelectors: [],
-    conversationUrlPattern: null,
+    // 提问卡类名可读（message-card-wrap question），回答卡类名带构建哈希
+    // （message-card-j_n6rq）。所以只能用 message-card 这个共同子串，再**排除**用户卡。
+    answerSelectors: ['[class*="message-card"]'],
+    userBubbleSelectors: ['[class*="message-card"][class*="question"]'],
+    // 完成判据是「停止回答」按钮消失，不是文本不再增长：实测有一次深度检索阶段正文
+    // 长时间只有几百字符仍在生成，用文本稳定会在空答案上收尾并把它记成真结论。
+    inProgressPatterns: [/停止回答/],
+    conversationUrlPattern: /\/chat\/([a-z0-9-]{16,})/,
   },
 
   /** 匿名浮层与干扰项，driver 必须先清掉再判定会话状态。 */
   interstitials: {
     modalTextPatterns: [/工作助理再升级|立即体验/],
-    dismissSelectors: ['button:has-text("关闭")'],
+    dismissSelectors: ['button:has-text("关闭")', '[aria-label="关闭"]'],
   },
 
   /**
@@ -85,16 +83,19 @@ export const qianwenWebProfile = {
    */
   quota: {
     promptsPerWindow: 3,
+    // 未实测到上限文案，因此档案仍是 unvalidated。这是注册的唯一剩余阻塞项。
     exhaustedPatterns: [],
-    suspectedIdleMs: null,
-    controlPrompt: null,
+    suspectedIdleMs: 120_000,
+    controlPrompt: "你好，请用一句话介绍你自己。",
   },
 
   citation: {
-    // Untested whether 千问 states a source count to anonymous visitors. dom-only until then.
-    tier: CITATION_TIERS.DOM_ONLY,
-    countPattern: null,
-    blockSelectors: [],
+    // 实测：千问匿名回答会自陈「搜索 2 个关键词，参考 9 篇资料」，且带一个
+    // 「已完成分析，共参考 N 篇资料」的汇总卡（容器 data-card_name="bar_workflow"）。
+    // 所以它是 SELF_REPORTED_COUNT 口径，与豆包同形、能做数量对账。
+    tier: CITATION_TIERS.SELF_REPORTED_COUNT,
+    countPattern: /搜索\s*(\d+)\s*个关键词[，,、\s]*参考\s*(\d+)\s*篇资料/,
+    blockSelectors: ['[data-card_name="bar_workflow"]'],
     wrapperRedirectHosts: [],
   },
 
@@ -111,5 +112,39 @@ export const qianwenWebProfile = {
     hourlyLimit: 6,
     dailyLimit: 20,
     windowCooldownMs: 60_000,
+  },
+};
+
+/**
+ * Adapter for the measured anonymous surface. It reaches the registry only while its profile
+ * reports validated, which is the gate that keeps the public enum and the collector in step.
+ */
+export const qianwenWebProvider = {
+  id: "qianwen-web",
+  provider: "qianwen",
+  model: "qianwen",
+  access: PROVIDER_ACCESS.SCRAPED,
+  profile: qianwenWebProfile,
+  requiresStoredAuth: false,
+
+  openPage(page, config) {
+    return openQianwen(page, config, qianwenWebProfile);
+  },
+
+  async run({ page, prompt, config }) {
+    const raw = await executeQianwenPrompt(page, prompt, config, qianwenWebProfile);
+    return normalizeProviderResult(
+      {
+        ...raw,
+        textContent: raw.answer,
+        rawOutput: raw,
+        webQueries: [],
+      },
+      {
+        provider: qianwenWebProfile.provider,
+        model: qianwenWebProfile.model,
+        access: qianwenWebProfile.access,
+      },
+    );
   },
 };

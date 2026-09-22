@@ -1,3 +1,4 @@
+import { defaultProviderId as DEFAULT_PROVIDER, supportedProviderIds as PROVIDERS } from "../providers/index.js";
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete"];
 
 const envelope = (schema) => ({
@@ -99,7 +100,7 @@ const coreSchemas = {
   ProviderResource: {
     type: "object",
     properties: {
-      provider: { type: "string", enum: ["doubao"] },
+      provider: { type: "string", enum: PROVIDERS() },
       name: { type: "string" },
       enabled: { type: "boolean" },
     },
@@ -159,7 +160,7 @@ const coreSchemas = {
     properties: {
       binding_id: { type: "integer", minimum: 1 },
       account_id: { type: "string" },
-      provider: { type: "string", enum: ["doubao"] },
+      provider: { type: "string", enum: PROVIDERS() },
       label: { type: ["string", "null"] },
       enabled: { type: "boolean" },
       status: { type: "string" },
@@ -187,7 +188,7 @@ const coreSchemas = {
     ],
     properties: {
       account_id: { type: "string" },
-      provider: { type: "string", enum: ["doubao"] },
+      provider: { type: "string", enum: PROVIDERS() },
       reclaimed: { description: "Whether this call actually flipped the account row", type: "boolean" },
       reclaimed_at: { description: "accounts.updated_at of this reclaim; null when this call changed nothing", ...nullableDateTime },
       storage_state_removed: { description: "Whether any on-disk storageState file was deleted", type: "boolean" },
@@ -203,7 +204,7 @@ const coreSchemas = {
     required: ["account_id", "provider", "enabled", "status", "storage_state_present", "reactivated"],
     properties: {
       account_id: { type: "string" },
-      provider: { type: "string", enum: ["doubao"] },
+      provider: { type: "string", enum: PROVIDERS() },
       enabled: { description: "Always true after a successful reactivation; echoed from the row when nothing changed", type: "boolean" },
       status: {
         description: "login_required right after a real reactivation, because the reclaimed login state cannot be restored; a no-op call echoes the existing status instead of downgrading it",
@@ -267,7 +268,7 @@ const coreSchemas = {
     properties: {
       id: { type: "integer", minimum: 1 },
       name: { type: ["string", "null"] },
-      provider: { type: "string", enum: ["doubao"] },
+      provider: { type: "string", enum: PROVIDERS() },
       status: { type: "string" },
       project_id: { type: "integer", minimum: 1 },
       project_name: { type: "string" },

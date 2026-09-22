@@ -1,3 +1,4 @@
+import { defaultProviderId as DEFAULT_PROVIDER, supportedProviderIds as PROVIDERS } from "../providers/index.js";
 const envelope = (schema) => ({
   type: "object",
   additionalProperties: false,
@@ -28,7 +29,7 @@ export function applyCustomerDashboardOpenApi(document) {
             external_id: { type: ["string", "null"] },
             name: { type: "string" },
             target_brand: { type: ["string", "null"] },
-            platforms: { type: "array", items: { type: "string", enum: ["doubao"] } },
+            platforms: { type: "array", items: { type: "string", enum: PROVIDERS() } },
             state: { type: "string", enum: ["active"] },
           },
         },

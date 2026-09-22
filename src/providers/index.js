@@ -1,7 +1,7 @@
 import { assertProviderAdapter } from "./contract.js";
 import { doubaoWebProvider } from "./doubao-web.js";
-import { assertProviderProfile, collectProfileErrors, isProfileValidated } from "./profile.js";
-import { qianwenWebProfile } from "./qianwen-web.js";
+import { collectProfileErrors, isProfileValidated } from "./profile.js";
+import { qianwenWebProfile, qianwenWebProvider } from "./qianwen-web.js";
 import { yuanbaoWebProfile } from "./yuanbao-web.js";
 
 /**
@@ -12,7 +12,21 @@ import { yuanbaoWebProfile } from "./yuanbao-web.js";
  */
 export const pendingProviderProfiles = [yuanbaoWebProfile, qianwenWebProfile];
 
-const adapters = [doubaoWebProvider].map(assertProviderAdapter);
+/**
+ * The collection table: hand-written drivers plus any profile-driven adapter whose profile has
+ * been through Phase 0. Unvalidated ones are excluded here and therefore also absent from the
+ * public provider enum, which derives from this list - so "the API accepts it" and "the
+ * collector can run it" cannot come apart.
+ *
+ * Exported so the gate itself is testable without mutating module state at runtime.
+ */
+export function selectRegistrableAdapters(candidates) {
+  return candidates
+    .filter((adapter) => !adapter.profile || isProfileValidated(adapter.profile))
+    .map(assertProviderAdapter);
+}
+
+const adapters = selectRegistrableAdapters([doubaoWebProvider, qianwenWebProvider]);
 const byId = new Map();
 
 /** What still has to be measured before a pending profile can be registered. */
@@ -20,21 +34,6 @@ export function providerProfileGaps(profileId) {
   const profile = pendingProviderProfiles.find((entry) => entry.id === profileId);
   if (!profile) throw new Error(`Unknown provider profile: ${JSON.stringify(profileId)}`);
   return collectProfileErrors(profile);
-}
-
-/** The only path onto the adapter table: a complete profile that Phase 0 has validated. */
-export function registerProviderProfile(profile, run) {
-  assertProviderProfile(profile);
-  if (!isProfileValidated(profile)) {
-    throw new Error(
-      `Provider profile ${profile.id} has not passed Phase 0 validation; refusing to register it`,
-    );
-  }
-  const adapter = assertProviderAdapter({ ...profile, run });
-  adapters.push(adapter);
-  byId.set(adapter.id, adapter);
-  if (!byId.has(adapter.provider)) byId.set(adapter.provider, adapter);
-  return adapter;
 }
 
 for (const adapter of adapters) {
@@ -54,4 +53,20 @@ export function getProviderAdapter(id = "doubao") {
 
 export function listProviderAdapters() {
   return adapters.map(({ id, provider, model, access }) => ({ id, provider, model, access }));
+}
+
+/**
+ * The provider ids the public contract may name.
+ *
+ * Derived from the adapter table on purpose: a hand-maintained enum drifts the moment a
+ * platform is added or pulled, and the direction that drifts is the bad one - an API that
+ * advertises a provider collection cannot actually run will accept accounts, create batches
+ * and then fail every execution. Pending profiles are absent from this list by construction.
+ */
+export function supportedProviderIds() {
+  return [...new Set(adapters.map((adapter) => adapter.provider))].sort();
+}
+
+export function defaultProviderId() {
+  return supportedProviderIds()[0] ?? "doubao";
 }

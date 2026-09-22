@@ -18,14 +18,18 @@ import {
   deriveSessionCookieCandidates,
 } from "../src/providers/profile.js";
 import {
+  doubaoWebProvider,
+} from "../src/providers/doubao-web.js";
+import {
   getProviderAdapter,
   listProviderAdapters,
   pendingProviderProfiles,
   providerProfileGaps,
-  registerProviderProfile,
+  selectRegistrableAdapters,
+  supportedProviderIds,
 } from "../src/providers/index.js";
 import { yuanbaoWebProfile } from "../src/providers/yuanbao-web.js";
-import { qianwenWebProfile } from "../src/providers/qianwen-web.js";
+import { qianwenWebProfile, qianwenWebProvider } from "../src/providers/qianwen-web.js";
 
 test("build-hash class names are never turned into selectors", () => {
   // 豆包远端登录踩过这个：qrcode-DeN5Ny 换个构建就选不中了。
@@ -149,53 +153,41 @@ test("an unmeasured profile reports its gaps instead of crashing on import", () 
   assert.deepEqual(providerProfileGaps("yuanbao-web"), gaps);
 });
 
-test("a pending profile is not reachable as an adapter, validated or not", () => {
+test("an unvalidated profile keeps its adapter out of the table and out of the contract", () => {
   assert.deepEqual(listProviderAdapters().map((entry) => entry.id), ["doubao-web"]);
-  assert.throws(() => getProviderAdapter("yuanbao"), /Unsupported provider adapter/);
+  assert.throws(() => getProviderAdapter("qianwen"), /Unsupported provider adapter/);
   assert.deepEqual(pendingProviderProfiles.map((entry) => entry.id), ["yuanbao-web", "qianwen-web"]);
-
-  // Even a profile marked validated stays unregistered while its measurements are missing.
-  assert.throws(
-    () => registerProviderProfile({ ...yuanbaoWebProfile, validated: true }, async () => ({})),
-    /is incomplete/,
-  );
-  assert.equal(registerProviderProfile(measuredProfile(), async () => ({ citations: [] })).id, "yuanbao-web");
-  assert.equal(getProviderAdapter("yuanbao").id, "yuanbao-web");
+  // The public enum is derived from the adapter table, so it cannot run ahead of collection.
+  assert.deepEqual(supportedProviderIds(), ["doubao"]);
 });
 
-// A profile with every measured field filled in, i.e. what Phase 0 is supposed to produce.
-function measuredProfile() {
-  return {
-    ...yuanbaoWebProfile,
-    validated: true,
-    login: {
-      ...yuanbaoWebProfile.login,
-      sessionCookies: ["qq_domain_video_gsauth2"],
-      captchaPatterns: [/滑动验证/],
-      restrictedPatterns: [/访问异常/],
-      qrExpiredPatterns: [/二维码已失效/],
-    },
-    chat: {
-      ...yuanbaoWebProfile.chat,
-      composerSelectors: ['[contenteditable="true"]'],
-      sendSelectors: ['[aria-label="发送"]'],
-      answerSelectors: [".answer-md"],
-      inProgressPatterns: [/正在搜索/],
-      userBubbleSelectors: [".user-bubble"],
-    },
-  };
-}
+test("the registration gate is the profile's validated flag and nothing else", () => {
+  const ids = selectRegistrableAdapters([doubaoWebProvider, qianwenWebProvider]).map((a) => a.id);
+  assert.deepEqual(ids, ["doubao-web"], "qianwen is still missing its quota observation");
+
+  const measured = { ...qianwenWebProvider, profile: { ...qianwenWebProfile, validated: true } };
+  const after = selectRegistrableAdapters([doubaoWebProvider, measured]).map((a) => a.id);
+  assert.deepEqual(after, ["doubao-web", "qianwen-web"]);
+});
+
+test("yuanbao stays unregistered while nothing about it has been measured", () => {
+  assert.equal(yuanbaoWebProfile.validated, false);
+  assert.throws(() => getProviderAdapter("yuanbao"), /Unsupported provider adapter/);
+});
 
 test("an anonymous surface is judged on quota, not on a login it will never have", () => {
   const gaps = collectProfileErrors(qianwenWebProfile);
   assert.equal(qianwenWebProfile.requiresStoredAuth, false);
   // No session to measure, so no cookie list may be demanded of it.
   assert.equal(gaps.some((entry) => entry.includes("login.sessionCookies")), false);
-  // But the cap-vs-block distinction is exactly what must be measured before it runs.
-  assert.ok(gaps.some((entry) => entry.includes("quota.exhaustedPatterns")));
+  // But the cap-vs-block distinction is exactly what must be measured before it runs, and it
+  // is the only thing still missing: every selector the driver consumes is observed.
+  assert.deepEqual(
+    collectProfileErrors(qianwenWebProfile),
+    ["qianwen-web.quota.exhaustedPatterns must be a non-empty array of strings"],
+  );
   // promptsPerWindow is a design choice, not an observation, so it is already satisfiable.
   assert.equal(gaps.some((entry) => entry.includes("quota.promptsPerWindow")), false);
-  assert.ok(gaps.some((entry) => entry.includes("chat.answerSelectors")));
 
   const questions = captureOpenQuestions({ requiresStoredAuth: false, answerCandidates: [{ selector: ".x" }] });
   assert.ok(questions.some((entry) => /额度/.test(entry)));
@@ -228,6 +220,7 @@ test("open questions name the decisions a capture could not settle", () => {
 test("the page collector is self-contained", () => {
   // It runs inside page.evaluate, so any closure over this module would throw in the browser.
   assert.equal(typeof collectPageSignals, "function");
-  assert.equal(collectPageSignals.length, 0);
+  // Default parameters are excluded from .length, so check the source for the parameter.
+  assert.match(collectPageSignals.toString(), /^function \w+\(\s*markers/);
   assert.doesNotMatch(collectPageSignals.toString(), /\b(suggestSelector|isHashBearingClass|HASH_TOKEN)\b/);
 });
