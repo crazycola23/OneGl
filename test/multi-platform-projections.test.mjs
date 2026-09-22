@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { buildOpenApiDocument } from "../src/api/build-openapi.js";
 import {
+  countNotCollected,
   getExecution,
   getReport,
   listExecutionResults,
@@ -36,7 +37,7 @@ function fakePool(rows) {
     seen,
     async query(sql, params) {
       const statement = statementOf(sql);
-      seen.push({ statement, sql: sql.replace(/\s+/g, " ").trim() });
+      seen.push({ statement, sql: sql.replace(/\s+/g, " ").trim(), params });
       const row = rows[statement];
       if (!row) throw new Error(`no fixture for ${statement}`);
       return { rows: Array.isArray(row) ? row : [row] };
@@ -126,6 +127,21 @@ test("report reads carry their batch platform and surfaces", async () => {
   const [item] = await listTaskReports(pool, 1, TASK_ID);
   assert.equal(item.platform, "qianwen");
   assert.equal(item.execution_status, "completed");
+});
+
+/**
+ * not_collected is a required, published field. While a batch still runs, an assignment with no
+ * run row is work that has not started, and counting it here would present `remaining` as loss.
+ */
+test("unstarted assignments only count as not_collected once the batch is terminal", async () => {
+  const pool = fakePool({ not_collected: { not_collected: 3 } });
+
+  assert.equal(await countNotCollected(pool, 4, "running"), 3);
+  assert.deepEqual(pool.seen[0].params, [4, false]);
+  assert.match(pool.seen[0].sql, /r\.status = 'failed'/);
+
+  await countNotCollected(pool, 4, "completed");
+  assert.deepEqual(pool.seen[1].params, [4, true]);
 });
 
 /**

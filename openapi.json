@@ -1761,6 +1761,46 @@
             ],
             "type": "object"
           },
+          "provenance": {
+            "additionalProperties": false,
+            "properties": {
+              "blended": {
+                "description": "True when more than one platform or surface contributed. One rate spanning two of them measures neither, so present it per platform or label it as mixed.",
+                "type": "boolean"
+              },
+              "login_states": {
+                "description": "Observation surfaces behind the same sample: signed-in account, logged-out surface, or both.",
+                "items": {
+                  "enum": [
+                    "account",
+                    "anonymous"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 2,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "platforms": {
+                "description": "Platforms that contributed at least one valid run inside this period. This is what the numbers were measured on; task.platforms is only what the Task is configured for.",
+                "items": {
+                  "enum": [
+                    "doubao",
+                    "qianwen"
+                  ],
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "platforms",
+              "login_states",
+              "blended"
+            ],
+            "type": "object"
+          },
           "questions": {
             "items": {
               "additionalProperties": false,
@@ -2079,6 +2119,7 @@
         "required": [
           "task",
           "period",
+          "provenance",
           "latest_execution",
           "overview",
           "trends",
@@ -2173,7 +2214,7 @@
             "type": "integer"
           },
           "not_collected": {
-            "description": "Assignments that will never be collected: skipped work plus failed runs once the execution is terminal.",
+            "description": "Assignments that will never be collected: failed runs, plus assignments left without a run record once the batch is terminal.",
             "minimum": 0,
             "type": "integer"
           },
@@ -2315,9 +2356,11 @@
           "task_id",
           "task_name",
           "report_id",
+          "platform",
           "trigger",
           "status",
           "progress",
+          "login_states",
           "created_at"
         ],
         "type": "object"
@@ -3363,7 +3406,7 @@
                 "type": "integer"
               },
               "not_collected": {
-                "description": "Assignments that will never produce a collection record: skipped work plus failed runs on a terminal execution.",
+                "description": "Assignments that will never produce a collection record: failed runs, plus assignments left without a run record once the batch is terminal.",
                 "minimum": 0,
                 "type": "integer"
               },
@@ -5589,6 +5632,7 @@
         "required": [
           "report_id",
           "execution_id",
+          "platform",
           "status",
           "execution_status",
           "report_url",
@@ -5819,10 +5863,12 @@
           "report_id",
           "task_id",
           "execution_id",
+          "platform",
           "status",
           "execution_status",
           "report_url",
           "created_at",
+          "login_states",
           "versions",
           "collection",
           "analysis",
@@ -6123,6 +6169,7 @@
           "question",
           "platform",
           "status",
+          "login_state",
           "result_url",
           "task_id",
           "execution_id",
@@ -6273,6 +6320,7 @@
           "platform",
           "question",
           "status",
+          "login_state",
           "citations",
           "assignment_status"
         ],
@@ -14558,7 +14606,7 @@
     },
     "/v1/tasks/{taskId}/dashboard": {
       "get": {
-        "description": "Front-end-oriented aggregation for Doubao GEO SaaS. Returns overview KPIs, trends, competitors, citation domains, real query fan-out, cited-page observations, priority questions and evidence-grounded opportunities. It intentionally omits internal numeric project/batch/prompt IDs and raw browser/session data.",
+        "description": "Front-end-oriented aggregation for the GEO SaaS dashboard. Returns overview KPIs, trends, competitors, citation domains, real query fan-out, cited-page observations, priority questions and evidence-grounded opportunities, plus the provenance block naming which platforms and observation surfaces the sample actually came from. It intentionally omits internal numeric project/batch/prompt IDs and raw browser/session data.",
         "operationId": "getTasksByTaskIdDashboard",
         "parameters": [
           {

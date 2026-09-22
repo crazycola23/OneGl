@@ -31,6 +31,35 @@ async function distinctCitedDomainCount(pool, projectId, from, to) {
   return Number(rows[0]?.n ?? 0);
 }
 
+/**
+ * Which platforms and observation surfaces actually produced the runs behind these numbers.
+ * The window and the validity predicate are the ones loadProjectGeoIntelligence aggregates
+ * with, on purpose: a label describing a broader sample than the rate it annotates would be
+ * its own kind of wrong.
+ */
+async function contributedSurfaces(pool, projectId, from, to) {
+  const { rows } = await pool.query(
+    `SELECT array_agg(DISTINCT r.provider ORDER BY r.provider) AS platforms,
+            array_agg(DISTINCT r.login_state ORDER BY r.login_state) AS login_states
+       FROM runs r
+       JOIN prompts p ON p.id = r.prompt_id
+      WHERE p.project_id = $1
+        AND r.created_at >= $2
+        AND r.created_at <= $3
+        AND r.status IN ('success', 'partial')
+        AND r.conversation_reset_confirmed IS TRUE`,
+    [projectId, from, to],
+  );
+  const platforms = rows[0]?.platforms ?? [];
+  const loginStates = rows[0]?.login_states ?? [];
+  return {
+    platforms,
+    login_states: loginStates,
+    // One rate spanning two platforms, or signed-in and signed-out samples, measures neither.
+    blended: platforms.length > 1 || loginStates.length > 1,
+  };
+}
+
 function publicOpportunity(item = {}, source = "geo") {
   const evidence = item.evidence ?? {};
   const mappedEvidence = {};
@@ -171,12 +200,13 @@ export async function buildCustomerDashboard(pool, tenantId, taskId, { days = 30
   const projectId = Number(internal.project_id);
   const intelligence = await loadProjectGeoIntelligence(pool, projectId, { days });
   if (!intelligence) return null;
-  const [sourceContent, uniqueDomains] = await Promise.all([
+  const [sourceContent, uniqueDomains, surfaces] = await Promise.all([
     loadProjectDoubaoSourceSignals(pool, projectId, {
       from: intelligence.scope.from,
       to: intelligence.scope.to,
     }),
     distinctCitedDomainCount(pool, projectId, intelligence.scope.from, intelligence.scope.to),
+    contributedSurfaces(pool, projectId, intelligence.scope.from, intelligence.scope.to),
   ]);
 
   let latestExecution = null;
@@ -216,6 +246,7 @@ export async function buildCustomerDashboard(pool, tenantId, taskId, { days = 30
       from: intelligence.scope.from,
       to: intelligence.scope.to,
     },
+    provenance: surfaces,
     latest_execution: latestExecution ? {
       ...latestExecution,
       results_url: `/v1/executions/${latestExecution.execution_id}/results`,

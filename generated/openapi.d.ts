@@ -1196,7 +1196,7 @@ export interface paths {
         };
         /**
          * Get customer-facing GEO dashboard data for a task
-         * @description Front-end-oriented aggregation for Doubao GEO SaaS. Returns overview KPIs, trends, competitors, citation domains, real query fan-out, cited-page observations, priority questions and evidence-grounded opportunities. It intentionally omits internal numeric project/batch/prompt IDs and raw browser/session data.
+         * @description Front-end-oriented aggregation for the GEO SaaS dashboard. Returns overview KPIs, trends, competitors, citation domains, real query fan-out, cited-page observations, priority questions and evidence-grounded opportunities, plus the provenance block naming which platforms and observation surfaces the sample actually came from. It intentionally omits internal numeric project/batch/prompt IDs and raw browser/session data.
          */
         get: operations["getTasksByTaskIdDashboard"];
         put?: never;
@@ -1866,6 +1866,14 @@ export interface components {
                 /** Format: date-time */
                 to: string;
             };
+            provenance: {
+                /** @description True when more than one platform or surface contributed. One rate spanning two of them measures neither, so present it per platform or label it as mixed. */
+                blended: boolean;
+                /** @description Observation surfaces behind the same sample: signed-in account, logged-out surface, or both. */
+                login_states: ("account" | "anonymous")[];
+                /** @description Platforms that contributed at least one valid run inside this period. This is what the numbers were measured on; task.platforms is only what the Task is configured for. */
+                platforms: ("doubao" | "qianwen")[];
+            };
             questions: {
                 brand_mentions: number;
                 brand_visibility_rate: number | null;
@@ -1950,7 +1958,7 @@ export interface components {
         ExecutionProgress: {
             completed: number;
             failed: number;
-            /** @description Assignments that will never be collected: skipped work plus failed runs once the execution is terminal. */
+            /** @description Assignments that will never be collected: failed runs, plus assignments left without a run record once the batch is terminal. */
             not_collected: number;
             percent: number;
             remaining: number;
@@ -1964,12 +1972,12 @@ export interface components {
             /** Format: date-time */
             finished_at?: string | null;
             /** @description Observation surfaces behind these numbers. Empty before any run is recorded; two entries mean account and anonymous samples are blended in one rate. */
-            login_states?: ("account" | "anonymous")[];
+            login_states: ("account" | "anonymous")[];
             /**
              * @description Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.
              * @enum {string|null}
              */
-            platform?: "doubao" | "qianwen" | null;
+            platform: "doubao" | "qianwen" | null;
             progress: components["schemas"]["ExecutionProgress"];
             report_id: string | null;
             /** @example /v1/reports/rpt_0123456789abcdef0123456789abcdef */
@@ -2299,7 +2307,7 @@ export interface components {
             progress: {
                 completed: number;
                 failed: number;
-                /** @description Assignments that will never produce a collection record: skipped work plus failed runs on a terminal execution. */
+                /** @description Assignments that will never produce a collection record: failed runs, plus assignments left without a run record once the batch is terminal. */
                 not_collected: number;
                 skipped: number;
                 total: number;
@@ -2755,7 +2763,7 @@ export interface components {
              * @description Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.
              * @enum {string|null}
              */
-            platform?: "doubao" | "qianwen" | null;
+            platform: "doubao" | "qianwen" | null;
             report_id: string;
             report_url: string;
             /** @enum {string} */
@@ -2810,12 +2818,12 @@ export interface components {
                 [key: string]: unknown;
             } | null;
             /** @description Observation surfaces behind these numbers. Empty before any run is recorded; two entries mean account and anonymous samples are blended in one rate. */
-            login_states?: ("account" | "anonymous")[];
+            login_states: ("account" | "anonymous")[];
             /**
              * @description Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.
              * @enum {string|null}
              */
-            platform?: "doubao" | "qianwen" | null;
+            platform: "doubao" | "qianwen" | null;
             readiness: components["schemas"]["ReportReadiness"];
             report_id: string;
             report_url: string;
@@ -2880,7 +2888,7 @@ export interface components {
              * @description Whether the run behind this result was observed from a signed-in account or the anonymous surface. Null while no run has been recorded for the assignment.
              * @enum {string|null}
              */
-            login_state?: "account" | "anonymous" | null;
+            login_state: "account" | "anonymous" | null;
             mention_count?: number | null;
             /** @enum {string} */
             platform: "doubao" | "qianwen";
@@ -2911,7 +2919,7 @@ export interface components {
              * @description Whether the run behind this result was observed from a signed-in account or the anonymous surface. Null while no run has been recorded for the assignment.
              * @enum {string|null}
              */
-            login_state?: "account" | "anonymous" | null;
+            login_state: "account" | "anonymous" | null;
             /** @enum {string} */
             platform: "doubao" | "qianwen";
             question: string;

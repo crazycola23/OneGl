@@ -256,6 +256,7 @@ Accepted response:
     "task_id": "tsk_0123456789abcdef0123456789abcdef",
     "task_name": "小米汽车 GEO 监测",
     "report_id": "rpt_0123456789abcdef0123456789abcdef",
+    "platform": "doubao",
     "trigger": "manual",
     "status": "queued",
     "progress": {
@@ -263,9 +264,11 @@ Accepted response:
       "completed": 0,
       "failed": 0,
       "skipped": 0,
+      "not_collected": 0,
       "remaining": 2,
       "percent": 0
     },
+    "login_states": [],
     "created_at": "2026-09-16T09:31:00.000Z",
     "started_at": null,
     "finished_at": null,
@@ -313,6 +316,7 @@ Response:
       "completed": 7,
       "failed": 1,
       "skipped": 0,
+      "not_collected": 1,
       "remaining": 12,
       "percent": 40
     },
@@ -388,6 +392,7 @@ Response:
       "platform": "doubao",
       "status": "success",
       "login_state": "account",
+      "assignment_status": "collected",
       "brand_mentioned": true,
       "mention_count": 2,
       "finished_at": "2026-09-16T09:32:10.000Z",
@@ -434,6 +439,7 @@ Pending result:
     "question": "20万左右新能源SUV推荐",
     "status": "pending",
     "login_state": null,
+    "assignment_status": "not_started",
     "citations": []
   }
 }
@@ -451,6 +457,7 @@ Finished result:
     "question": "20万左右新能源SUV推荐",
     "status": "success",
     "login_state": "account",
+    "assignment_status": "collected",
     "answer": {
       "text": "……豆包回答正文……",
       "brand_mentioned": true,

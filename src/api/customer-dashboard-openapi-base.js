@@ -16,7 +16,7 @@ export function applyCustomerDashboardOpenApi(document) {
       type: "object",
       additionalProperties: false,
       required: [
-        "task", "period", "latest_execution", "overview", "trends", "competitors",
+        "task", "period", "provenance", "latest_execution", "overview", "trends", "competitors",
         "citations", "search_queries", "source_content", "questions", "opportunities", "meta",
       ],
       properties: {
@@ -41,6 +41,30 @@ export function applyCustomerDashboardOpenApi(document) {
             days: { type: "integer", minimum: 1, maximum: 365 },
             from: { type: "string", format: "date-time" },
             to: { type: "string", format: "date-time" },
+          },
+        },
+        provenance: {
+          type: "object",
+          additionalProperties: false,
+          required: ["platforms", "login_states", "blended"],
+          properties: {
+            platforms: {
+              type: "array",
+              uniqueItems: true,
+              items: { type: "string", enum: PROVIDERS() },
+              description: "Platforms that contributed at least one valid run inside this period. This is what the numbers were measured on; task.platforms is only what the Task is configured for.",
+            },
+            login_states: {
+              type: "array",
+              uniqueItems: true,
+              maxItems: 2,
+              items: { type: "string", enum: ["account", "anonymous"] },
+              description: "Observation surfaces behind the same sample: signed-in account, logged-out surface, or both.",
+            },
+            blended: {
+              type: "boolean",
+              description: "True when more than one platform or surface contributed. One rate spanning two of them measures neither, so present it per platform or label it as mixed.",
+            },
           },
         },
         latest_execution: {
@@ -273,7 +297,7 @@ export function applyCustomerDashboardOpenApi(document) {
     }],
     get: {
       summary: "Get customer-facing GEO dashboard data for a task",
-      description: "Front-end-oriented aggregation for Doubao GEO SaaS. Returns overview KPIs, trends, competitors, citation domains, real query fan-out, cited-page observations, priority questions and evidence-grounded opportunities. It intentionally omits internal numeric project/batch/prompt IDs and raw browser/session data.",
+      description: "Front-end-oriented aggregation for the GEO SaaS dashboard. Returns overview KPIs, trends, competitors, citation domains, real query fan-out, cited-page observations, priority questions and evidence-grounded opportunities, plus the provenance block naming which platforms and observation surfaces the sample actually came from. It intentionally omits internal numeric project/batch/prompt IDs and raw browser/session data.",
       parameters: [
         { name: "days", in: "query", schema: { type: "integer", minimum: 1, maximum: 365, default: 30 } },
         { name: "question_limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500, default: 100 } },

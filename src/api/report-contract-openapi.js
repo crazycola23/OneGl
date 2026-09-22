@@ -129,7 +129,7 @@ const reportContractSchemas = {
       completed: count,
       failed: count,
       skipped: count,
-      not_collected: { type: "integer", minimum: 0, description: "Assignments that will never produce a collection record: skipped work plus failed runs on a terminal execution." },
+      not_collected: { type: "integer", minimum: 0, description: "Assignments that will never produce a collection record: failed runs, plus assignments left without a run record once the batch is terminal." },
     }, { required: ["total", "completed", "failed", "skipped", "not_collected"] }),
   }, { required: ["status", "progress"] }),
 
@@ -600,7 +600,7 @@ export function applyReportContractOpenApi(document) {
     schemas.ExecutionProgress.properties.not_collected = {
       type: "integer",
       minimum: 0,
-      description: "Assignments that will never be collected: skipped work plus failed runs once the execution is terminal.",
+      description: "Assignments that will never be collected: failed runs, plus assignments left without a run record once the batch is terminal.",
     };
     schemas.ExecutionProgress.required = [
       ...(schemas.ExecutionProgress.required ?? []),

@@ -230,7 +230,7 @@ export function applySaasOpenApi(document) {
     },
     ExecutionResource: {
       type: "object",
-      required: ["execution_id", "task_id", "task_name", "report_id", "trigger", "status", "progress", "created_at"],
+      required: ["execution_id", "task_id", "task_name", "report_id", "platform", "trigger", "status", "progress", "login_states", "created_at"],
       properties: {
         execution_id: executionId,
         task_id: taskId,
@@ -250,7 +250,7 @@ export function applySaasOpenApi(document) {
     },
     ResultListItem: {
       type: "object",
-      required: ["result_id", "question", "platform", "status", "result_url"],
+      required: ["result_id", "question", "platform", "status", "login_state", "result_url"],
       properties: {
         result_id: resultId,
         question: { type: "string" },
@@ -283,7 +283,7 @@ export function applySaasOpenApi(document) {
     },
     ResultResource: {
       type: "object",
-      required: ["result_id", "task_id", "execution_id", "platform", "question", "status", "citations"],
+      required: ["result_id", "task_id", "execution_id", "platform", "question", "status", "login_state", "citations"],
       properties: {
         result_id: resultId,
         task_id: taskId,
@@ -308,7 +308,7 @@ export function applySaasOpenApi(document) {
     },
     ReportResource: {
       type: "object",
-      required: ["report_id", "task_id", "execution_id", "status", "execution_status", "report_url", "created_at"],
+      required: ["report_id", "task_id", "execution_id", "platform", "status", "execution_status", "report_url", "created_at", "login_states"],
       properties: {
         report_id: reportId,
         task_id: taskId,
@@ -326,7 +326,7 @@ export function applySaasOpenApi(document) {
     },
     ReportListItem: {
       type: "object",
-      required: ["report_id", "execution_id", "status", "execution_status", "report_url", "created_at"],
+      required: ["report_id", "execution_id", "platform", "status", "execution_status", "report_url", "created_at"],
       properties: {
         report_id: reportId,
         execution_id: executionId,

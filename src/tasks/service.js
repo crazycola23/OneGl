@@ -482,7 +482,7 @@ export async function getExecution(pool, tenantId, executionId) {
       completed,
       failed,
       skipped,
-      not_collected: await countNotCollected(pool, row.id),
+      not_collected: await countNotCollected(pool, row.id, row.batch_status),
       remaining: Math.max(0, requested - done),
       percent: requested ? Math.round((done / requested) * 1000) / 10 : 0,
     },
@@ -495,18 +495,22 @@ export async function getExecution(pool, tenantId, executionId) {
 }
 
 /**
- * A result row is only ever created, never deleted, so its identity is stable for an
- * execution. `internalExecutionId` is null when the caller has no resolved execution,
- * in which case nothing can be not-collected yet.
+ * Assignments that will never produce data. Counting an assignment with no run row only makes
+ * sense once the batch is terminal - while it is still running, an untouched question is just
+ * work that has not started, and counting it here would report a shrinking `remaining` as
+ * already lost. Failed runs count in both states because that assignment is closed either way.
  */
-export async function countNotCollected(pool, internalExecutionId) {
+export async function countNotCollected(pool, internalExecutionId, batchStatus = null) {
   if (!internalExecutionId) return 0;
   const { rows } = await pool.query(
-    `SELECT count(*) FILTER (WHERE r.status IS NULL OR r.status = 'failed') AS not_collected
+    `SELECT count(*) FILTER (
+              WHERE r.status = 'failed'
+                 OR ($2::boolean AND r.status IS NULL)
+             ) AS not_collected
        FROM service_task_results sr
        LEFT JOIN runs r ON r.local_run_id = sr.run_id
       WHERE sr.execution_id = $1`,
-    [internalExecutionId],
+    [internalExecutionId, TERMINAL_BATCH_STATUSES.includes(batchStatus)],
   );
   return Number(rows[0]?.not_collected ?? 0);
 }

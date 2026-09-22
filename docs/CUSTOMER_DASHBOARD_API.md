@@ -115,6 +115,11 @@ GET /v1/results/{result_id}
       "from": "2026-08-17T00:00:00.000Z",
       "to": "2026-09-16T00:00:00.000Z"
     },
+    "provenance": {
+      "platforms": ["doubao"],
+      "login_states": ["account"],
+      "blended": false
+    },
     "latest_execution": {},
     "overview": {},
     "trends": {
@@ -131,6 +136,16 @@ GET /v1/results/{result_id}
   }
 }
 ```
+
+## provenance：这批数字来自哪里
+
+`overview`、`trends`、`citations` 是 `period` 窗口内该项目全部有效采集的合计，`provenance` 说明这个合计里混了哪些口径：
+
+- `platforms`：真正贡献了有效样本的平台。`task.platforms` 只是任务配置，不代表这段时间采到了谁。
+- `login_states`：`account` 是登录账号视角，`anonymous` 是未登录视角。
+- `blended`：平台或视角任一超过一个即为 `true`。这时可见率/引用率不属于其中任何一个口径，前端要么按平台分开呈现，要么明确标注为混合，不能当成单一数字使用。
+
+判定条件与聚合本身一致（`status in (success, partial)` 且会话已重置确认），所以标签描述的就是产出这些数字的那批样本。
 
 ## 不会返回的内容
 
