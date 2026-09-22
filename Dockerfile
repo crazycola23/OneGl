@@ -14,6 +14,7 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+COPY tools/prepare-camoufox-url.py /tmp/prepare-camoufox-url.py
 # Keep Chromium installed as an explicit troubleshooting fallback. Camoufox uses
 # its own Firefox-derived binary but still needs the Linux Firefox runtime libs.
 RUN apt-get update \
@@ -32,8 +33,11 @@ USER onegl
 
 # Install the active Camoufox browser into the runtime user's cache so API remote-auth
 # sessions and workers resolve the same browser build without root-owned cache files.
-RUN /opt/camoufox/bin/python -m camoufox set official/stable \
+RUN /opt/camoufox/bin/python -m camoufox sync \
+    && /opt/camoufox/bin/python -m camoufox set official/stable \
+    && /opt/camoufox/bin/python /tmp/prepare-camoufox-url.py \
     && /opt/camoufox/bin/python -m camoufox fetch \
+    && /opt/camoufox/bin/python /tmp/prepare-camoufox-url.py --restore \
     && /opt/camoufox/bin/python -c "from camoufox.pkgman import installed_verstr; print('Camoufox installed:', installed_verstr())"
 
 COPY --chown=onegl:onegl . .
