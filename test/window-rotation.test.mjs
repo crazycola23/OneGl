@@ -3,7 +3,8 @@ import test from "node:test";
 
 import { camoufoxLaunchPayload } from "../src/browser.js";
 import { loadConfig } from "../src/config.js";
-import { safetyConfig, shouldRotateContext } from "../src/accounts/safety.js";
+import { safetyConfig, shouldRotateContext, windowPromptLimit } from "../src/accounts/safety.js";
+import { qianwenWebProfile } from "../src/providers/qianwen-web.js";
 
 function browserConfig(overrides = {}) {
   return loadConfig({
@@ -69,5 +70,15 @@ test("window rotation fires on the configured prompt count only", () => {
   assert.equal(shouldRotateContext(3, 3), true, "the limit is inclusive of the served prompts");
   assert.equal(shouldRotateContext(1, 0), false, "0 disables rotation entirely");
   assert.equal(shouldRotateContext(99, null), false);
-  assert.equal(safetyConfig().roundPromptLimit, Number(process.env.ONEGL_ROUND_PROMPT_LIMIT ?? 3));
+  // 默认必须是关的：开着它等于顺手改掉豆包的会话行为，那是另一件事。
+  assert.equal(safetyConfig().roundPromptLimit, Number(process.env.ONEGL_ROUND_PROMPT_LIMIT ?? 0));
+  assert.equal(windowPromptLimit(undefined, 0), 0, "a provider with no profile value inherits the global default");
+});
+
+test("a provider declares its own isolation strength without moving anyone else", () => {
+  // 千问每问一个干净会话；豆包没有 profile，仍按全局默认。
+  assert.equal(windowPromptLimit(1, 0), 1);
+  assert.equal(windowPromptLimit(qianwenWebProfile.quota.promptsPerWindow, 0), 1);
+  assert.equal(windowPromptLimit(undefined, 3), 3);
+  assert.equal(windowPromptLimit(0, 3), 3, "0 from a profile means unset, not rotate-every-prompt");
 });

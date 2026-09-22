@@ -165,13 +165,44 @@ function classifyFailure(scan, context) {
  * The marketing overlay is not decoration: it holds the pointer and swallows Enter, and every
  * "submit did nothing" observed during Phase 0 traced back to it.
  */
+/**
+ * Make the composer genuinely clickable, or say so.
+ *
+ * 千问's home page can mount a guide-carousel dialog (`div[role="dialog"]` around
+ * `img[data-testid="home-guide-carousel-image"]`) above the composer. It has no 关闭 button and
+ * it intercepts pointer events, so one Escape at a fixed delay is not enough - the dialog can
+ * mount *after* the attempt, and the failure then surfaces downstream as a 10-second
+ * `locator.click` timeout with nothing captured. A trial click checks actionability without
+ * clicking, so dismissal is retried until the composer is really reachable.
+ */
+async function waitForClickableComposer(page, context, { timeoutMs = 30_000 } = {}) {
+  const composer = page.locator(context.composer).first();
+  const deadline = Date.now() + timeoutMs;
+  let dismissalAttempts = 0;
+  for (;;) {
+    try {
+      await composer.click({ trial: true, timeout: 2_000 });
+      await composer.click({ timeout: 5_000 });
+      return { clickable: true, dismissalAttempts };
+    } catch {
+      // not clickable yet
+    }
+    if (Date.now() > deadline) return { clickable: false, dismissalAttempts };
+    dismissalAttempts += 1;
+    await page.keyboard.press("Escape").catch(() => undefined);
+    for (const selector of context.interstitials) {
+      await page.locator(selector).first().click({ timeout: 1_500 }).catch(() => undefined);
+    }
+    await page.waitForTimeout(700);
+  }
+}
+
 export async function openQianwen(page, config, profile) {
   const context = driverContext(profile);
   await page
     .goto(profile.entryUrl, { waitUntil: "domcontentloaded", timeout: config.timeoutMs ?? 60_000 })
     .catch(() => undefined);
   await page.waitForTimeout(2_000);
-  await page.keyboard.press("Escape").catch(() => undefined);
   for (const selector of context.interstitials) {
     await page.locator(selector).first().click({ timeout: 2_000 }).catch(() => undefined);
   }
@@ -183,6 +214,14 @@ export async function openQianwen(page, config, profile) {
       classifyFailure(current, context) ?? ErrorCode.LOGIN_REQUIRED,
       "千问对话输入框未出现，匿名采集无法开始。",
       { stage: "open", url: current?.url ?? page.url() },
+    );
+  }
+  const clickable = await waitForClickableComposer(page, context);
+  if (!clickable.clickable) {
+    throw new DoubaoMvpError(
+      ErrorCode.PAGE_CHANGED,
+      "千问首页浮层持续遮挡输入框且清不掉；本轮不提问，避免把一次失败记成空答案。",
+      { stage: "open", dismissalAttempts: clickable.dismissalAttempts, url: page.url() },
     );
   }
   return page;
@@ -198,8 +237,16 @@ export async function openQianwen(page, config, profile) {
  */
 async function submitAndWait(page, prompt, config, context) {
   const composer = page.locator(context.composer).first();
-  // No force: force skips the hit-test and lands the click on whatever overlay is on top.
-  await composer.click({ timeout: 10_000 });
+  // openQianwen already focused the composer, and Slate re-renders the editable node on focus.
+  // Clicking a second time waits on a node that has since been replaced, which is how a run
+  // died on a 10s click timeout *after* a successful open. Only click when it is not focused.
+  const focused = await page
+    .evaluate(() => document.activeElement?.getAttribute("data-slate-editor") === "true")
+    .catch(() => false);
+  if (!focused) {
+    // No force: force skips the hit-test and lands the click on whatever overlay is on top.
+    await composer.click({ timeout: 6_000 });
+  }
   await composer.pressSequentially(prompt, { delay: 25 });
 
   const afterTyping = await scan(page, context);

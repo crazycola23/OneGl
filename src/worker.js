@@ -15,6 +15,7 @@ import {
   recordAccountSuccess,
   safetyConfig,
   shouldRotateContext,
+  windowPromptLimit,
 } from "./accounts/safety.js";
 import { reclaimStaleAccountWorkers } from "./accounts/worker-reconcile.js";
 import { launchBrowserSession } from "./browser.js";
@@ -182,15 +183,17 @@ async function getSession({ accountKey, provider }) {
  * 重启 Camoufox 反而会去踩 browser.js 里那棵孤儿进程树的坑。
  */
 async function prepareWindow(session, account) {
-  if (!shouldRotateContext(session.contextPrompts, safety.roundPromptLimit)) return;
+  const adapter = getProviderAdapter(account.provider);
+  const limit = windowPromptLimit(adapter.profile?.quota?.promptsPerWindow, safety.roundPromptLimit);
+  if (!shouldRotateContext(session.contextPrompts, limit)) return;
   const accountConfig = loadConfig(account);
   await session.rotateContext();
-  await getProviderAdapter(account.provider).openPage(session.page, accountConfig);
+  await adapter.openPage(session.page, accountConfig);
   log({
     event: "window-rotated",
     account_key: account.accountKey,
     provider: account.provider,
-    round_prompt_limit: safety.roundPromptLimit,
+    round_prompt_limit: limit,
   });
 }
 

@@ -69,7 +69,15 @@ export const qianwenWebProfile = {
   /** 匿名浮层与干扰项，driver 必须先清掉再判定会话状态。 */
   interstitials: {
     modalTextPatterns: [/工作助理再升级|立即体验/],
-    dismissSelectors: ['button:has-text("关闭")', '[aria-label="关闭"]'],
+    // 实测到两种：促销浮层（有 aria-label="关闭" 的图标按钮）与首页引导轮播（没有关闭按钮，
+    // 盖在输入框上拦截指针）。后者是 Radix Dialog（节点 id 形如 radix:r3n），所以除了点关闭
+    // 图标，还要走它自带的遮罩层 —— 点遮罩是真人会做的动作，不是改动页面 DOM。
+    dismissSelectors: [
+      '[aria-label="关闭"]',
+      'button:has-text("关闭")',
+      "[data-radix-dialog-overlay]",
+      '[role="dialog"] ~ div[class*="overlay"]',
+    ],
   },
 
   /**
@@ -84,7 +92,12 @@ export const qianwenWebProfile = {
    * "quota spent", and the campaign then sleeps until midnight instead of escalating.
    */
   quota: {
-    promptsPerWindow: 3,
+    // 1, not 3. 千问的驱动没有豆包那种「提问前先点新对话」的动作，而一个窗口里的第二个问题
+    // 会落在同一个对话上下文中 —— 那测的就不再是"独立提问下的可见性"，而是"就刚才的话题
+    // 追问一句之后的可见性"，第二轮答案更容易重复提到第一轮的品牌，引用率被人为抬高。
+    // 每问换窗口用已有的 rotateContext（保留 cookie、复用浏览器进程）拿到干净会话，
+    // 同时避免高频重启 Camoufox 踩孤儿进程树那个坑。
+    promptsPerWindow: 1,
     // 6 次匿名提问全部拿到完整回答，未出现任何次数上限文案；页面上唯一与账号有关的文本是
     // 「登录可同步历史对话，解锁更多功能」这句提示，它不是墙。所以这一项保持为空，
     // 并按"只影响可解释性、不影响数据正确性"降级为告警：真撞上墙时该次会以 TIMEOUT
