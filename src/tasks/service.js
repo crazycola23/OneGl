@@ -392,8 +392,10 @@ export async function ensureExecutionResourcesForBatch(pool, {
 
   const { rows: assignments } = await pool.query(
     `SELECT sbp.selection_index, sbp.prompt_id, COALESCE(sbp.prompt_text, p.prompt) AS question,
+            b.provider AS batch_provider,
             p.external_id, s.repetition_index, s.repetition_count
        FROM sampling_batch_prompts sbp
+       JOIN sampling_batches b ON b.id = sbp.batch_id
        LEFT JOIN prompts p ON p.id = sbp.prompt_id
        LEFT JOIN service_task_questions s ON s.task_id = $2 AND s.external_id = p.external_id
       WHERE sbp.batch_id = $1
@@ -413,11 +415,13 @@ export async function ensureExecutionResourcesForBatch(pool, {
       `INSERT INTO service_task_results
          (public_id, tenant_id, execution_id, batch_id, selection_index, prompt_id, question, platform, run_id,
           external_id, repetition_index, repetition_count)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'doubao', $8, $9, $10, $11)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $12, $8, $9, $10, $11)
        ON CONFLICT (execution_id, selection_index) DO NOTHING`,
       [publicId("res"), tenantId, execution.id, batchId, assignment.selection_index, assignment.prompt_id,
         assignment.question, runIdFor(batchId, Number(assignment.selection_index)), externalId,
-        assignment.repetition_index, assignment.repetition_count],
+        assignment.repetition_index, assignment.repetition_count,
+        // 结果行的平台跟着它自己的批次走，写死会让千问的执行结果显示成 doubao。
+        assignment.batch_provider ?? "doubao"],
     );
   }
   return execution;

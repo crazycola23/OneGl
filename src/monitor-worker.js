@@ -53,6 +53,9 @@ async function emitEvent(context, eventType, payload) {
 
 async function resolvedAccounts(context) {
   const externalIds = Array.isArray(context.account_ids) ? context.account_ids.map(String) : [];
+  // 巡检计划目前没有平台维度（doubao_monitor_plans 也没有这一列），所以它解析到的账号
+  // 只可能是豆包的。让某个计划跑别的平台需要一次带 platform 列的 migration，
+  // 不是把这里的字面量改掉就行 —— 保持显式，别让它看起来像漏改。
   const { rows } = await pool.query(
     `SELECT external_id, account_key
        FROM service_account_bindings

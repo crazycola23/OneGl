@@ -86,11 +86,19 @@ test("batch contract validates method, limits and account list", () => {
       seed: null,
       accounts: ["a", "b"],
       repeats: 2,
+      // 不传 platform 的既有集成必须继续落在默认平台上。
+      platform: "doubao",
       start: true,
     },
   );
   assert.throws(() => parseBatchCreate({ project_id: 1, accounts: [], method: "random" }), ApiHttpError);
   assert.throws(() => parseBatchCreate({ project_id: 1, accounts: ["a"], method: "nope" }), ApiHttpError);
+  assert.equal(parseBatchCreate({ project_id: 1, accounts: ["a"], platform: "Qianwen " }).platform, "qianwen");
+  assert.throws(
+    () => parseBatchCreate({ project_id: 1, accounts: ["a"], platform: "yuanbao" }),
+    (error) => error instanceof ApiHttpError && error.code === "unsupported_platform",
+    "an unregistered platform must be rejected at the edge, not enqueued and left stranded",
+  );
   assert.equal(parseLimit("", 7, 20), 7);
   assert.equal(parseLimit("20", 7, 20), 20);
   assert.throws(() => parseLimit("99", 7, 20), ApiHttpError);

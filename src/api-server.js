@@ -60,7 +60,7 @@ import {
   listRuns,
 } from "./db/dashboard.js";
 import { addKeywords, countActiveKeywords, listProjectKeywords } from "./project/keywords.js";
-import { getProviderAdapter } from "./providers/index.js";
+import { defaultProviderId, getProviderAdapter, supportedProviderIds } from "./providers/index.js";
 import { batchProgress, enqueueBatch, stopBatch } from "./queue/batches.js";
 import { isQueueConfigured } from "./queue/connection.js";
 import { createSamplingBatch } from "./sampling/batch.js";
@@ -184,12 +184,12 @@ async function createBatchResource(db, tenant, body) {
     });
   }
 
-  const resolved = await resolveTenantAccountKeys(db, tenant.id, input.accounts);
+  const resolved = await resolveTenantAccountKeys(db, tenant.id, input.accounts, input.platform);
   const internalKeys = resolved.map((item) => item.accountKey);
   const { rows: accountRows } = await db.query(
     `SELECT account_key, enabled, status, cooldown_until
-       FROM accounts WHERE provider = 'doubao' AND account_key = ANY($1::text[])`,
-    [internalKeys],
+       FROM accounts WHERE provider = $2 AND account_key = ANY($1::text[])`,
+    [internalKeys, input.platform],
   );
   const byKey = new Map(accountRows.map((row) => [row.account_key, row]));
   const blocked = resolved.filter((item) => !isAccountExecutable(byKey.get(item.accountKey) ?? {}));
@@ -211,6 +211,7 @@ async function createBatchResource(db, tenant, body) {
     seed: input.seed,
     accounts: internalKeys,
     repeats: input.repeats,
+    provider: input.platform,
   }, { log: () => undefined });
 
   const response = {
@@ -240,13 +241,35 @@ async function externalizeRuns(db, tenantId, runs) {
   }));
 }
 
-async function getAccountBinding(db, tenantId, externalId, provider = "doubao") {
-  const { rows } = await db.query(
-    `SELECT id, tenant_id, provider, account_key, external_id, label
-       FROM service_account_bindings
-      WHERE tenant_id = $1 AND provider = $2 AND external_id = $3`,
-    [tenantId, provider, externalId],
-  );
+/**
+ * A tenant addresses a provider account by its own external id, but that id is unique only
+ * per platform - one tenant can bind "acct-01" to Doubao and to Qianwen. Picking whichever row
+ * comes back first would make the same URL mean a different platform on different days, so an
+ * ambiguous id fails with the parameter that resolves it.
+ */
+async function getAccountBinding(db, tenantId, externalId, provider = null) {
+  const { rows } = provider
+    ? await db.query(
+        `SELECT id, tenant_id, provider, account_key, external_id, label
+           FROM service_account_bindings
+          WHERE tenant_id = $1 AND provider = $2 AND external_id = $3`,
+        [tenantId, provider, externalId],
+      )
+    : await db.query(
+        `SELECT id, tenant_id, provider, account_key, external_id, label
+           FROM service_account_bindings
+          WHERE tenant_id = $1 AND external_id = $2
+          ORDER BY provider`,
+        [tenantId, externalId],
+      );
+  if (!provider && rows.length > 1) {
+    throw new ApiHttpError(
+      409,
+      "ambiguous_account_provider",
+      `account ${externalId} is bound on more than one platform; send ?provider= to disambiguate`,
+      { providers: rows.map((row) => row.provider) },
+    );
+  }
   return rows[0] ?? null;
 }
 
@@ -383,8 +406,14 @@ async function routeApi(req, res, url) {
   if (req.method === "POST" && pathname === `${API_PREFIX}/accounts`) {
     requireScope(auth, "accounts:write");
     const body = await readJsonBody(req);
-    const provider = String(body.provider ?? "doubao").trim().toLowerCase();
-    if (provider !== "doubao") throw new ApiHttpError(422, "unsupported_provider", "only doubao is currently supported");
+    const provider = String(body.provider ?? defaultProviderId()).trim().toLowerCase();
+    if (!supportedProviderIds().includes(provider)) {
+      throw new ApiHttpError(
+        422,
+        "unsupported_provider",
+        `only a platform with a registered adapter can be bound: ${supportedProviderIds().join(", ")}`,
+      );
+    }
     const account = await ensureTenantAccount(db, {
       tenantId: tenant.id,
       provider,
@@ -431,7 +460,7 @@ async function routeApi(req, res, url) {
   if (req.method === "POST" && createAuth) {
     requireScope(auth, "accounts:write");
     const externalId = decodeURIComponent(createAuth[1]);
-    const account = await getAccountBinding(db, tenant.id, externalId);
+    const account = await getAccountBinding(db, tenant.id, externalId, url.searchParams.get("provider"));
     if (!account) throw new ApiHttpError(404, "account_not_found", `account ${externalId} was not found`);
     // Remote login drives a concrete provider surface. Without a registered adapter the
     // session would open one platform's login modal and store the result under another

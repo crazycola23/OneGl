@@ -1,4 +1,5 @@
 import { persistRun } from "../db/persist.js";
+import { defaultProviderId, supportedProviderIds } from "../providers/index.js";
 import { assignAccounts, selectPrompts } from "./sample.js";
 import { generateSeed } from "./random.js";
 
@@ -39,9 +40,17 @@ export async function createSamplingBatch(
     accounts = [],
     repeats = 1,
     monitorExecutionId = null,
+    provider = defaultProviderId(),
   },
   { log = console.log } = {},
 ) {
+  // A batch on a platform with no registered adapter would enqueue into a queue no worker can
+  // service, and sit there looking like it is still running. Fail at creation instead.
+  if (!supportedProviderIds().includes(provider)) {
+    throw new Error(
+      `平台 ${JSON.stringify(provider)} 没有已注册的采集 adapter，可用：${supportedProviderIds().join(", ")}`,
+    );
+  }
   const projectResult = await pool.query("SELECT id, target_brand FROM projects WHERE name = $1", [
     projectName,
   ]);
@@ -85,7 +94,7 @@ export async function createSamplingBatch(
          project_id, name, provider, pool_version, pool_size, sample_size,
          sampling_method, sampling_seed, account_keys, repeats, status, monitor_execution_id
        )
-       VALUES ($1, $2, 'doubao', $3, $4, $5, $6, $7, $8::jsonb, $9, 'pending', $10)
+       VALUES ($1, $2, $11, $3, $4, $5, $6, $7, $8::jsonb, $9, 'pending', $10)
        RETURNING id`,
       [
         project.id,
@@ -98,6 +107,7 @@ export async function createSamplingBatch(
         JSON.stringify(accounts),
         repeats,
         monitorExecutionId,
+        provider,
       ],
     );
     const batchId = Number(batchResult.rows[0].id);

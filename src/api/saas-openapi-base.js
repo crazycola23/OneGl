@@ -151,7 +151,7 @@ export function applySaasOpenApi(document) {
           maxItems: 20,
           uniqueItems: true,
           items: { type: "string", enum: PROVIDERS() },
-          default: ["doubao"],
+          default: [DEFAULT_PROVIDER()],
         },
         account_ids: {
           type: "array",
@@ -423,7 +423,7 @@ export function applySaasOpenApi(document) {
       },
       post: {
         summary: "Create a reusable task from questions and selected platforms",
-        description: "Currently only doubao is executable. Persist the returned task_id in the calling SaaS. Send Idempotency-Key from the SaaS job/request ID to make network retries safe.",
+        description: "Executable platforms are exactly those with a registered collection adapter; an unsupported platform is rejected with unsupported_platform. Persist the returned task_id in the calling SaaS. Send Idempotency-Key from the SaaS job/request ID to make network retries safe.",
         parameters: [idempotencyHeader],
         requestBody: body({ $ref: "#/components/schemas/TaskCreate" }, {
           external_id: "saas_project_1024",

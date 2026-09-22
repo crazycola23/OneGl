@@ -1,4 +1,5 @@
 import { ApiHttpError, parsePositiveInt, stringArray } from "./http.js";
+import { defaultProviderId, supportedProviderIds } from "../providers/index.js";
 
 export function parseProjectCreate(body) {
   const name = String(body.name ?? "").trim();
@@ -27,8 +28,16 @@ export function parseBatchCreate(body) {
   }
   const seed = body.seed == null ? null : String(body.seed).trim() || null;
   const name = body.name == null ? null : String(body.name).trim() || null;
+  // Optional: which platform to collect on. Absent means the default provider, so every
+  // existing integration keeps its behaviour without sending anything new.
+  const platform = body.platform == null ? defaultProviderId() : String(body.platform).trim().toLowerCase();
+  if (!supportedProviderIds().includes(platform)) {
+    throw new ApiHttpError(422, "unsupported_platform", `platform must be one of: ${supportedProviderIds().join(", ")}`, {
+      supported: supportedProviderIds(),
+    });
+  }
   const start = body.start === true;
-  return { projectId, size, repeats, accounts, method, seed, name, start };
+  return { projectId, size, repeats, accounts, method, seed, name, platform, start };
 }
 
 export function parseLimit(value, fallback = 100, max = 500) {

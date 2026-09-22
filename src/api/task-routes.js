@@ -17,6 +17,7 @@ import { addQuestionEntries, countActiveKeywords } from "../project/keywords.js"
 import { batchProgress, enqueueBatch, stopBatch } from "../queue/batches.js";
 import { pauseBatch, resumeBatch } from "../queue/batch-control.js";
 import { evaluateBatchDetail } from "../report/evaluation.js";
+import { supportedProviderIds } from "../providers/index.js";
 import { buildOptimizationHtmlReport } from "../report/html-report-optimization.js";
 import { buildReportContract, contractToRenderDetail } from "../reporting/report-contract.js";
 import {
@@ -192,9 +193,18 @@ async function createExecutionResource(db, tenant, taskId, raw = {}, triggerType
   if (!task || !internal || task.state === "archived") throw new ApiHttpError(404, "task_not_found", "task was not found");
 
   const platforms = raw.platforms ?? task.platforms;
-  if (!Array.isArray(platforms) || platforms.length !== 1 || String(platforms[0]).toLowerCase() !== "doubao") {
-    throw new ApiHttpError(422, "unsupported_platform", "only doubao is currently executable");
+  // One platform per execution for now; anything with a registered adapter is executable, and
+  // the message names what is actually available instead of asserting a single vendor.
+  if (!Array.isArray(platforms) || platforms.length !== 1
+    || !supportedProviderIds().includes(String(platforms[0]).toLowerCase())) {
+    throw new ApiHttpError(
+      422,
+      "unsupported_platform",
+      `platforms must be exactly one of: ${supportedProviderIds().join(", ")}`,
+      { supported: supportedProviderIds() },
+    );
   }
+  const platform = String(platforms[0]).toLowerCase();
   const accountIds = raw.account_ids ?? task.account_ids;
   const resolved = await checkExecutionAccounts(db, tenant.id, accountIds);
   const keywordStats = await countActiveKeywords(db, internal.project_id);
@@ -212,6 +222,7 @@ async function createExecutionResource(db, tenant, taskId, raw = {}, triggerType
     seed: raw.seed ?? null,
     accounts: resolved.map((row) => row.accountKey),
     repeats,
+    provider: platform,
   }, { log: () => undefined });
 
   const parent = parentExecutionId

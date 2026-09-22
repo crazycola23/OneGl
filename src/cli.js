@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { readFile } from "node:fs/promises";
-import { loadConfig } from "./config.js";
+import { loadConfig, normalizeProviderId } from "./config.js";
+import { defaultProviderId, supportedProviderIds } from "./providers/index.js";
 import { launchBrowserSession } from "./browser.js";
 import {
   inspectSession,
@@ -501,7 +502,12 @@ async function sampleCommand(args) {
     throw new Error("--accounts account_01,account_02 is required (or set ONEGL_ACCOUNTS)");
   }
 
-  await ensureAccounts(pool, { accountKeys: accounts });
+  const provider = typeof args.provider === "string"
+    ? normalizeProviderId(args.provider)
+    : defaultProviderId();
+  // 匿名面没有真人账号，但要占一条限额/队列通道：用 --accounts 指定的那个键作为
+  // 「出口身份」行。它仍然受每小时/每天上限与冷却约束，这正是它存在的理由。
+  await ensureAccounts(pool, { accountKeys: accounts, provider });
 
   const name =
     typeof args.name === "string"
@@ -516,11 +522,13 @@ async function sampleCommand(args) {
     seed,
     accounts,
     repeats,
+    provider,
   });
 
   console.log(
     `\n复现这次抽样：\n  npm run sample -- --project "${project}" --size ${result.sampleSize} ` +
-      `--method ${method} --seed ${result.seed} --accounts ${accounts.join(",")} --repeats ${repeats}`,
+      `--method ${method} --seed ${result.seed} --accounts ${accounts.join(",")} --repeats ${repeats}` +
+      (provider === defaultProviderId() ? "" : ` --provider ${provider}`),
   );
   console.log(`\n执行该批次：\n  npm run batch:run -- --batch ${result.batchId}`);
 }
