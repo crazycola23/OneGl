@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -136,22 +137,37 @@ def download_parallel(buffer, url: str):
 
     def fetch_part(index: int, start: int, end: int) -> Path:
         path = parts_dir / f"{index:04d}.part"
-        response = requests.get(
-            url,
-            headers={"Range": f"bytes={start}-{end}", "Accept-Encoding": "identity"},
-            stream=True,
-            timeout=(60, 300),
+        result = subprocess.run(
+            [
+                "curl",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--location",
+                "--retry",
+                "3",
+                "--retry-delay",
+                "2",
+                "--connect-timeout",
+                "60",
+                "--max-time",
+                "900",
+                "--header",
+                "Accept-Encoding: identity",
+                "--range",
+                f"{start}-{end}",
+                "--output",
+                str(path),
+                url,
+            ],
+            capture_output=True,
+            text=True,
         )
-        response.raise_for_status()
-        if response.status_code != 206:
-            raise RuntimeError(f"Camoufox asset ignored range request: HTTP {response.status_code}")
+        if result.returncode != 0:
+            detail = (result.stderr or "curl failed").strip()
+            raise RuntimeError(f"Camoufox range download failed: {detail[-400:]}")
         expected = end - start + 1
-        received = 0
-        with path.open("wb") as output:
-            for chunk in response.iter_content(1024 * 1024):
-                if chunk:
-                    output.write(chunk)
-                    received += len(chunk)
+        received = path.stat().st_size if path.exists() else 0
         if received != expected:
             raise RuntimeError(
                 f"Camoufox range {start}-{end} was truncated: {received}/{expected} bytes"
