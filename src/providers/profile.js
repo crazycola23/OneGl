@@ -12,23 +12,23 @@ import { PROVIDER_ACCESS } from "./contract.js";
 
 const REQUIRED_TEXT_FIELDS = ["id", "provider", "model"];
 
-function patternList(value, field, profileId, errors) {
+function patternList(value, field, profileId, report) {
   if (!Array.isArray(value)) {
-    errors.push(`${profileId}.${field} must be an array of RegExp or strings`);
+    report(field, `${profileId}.${field} must be an array of RegExp or strings`);
     return;
   }
   value.forEach((entry, index) => {
     if (!(entry instanceof RegExp) && typeof entry !== "string") {
-      errors.push(`${profileId}.${field}[${index}] must be a RegExp or a string`);
+      report(`${field}[${index}]`, `${profileId}.${field}[${index}] must be a RegExp or a string`);
     }
   });
 }
 
-function stringList(value, field, profileId, errors) {
+function stringList(value, field, profileId, report) {
   // An empty array must fail: it is exactly the shape of "nobody measured this yet", and
   // treating it as valid is what would let an unprobed profile reach a live site.
   if (!Array.isArray(value) || value.length === 0 || value.some((entry) => typeof entry !== "string" || !entry.trim())) {
-    errors.push(`${profileId}.${field} must be a non-empty array of strings`);
+    report(field, `${profileId}.${field} must be a non-empty array of strings`);
   }
 }
 
@@ -40,8 +40,31 @@ export const CITATION_TIERS = Object.freeze({
   DOM_ONLY: "dom-only",
 });
 
+/**
+ * Fields whose absence can only cost explanation, never correctness.
+ *
+ * The distinction matters because it decides what blocks registration. A missing quota
+ * pattern means a spent free allowance surfaces as an unexplained timeout - annoying, and
+ * the alert path already covers it via consecutive failures. A missing session-cookie list or
+ * answer container means *wrong data*: an anonymous visit recorded as a login, or our own
+ * question recorded as the platform's answer. Only the second class may stop a release.
+ */
+const DIAGNOSTIC_ONLY_FIELDS = new Set(["quota.exhaustedPatterns", "login.qrExpiredPatterns"]);
+
 export function collectProfileErrors(profile) {
+  return collectProfileFindings(profile).errors;
+}
+
+export function collectProfileWarnings(profile) {
+  return collectProfileFindings(profile).warnings;
+}
+
+export function collectProfileFindings(profile) {
   const errors = [];
+  const warnings = [];
+  const push = (field, message) => {
+    (DIAGNOSTIC_ONLY_FIELDS.has(field) ? warnings : errors).push(message);
+  };
   const id = typeof profile?.id === "string" && profile.id ? profile.id : "<missing id>";
 
   for (const field of REQUIRED_TEXT_FIELDS) {
@@ -65,22 +88,22 @@ export function collectProfileErrors(profile) {
     errors.push(`${id}.citation.tier must be one of ${Object.values(CITATION_TIERS).join(", ")}`);
   }
 
-  patternList(profile?.login?.captchaPatterns, "login.captchaPatterns", id, errors);
-  patternList(profile?.login?.restrictedPatterns, "login.restrictedPatterns", id, errors);
-  patternList(profile?.login?.qrExpiredPatterns, "login.qrExpiredPatterns", id, errors);
+  patternList(profile?.login?.captchaPatterns, "login.captchaPatterns", id, push);
+  patternList(profile?.login?.restrictedPatterns, "login.restrictedPatterns", id, push);
+  patternList(profile?.login?.qrExpiredPatterns, "login.qrExpiredPatterns", id, push);
   if (profile?.requiresStoredAuth !== false) {
     // An account surface cannot tell "logged in" from "anonymous" without a measured cookie
     // list. An anonymous surface has no session to measure, but it does still need to
     // distinguish a quota cap from a risk-control block, so the signal patterns stay required.
-    stringList(profile?.login?.sessionCookies, "login.sessionCookies", id, errors);
+    stringList(profile?.login?.sessionCookies, "login.sessionCookies", id, push);
   }
-  stringList(profile?.chat?.composerSelectors, "chat.composerSelectors", id, errors);
-  stringList(profile?.chat?.sendSelectors, "chat.sendSelectors", id, errors);
-  stringList(profile?.chat?.answerSelectors, "chat.answerSelectors", id, errors);
-  patternList(profile?.chat?.inProgressPatterns, "chat.inProgressPatterns", id, errors);
-  stringList(profile?.chat?.userBubbleSelectors, "chat.userBubbleSelectors", id, errors);
+  stringList(profile?.chat?.composerSelectors, "chat.composerSelectors", id, push);
+  stringList(profile?.chat?.sendSelectors, "chat.sendSelectors", id, push);
+  stringList(profile?.chat?.answerSelectors, "chat.answerSelectors", id, push);
+  patternList(profile?.chat?.inProgressPatterns, "chat.inProgressPatterns", id, push);
+  stringList(profile?.chat?.userBubbleSelectors, "chat.userBubbleSelectors", id, push);
   if (profile?.requiresStoredAuth === false) {
-    stringList(profile?.quota?.exhaustedPatterns, "quota.exhaustedPatterns", id, errors);
+    stringList(profile?.quota?.exhaustedPatterns, "quota.exhaustedPatterns", id, push);
     if (!Number.isInteger(profile?.quota?.promptsPerWindow) || profile.quota.promptsPerWindow < 1) {
       errors.push(`${id}.quota.promptsPerWindow must be a positive integer`);
     }
@@ -93,7 +116,7 @@ export function collectProfileErrors(profile) {
     }
   }
 
-  return errors;
+  return { errors, warnings };
 }
 
 /**

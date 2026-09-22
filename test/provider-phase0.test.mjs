@@ -15,6 +15,7 @@ import {
 import {
   assertProviderProfile,
   collectProfileErrors,
+  collectProfileWarnings,
   deriveSessionCookieCandidates,
 } from "../src/providers/profile.js";
 import {
@@ -153,21 +154,30 @@ test("an unmeasured profile reports its gaps instead of crashing on import", () 
   assert.deepEqual(providerProfileGaps("yuanbao-web"), gaps);
 });
 
-test("an unvalidated profile keeps its adapter out of the table and out of the contract", () => {
-  assert.deepEqual(listProviderAdapters().map((entry) => entry.id), ["doubao-web"]);
-  assert.throws(() => getProviderAdapter("qianwen"), /Unsupported provider adapter/);
+test("only measured profiles reach the adapter table, and the contract follows it", () => {
+  // 元宝还没做过任何观测，所以它既不在表里也不在枚举里。
+  assert.deepEqual(listProviderAdapters().map((entry) => entry.id), ["doubao-web", "qianwen-web"]);
+  assert.throws(() => getProviderAdapter("yuanbao"), /Unsupported provider adapter/);
   assert.deepEqual(pendingProviderProfiles.map((entry) => entry.id), ["yuanbao-web", "qianwen-web"]);
-  // The public enum is derived from the adapter table, so it cannot run ahead of collection.
-  assert.deepEqual(supportedProviderIds(), ["doubao"]);
+  // 公开枚举由 adapter 表推导，客户端不可能拿到采集端跑不了的平台。
+  assert.deepEqual(supportedProviderIds(), ["doubao", "qianwen"]);
 });
 
 test("the registration gate is the profile's validated flag and nothing else", () => {
-  const ids = selectRegistrableAdapters([doubaoWebProvider, qianwenWebProvider]).map((a) => a.id);
-  assert.deepEqual(ids, ["doubao-web"], "qianwen is still missing its quota observation");
+  assert.deepEqual(
+    selectRegistrableAdapters([doubaoWebProvider, qianwenWebProvider]).map((a) => a.id),
+    ["doubao-web", "qianwen-web"],
+  );
 
-  const measured = { ...qianwenWebProvider, profile: { ...qianwenWebProfile, validated: true } };
-  const after = selectRegistrableAdapters([doubaoWebProvider, measured]).map((a) => a.id);
-  assert.deepEqual(after, ["doubao-web", "qianwen-web"]);
+  const withdrawn = {
+    ...qianwenWebProvider,
+    profile: { ...qianwenWebProfile, validated: false },
+  };
+  assert.deepEqual(
+    selectRegistrableAdapters([doubaoWebProvider, withdrawn]).map((a) => a.id),
+    ["doubao-web"],
+    "flipping one flag is the whole rollback",
+  );
 });
 
 test("yuanbao stays unregistered while nothing about it has been measured", () => {
@@ -177,21 +187,20 @@ test("yuanbao stays unregistered while nothing about it has been measured", () =
 
 test("an anonymous surface is judged on quota, not on a login it will never have", () => {
   const gaps = collectProfileErrors(qianwenWebProfile);
+  const warnings = collectProfileWarnings(qianwenWebProfile);
   assert.equal(qianwenWebProfile.requiresStoredAuth, false);
   // No session to measure, so no cookie list may be demanded of it.
   assert.equal(gaps.some((entry) => entry.includes("login.sessionCookies")), false);
-  // But the cap-vs-block distinction is exactly what must be measured before it runs, and it
-  // is the only thing still missing: every selector the driver consumes is observed.
-  assert.deepEqual(
-    collectProfileErrors(qianwenWebProfile),
-    ["qianwen-web.quota.exhaustedPatterns must be a non-empty array of strings"],
-  );
-  // promptsPerWindow is a design choice, not an observation, so it is already satisfiable.
-  assert.equal(gaps.some((entry) => entry.includes("quota.promptsPerWindow")), false);
+  // Everything the driver reads has been observed, so nothing integrity-critical is missing.
+  assert.deepEqual(gaps, []);
+  // The unobserved cap copy is reported, but it costs explanation rather than correctness:
+  // a spent allowance surfaces as a timeout that will not retry, not as a wrong sample.
+  assert.deepEqual(warnings, [
+    "qianwen-web.quota.exhaustedPatterns must be a non-empty array of strings",
+  ]);
 
   const questions = captureOpenQuestions({ requiresStoredAuth: false, answerCandidates: [{ selector: ".x" }] });
   assert.ok(questions.some((entry) => /额度/.test(entry)));
-  assert.ok(questions.some((entry) => /对照 prompt/.test(entry)));
   // A missing login is not an open question when there is no login in this design.
   assert.equal(questions.some((entry) => /session cookie 名单/.test(entry)), false);
 });

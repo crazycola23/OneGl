@@ -3,9 +3,7 @@ import { readFile } from "node:fs/promises";
 import { loadConfig } from "./config.js";
 import { launchBrowserSession } from "./browser.js";
 import {
-  executeDoubaoPrompt,
   inspectSession,
-  openDoubao,
   waitForManualLogin,
 } from "./doubao.js";
 import {
@@ -26,7 +24,10 @@ import {
   loadBatchAssignments,
 } from "./sampling/batch.js";
 import { enqueueBatch, refreshBatchProgress, runIdFor, runTokenFor, stopBatch } from "./queue/batches.js";
-import { closeRedis } from "./queue/connection.js";
+import { accountIdentity, closeRedis } from "./queue/connection.js";
+import {
+  getProviderAdapter,
+} from "./providers/index.js";
 import { parseAccountKeys, normalizeAccountKey } from "./accounts/registry.js";
 
 // ---------------------------------------------------------------------------
@@ -109,8 +110,9 @@ function printHelp() {
 一、采集
   npm run auth  -- --account account_01
       打开浏览器窗口完成豆包登录，登录态按账号保存到 .onegl/auth/accounts/
-  npm run run   -- --prompt "你的问题" [--project "项目名"] [--account account_01]
-      向豆包提一个问题，抓取回答与可见引用
+  npm run run   -- --prompt "你的问题" [--project "项目名"] [--account account_01] [--provider doubao]
+      向平台提一个问题，抓取回答与可见引用；--provider 选已注册平台，默认 doubao
+      匿名面（如 qianwen）不要带 --account，它不按账号计量
   npm run runs
       查看最近 30 条运行记录
   npm run serve
@@ -229,10 +231,22 @@ async function waitForSettledSession(page, config) {
 async function authCommand(args = {}) {
   const accountKey =
     typeof args.account === "string" ? normalizeAccountKey(args.account) : null;
-  const config = loadConfig({ headless: false, accountKey });
+  const config = loadConfig({
+    headless: false,
+    accountKey,
+    provider: typeof args.provider === "string" ? args.provider : undefined,
+  });
+  const adapter = getProviderAdapter(config.provider);
+  if (adapter.requiresStoredAuth === false) {
+    throw new Error(
+      `${config.provider} 是匿名面，没有登录态可保存；直接运行 npm run run -- --provider ${config.provider} --prompt "..."`,
+    );
+  }
   const session = await launchBrowserSession(config, { forceHeadful: true });
   try {
-    await openDoubao(session.page, config);
+    await adapter.openPage(session.page, config);
+    // 会话是否已登录的探测目前仍是豆包的 inspectSession。下一个需要登录态的平台接入时，
+    // 这个探测必须跟着档案走，否则这里会把别的平台判成未登录。
     const initial = await waitForSettledSession(session.page, config);
     if (initial.state !== "healthy") {
       console.log(
@@ -255,19 +269,27 @@ async function runCommand(args) {
   const project = typeof args.project === "string" ? args.project : "default";
   const accountKey =
     typeof args.account === "string" ? normalizeAccountKey(args.account) : null;
-  const config = loadConfig({ accountKey });
+  const config = loadConfig({
+    accountKey,
+    provider: typeof args.provider === "string" ? args.provider : undefined,
+  });
+  const adapter = getProviderAdapter(config.provider);
+  if (adapter.requiresStoredAuth === false && accountKey) {
+    // 匿名面不按账号计量，写 --account 只会让人以为这条记录属于某个账号。
+    throw new Error(`--account 不适用于匿名面 ${adapter.id}；去掉 --account 再运行`);
+  }
   const store = new RunStore(config);
   const brandRules = await brandRulesFor(project);
   const session = await launchBrowserSession(config);
   try {
-    await openDoubao(session.page, config);
+    await adapter.openPage(session.page, config);
     await executeOne({
       page: session.page,
       store,
       config,
       prompt,
       project,
-      context: { accountKey, brandRules },
+      context: { accountKey, provider: config.provider, brandRules },
     });
   } finally {
     await session.close();
@@ -318,7 +340,11 @@ async function batchCommand(args) {
 
   const accountKey =
     typeof args.account === "string" ? normalizeAccountKey(args.account) : null;
-  const config = loadConfig({ accountKey });
+  const config = loadConfig({
+    accountKey,
+    provider: typeof args.provider === "string" ? args.provider : undefined,
+  });
+  const adapter = getProviderAdapter(config.provider);
   const store = new RunStore(config);
   const brandRules = await brandRulesFor(batch.project);
   const session = await launchBrowserSession(config);
@@ -326,7 +352,7 @@ async function batchCommand(args) {
   let partial = 0;
   let failed = 0;
   try {
-    await openDoubao(session.page, config);
+    await adapter.openPage(session.page, config);
     for (let index = 0; index < prompts.length; index += 1) {
       try {
         const run = await executeOne({
@@ -335,7 +361,7 @@ async function batchCommand(args) {
           config,
           prompt: prompts[index].text,
           project: batch.project,
-          context: { accountKey, brandRules },
+          context: { accountKey, provider: config.provider, brandRules },
           validation: {
             caseId: prompts[index].id || `prompt_${index + 1}`,
             targetScenario: prompts[index].targetScenario || null,
@@ -533,7 +559,10 @@ async function batchRunCommand(args) {
 
   const byAccount = new Map();
   for (const assignment of assignments) {
-    const key = assignment.accountKey ?? "(unassigned)";
+    const key = accountIdentity(
+      assignment.accountKey ?? "(unassigned)",
+      assignment.provider ?? "doubao",
+    );
     if (!byAccount.has(key)) byAccount.set(key, []);
     byAccount.get(key).push(assignment);
   }
@@ -543,12 +572,14 @@ async function batchRunCommand(args) {
   let failed = 0;
 
   try {
-    for (const [accountKey, accountAssignments] of byAccount) {
-      const config = loadConfig({ accountKey });
+    for (const accountAssignments of byAccount.values()) {
+      const { accountKey, provider = "doubao" } = accountAssignments[0];
+      const config = loadConfig({ accountKey, provider });
+      const adapter = getProviderAdapter(config.provider);
       const session = await launchBrowserSession(config);
-      console.log(`\n账号 ${accountKey}：共 ${accountAssignments.length} 条提问`);
+      console.log(`\n平台 ${config.provider} · 账号 ${accountKey}：共 ${accountAssignments.length} 条提问`);
       try {
-        await openDoubao(session.page, config);
+        await adapter.openPage(session.page, config);
         for (const assignment of accountAssignments) {
           try {
             const runToken = runTokenFor(batchId, assignment.selectionIndex);
@@ -559,7 +590,7 @@ async function batchRunCommand(args) {
               prompt: assignment.prompt,
               project: batch.project_name,
               runId: runIdFor(batchId, assignment.selectionIndex),
-              context: { accountKey, samplingBatchId: batchId, brandRules, runToken, jobId: runToken },
+              context: { accountKey, provider: config.provider, samplingBatchId: batchId, brandRules, runToken, jobId: runToken },
               validation: {
                 caseId: runToken,
                 targetScenario: assignment.category,

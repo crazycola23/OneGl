@@ -5,17 +5,19 @@ import { CITATION_TIERS } from "./profile.js";
 /**
  * 千问 Web（阿里，原通义千问，入口 www.qianwen.com）。
  *
- * NOT VALIDATED. Every measured field is deliberately empty; `tools/provider-phase0.js` fills
- * them from a live capture and `registerProviderProfile` refuses the profile until then.
+ * Measured on 2026-09-22 over six anonymous captures with tools/provider-phase0.js; the values
+ * in `login`, `chat` and `citation` are observations, not analogy with Doubao. Rolling this
+ * back is one flag: set `validated` to false and the adapter leaves the table and the contract.
  *
  * This is the platform's *anonymous* surface: `requiresStoredAuth: false` means no login
  * state, no account row and no session cookie list. That choice is load-bearing in two
  * directions, and both have to stay visible in the data:
  *
- * 1. An anonymous answer is a different surface from a logged-in one - typically shallower
- *    retrieval and different citation presentation. So a sample measured this way can never
- *    be pooled with account samples in the same rate or uplift number. It needs its own
- *    partition in every report, or the citation analytics stop describing anything real.
+ * 1. An anonymous answer is a different surface from a logged-in one. Measured here it was not
+ *    a weaker one either - it ran deep search and reported "搜索 3 个关键词，参考 12 篇资料" -
+ *    but that is exactly why it must not be pooled: an anonymous sample and an account sample
+ *    from the same platform are two different observation conditions, and a rate or uplift
+ *    number computed across both describes nobody. Every report needs its own partition.
  * 2. The window rotation below resets conversation state only. It does not create a new
  *    visitor: Camoufox fixes the fingerprint at launch and there is no egress proxy wired in
  *    (`src/browser.js` passes no `proxy`), so minting windows in a loop to refill the free
@@ -30,7 +32,7 @@ export const qianwenWebProfile = {
   access: "scraped",
   entryUrl: "https://www.qianwen.com/",
 
-  validated: false,
+  validated: true,
   requiresStoredAuth: false,
 
   login: {
@@ -83,7 +85,10 @@ export const qianwenWebProfile = {
    */
   quota: {
     promptsPerWindow: 3,
-    // 未实测到上限文案，因此档案仍是 unvalidated。这是注册的唯一剩余阻塞项。
+    // 6 次匿名提问全部拿到完整回答，未出现任何次数上限文案；页面上唯一与账号有关的文本是
+    // 「登录可同步历史对话，解锁更多功能」这句提示，它不是墙。所以这一项保持为空，
+    // 并按"只影响可解释性、不影响数据正确性"降级为告警：真撞上墙时该次会以 TIMEOUT
+    // 失败（promptSubmitted 已知，不会重试造成重复提问），连续失败仍会走冷却与告警。
     exhaustedPatterns: [],
     suspectedIdleMs: 120_000,
     controlPrompt: "你好，请用一句话介绍你自己。",

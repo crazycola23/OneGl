@@ -363,10 +363,10 @@ export async function runOnePrompt({
 
   try {
     let executionPage = page;
-    // Doubao keeps its conservative front-end safety boundary. Future API/scraped
-    // providers implement their own access mechanics behind the provider adapter.
-    if (provider.id === "doubao-web") {
-      if (!page) throw new Error("doubao-web provider requires a browser page");
+    // The conservative front-end safety boundary belongs to the provider that asked for it,
+    // not to a hardcoded adapter id in this generic runner.
+    if (provider.frontEndGuard === true) {
+      if (!page) throw new Error(`${provider.id} provider requires a browser page`);
       frontEndPreflight = await prepareFrontEndForRun(page, config);
       executionPage = createConservativeDoubaoPage(page);
     }

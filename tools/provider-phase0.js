@@ -315,6 +315,9 @@ function summarize(signals, { prompt = null, previous = null, cardDetails = null
     ),
     loginWallObserved: /请先登录|登录后可|登录后继续|扫码登录/.test(signals.pageText ?? ""),
     pageTextLength: (signals.pageText ?? "").length,
+    // The no-answer state is exactly the case that needs reading, so keep an excerpt. Without
+    // it a run that produced nothing is indistinguishable from a run that hit a cap.
+    pageTextExcerpt: (signals.pageText ?? "").slice(0, 1_200),
     cookieDiffAgainstAnonymous: previous
       ? deriveSessionCookieCandidates(cookieMap(previous), cookieMap(signals)).candidates
       : null,

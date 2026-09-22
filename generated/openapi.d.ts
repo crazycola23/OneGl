@@ -1517,7 +1517,7 @@ export interface components {
              * @default doubao
              * @enum {string}
              */
-            provider: "doubao";
+            provider: "doubao" | "qianwen";
         };
         AccountInflightResource: {
             /** @description Tenant account alias, i.e. the account_id returned by GET /v1/accounts */
@@ -1543,7 +1543,7 @@ export interface components {
             /** @description Always true after a successful reactivation; echoed from the row when nothing changed */
             enabled: boolean;
             /** @enum {string} */
-            provider: "doubao";
+            provider: "doubao" | "qianwen";
             /** @description Whether this call actually flipped the account row out of its reclaimed state */
             reactivated: boolean;
             /** @description login_required right after a real reactivation, because the reclaimed login state cannot be restored; a no-op call echoes the existing status instead of downgrading it */
@@ -1556,7 +1556,7 @@ export interface components {
             /** @constant */
             enabled: false;
             /** @enum {string} */
-            provider: "doubao";
+            provider: "doubao" | "qianwen";
             /**
              * @description The accounts column carrying the reclaim timestamp
              * @constant
@@ -1587,7 +1587,7 @@ export interface components {
             /** Format: date-time */
             last_run_at?: string | null;
             /** @enum {string} */
-            provider?: "doubao";
+            provider?: "doubao" | "qianwen";
             /** @enum {string} */
             status?: "unknown" | "healthy" | "login_required" | "session_expired" | "verification_required" | "access_restricted" | "paused" | "cooldown" | "rate_limited" | "disabled";
             storage_state_present?: boolean;
@@ -1721,7 +1721,7 @@ export interface components {
             project_id?: number;
             project_name?: string;
             /** @enum {string} */
-            provider?: "doubao";
+            provider?: "doubao" | "qianwen";
             requested_jobs?: number | null;
             sample_size?: number | null;
             skipped_jobs?: number | null;
@@ -1898,7 +1898,7 @@ export interface components {
             task: {
                 external_id: string | null;
                 name: string;
-                platforms: "doubao"[];
+                platforms: ("doubao" | "qianwen")[];
                 /** @enum {string} */
                 state: "active";
                 target_brand: string | null;
@@ -1933,7 +1933,7 @@ export interface components {
         /** @description All fields are optional. Omitted fields inherit the saved Task configuration. Creating an Execution starts it immediately. */
         ExecutionCreate: {
             account_ids?: string[];
-            platforms?: "doubao"[];
+            platforms?: ("doubao" | "qianwen")[];
             sampling?: components["schemas"]["TaskSamplingInput"];
             /** @description Optional deterministic sampling seed. */
             seed?: string | null;
@@ -2240,7 +2240,7 @@ export interface components {
             enabled?: boolean;
             name?: string;
             /** @enum {string} */
-            provider?: "doubao";
+            provider?: "doubao" | "qianwen";
         } & {
             [key: string]: unknown;
         };
@@ -2843,7 +2843,7 @@ export interface components {
             finished_at?: string | null;
             mention_count?: number | null;
             /** @enum {string} */
-            platform: "doubao";
+            platform: "doubao" | "qianwen";
             question: string;
             question_external_id?: string | null;
             repetition_count?: number | null;
@@ -2868,7 +2868,7 @@ export interface components {
             /** Format: date-time */
             finished_at?: string | null;
             /** @enum {string} */
-            platform: "doubao";
+            platform: "doubao" | "qianwen";
             question: string;
             question_external_id?: string | null;
             repetition_count?: number | null;
@@ -2987,7 +2987,7 @@ export interface components {
             account_ids?: string[];
             external_id?: string | null;
             name?: string;
-            platforms?: "doubao"[];
+            platforms?: ("doubao" | "qianwen")[];
             questions?: string[];
             sampling?: components["schemas"]["TaskSamplingInput"];
             target_brand?: string | null;
@@ -3003,7 +3003,7 @@ export interface components {
              *       "doubao"
              *     ]
              */
-            platforms: "doubao"[];
+            platforms: ("doubao" | "qianwen")[];
             /** @description Either plain strings (legacy, de-duplicated by text) or per-observation objects. Entries carrying `external_id` are never de-duplicated by text, so N questions x R repetitions can be submitted as N*R rows. `external_id` requires `sampling.repeats` to stay 1. */
             questions: (string | components["schemas"]["TaskQuestionEntry"])[];
             sampling?: components["schemas"]["TaskSamplingInput"];
@@ -3014,7 +3014,7 @@ export interface components {
             account_ids?: string[];
             external_id?: string | null;
             name?: string;
-            platforms?: "doubao"[];
+            platforms?: ("doubao" | "qianwen")[];
             questions?: string[];
             sampling?: components["schemas"]["TaskSamplingInput"];
             target_brand?: string | null;

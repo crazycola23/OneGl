@@ -313,7 +313,8 @@
           "provider": {
             "default": "doubao",
             "enum": [
-              "doubao"
+              "doubao",
+              "qianwen"
             ],
             "type": "string"
           }
@@ -400,7 +401,8 @@
           },
           "provider": {
             "enum": [
-              "doubao"
+              "doubao",
+              "qianwen"
             ],
             "type": "string"
           },
@@ -439,7 +441,8 @@
           },
           "provider": {
             "enum": [
-              "doubao"
+              "doubao",
+              "qianwen"
             ],
             "type": "string"
           },
@@ -529,7 +532,8 @@
           },
           "provider": {
             "enum": [
-              "doubao"
+              "doubao",
+              "qianwen"
             ],
             "type": "string"
           },
@@ -1090,7 +1094,8 @@
           },
           "provider": {
             "enum": [
-              "doubao"
+              "doubao",
+              "qianwen"
             ],
             "type": "string"
           },
@@ -1947,7 +1952,8 @@
               "platforms": {
                 "items": {
                   "enum": [
-                    "doubao"
+                    "doubao",
+                    "qianwen"
                   ],
                   "type": "string"
                 },
@@ -2123,7 +2129,8 @@
           "platforms": {
             "items": {
               "enum": [
-                "doubao"
+                "doubao",
+                "qianwen"
               ],
               "type": "string"
             },
@@ -3191,7 +3198,8 @@
           },
           "provider": {
             "enum": [
-              "doubao"
+              "doubao",
+              "qianwen"
             ],
             "type": "string"
           }
@@ -5938,7 +5946,8 @@
           },
           "platform": {
             "enum": [
-              "doubao"
+              "doubao",
+              "qianwen"
             ],
             "type": "string"
           },
@@ -6069,7 +6078,8 @@
           },
           "platform": {
             "enum": [
-              "doubao"
+              "doubao",
+              "qianwen"
             ],
             "type": "string"
           },
@@ -6519,7 +6529,8 @@
           "platforms": {
             "items": {
               "enum": [
-                "doubao"
+                "doubao",
+                "qianwen"
               ],
               "type": "string"
             },
@@ -6583,7 +6594,8 @@
             ],
             "items": {
               "enum": [
-                "doubao"
+                "doubao",
+                "qianwen"
               ],
               "type": "string"
             },
@@ -6656,7 +6668,8 @@
           "platforms": {
             "items": {
               "enum": [
-                "doubao"
+                "doubao",
+                "qianwen"
               ],
               "type": "string"
             },

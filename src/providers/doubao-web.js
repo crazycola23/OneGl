@@ -1,4 +1,4 @@
-import { executeDoubaoPrompt } from "../doubao.js";
+import { executeDoubaoPrompt, openDoubao } from "../doubao.js";
 import { normalizeProviderResult, PROVIDER_ACCESS } from "./contract.js";
 
 export function hardenDoubaoCitationFallback(raw) {
@@ -27,6 +27,14 @@ export const doubaoWebProvider = {
   provider: "doubao",
   model: "doubao",
   access: PROVIDER_ACCESS.SCRAPED,
+  // Declared explicitly so every caller reasons about one shape instead of about whether a
+  // missing field means "account" or "nobody thought about it".
+  requiresStoredAuth: true,
+  frontEndGuard: true,
+
+  openPage(page, config) {
+    return openDoubao(page, config);
+  },
 
   async run({ page, prompt, config }) {
     const raw = hardenDoubaoCitationFallback(

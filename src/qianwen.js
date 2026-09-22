@@ -30,6 +30,7 @@ function driverContext(profile) {
     composer: profile.chat.composerSelectors[0],
     send: profile.chat.sendSelectors[0],
     userBubbleSelectors: profile.chat.userBubbleSelectors,
+    citationBlockSelectors: profile.citation.blockSelectors ?? [],
     inProgressPatterns: toRegExpList(profile.chat.inProgressPatterns),
     countPattern,
     quota: toRegExpList(profile.quota?.exhaustedPatterns),
@@ -84,6 +85,26 @@ function scanQianwenPage(cfg) {
   const composer = document.querySelector(cfg.composer);
   const send = document.querySelector(cfg.send);
 
+  // "message-card" matches several nested and sibling cards within one turn, so taking the
+  // last one is not "the assistant answer": measured that way the answer text was right while
+  // every citation anchor was missed, because the anchors live in the
+  // [data-card_name="bar_workflow"] card. Links therefore come from every block the profile
+  // names as a citation container, with the answer card added as a source.
+  const citationBlocks = (cfg.citationBlockSelectors ?? []).flatMap((selector) => {
+    try {
+      return [...document.querySelectorAll(selector)];
+    } catch {
+      return [];
+    }
+  });
+  const anchors = new Map();
+  for (const source of [lastAnswer, ...citationBlocks].filter(Boolean)) {
+    for (const anchor of source.querySelectorAll("a[href]")) {
+      if (anchors.has(anchor.href)) continue;
+      anchors.set(anchor.href, textOf(anchor).slice(0, 200) || anchor.getAttribute("title") || null);
+    }
+  }
+
   return {
     url: location.href,
     bodyText: textOf(document.body),
@@ -93,18 +114,15 @@ function scanQianwenPage(cfg) {
         || send.getAttribute("aria-disabled") === "true"
         || /cursor-not-allowed/.test(send.className)
       : null,
+    // "停止回答" is the platform's own generation control, matched as button text rather than
+    // as a class, because classes are what changes between builds.
     generating: inProgress.length
       ? [...document.querySelectorAll("button, [role=button]")]
           .some((node) => visible(node) && inProgress.some((pattern) => pattern.test(textOf(node))))
       : false,
     answerLength: lastAnswer ? textOf(lastAnswer).length : 0,
     answer: lastAnswer ? textOf(lastAnswer) : null,
-    links: lastAnswer
-      ? [...lastAnswer.querySelectorAll("a[href]")].map((anchor) => ({
-          url: anchor.href,
-          title: textOf(anchor).slice(0, 200) || anchor.getAttribute("title") || null,
-        }))
-      : [],
+    links: [...anchors].map(([url, title]) => ({ url, title })),
     countTexts: countPattern
       ? [...document.querySelectorAll("[data-card_name]")]
           .map((node) => textOf(node))
@@ -118,6 +136,7 @@ function scanConfig(context) {
     composer: context.composer,
     send: context.send,
     userBubbleSelectors: context.userBubbleSelectors,
+    citationBlockSelectors: context.citationBlockSelectors,
     inProgressSources: context.inProgressPatterns.map((pattern) => pattern.source),
     countPatternSource: context.countPattern?.source ?? null,
   };

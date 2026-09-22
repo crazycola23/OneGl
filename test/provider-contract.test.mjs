@@ -36,12 +36,19 @@ test("rejects invalid provider access modes", () => {
   );
 });
 
-test("registers Doubao web as a scraped adapter", () => {
+test("registers the measured providers as scraped adapters", () => {
   const adapter = getProviderAdapter("doubao");
   assert.equal(adapter.id, "doubao-web");
   assert.equal(adapter.access, "scraped");
   assert.equal(typeof adapter.run, "function");
   assert.deepEqual(listProviderAdapters(), [
     { id: "doubao-web", provider: "doubao", model: "doubao", access: "scraped" },
+    { id: "qianwen-web", provider: "qianwen", model: "qianwen", access: "scraped" },
   ]);
+  // 别名仍然按 provider 命中，但匿名面必须自己声明不需要登录态。
+  assert.equal(getProviderAdapter("qianwen").id, "qianwen-web");
+  assert.equal(getProviderAdapter("qianwen").requiresStoredAuth, false);
+  assert.equal(getProviderAdapter("doubao").requiresStoredAuth, true);
+  assert.equal(getProviderAdapter("doubao").frontEndGuard, true);
+  assert.equal(getProviderAdapter("qianwen").frontEndGuard, undefined);
 });

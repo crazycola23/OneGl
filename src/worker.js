@@ -25,7 +25,6 @@ import {
 } from "./collect/runner.js";
 import { loadConfig } from "./config.js";
 import { createPool } from "./db/pool.js";
-import { openDoubao } from "./doubao.js";
 import { loadBrandRules } from "./project/init.js";
 import { getProviderAdapter } from "./providers/index.js";
 import {
@@ -159,7 +158,7 @@ async function getSession({ accountKey, provider }) {
   const accountConfig = loadConfig({ accountKey, provider });
   const adapter = getProviderAdapter(provider);
   const session = await launchBrowserSession(accountConfig);
-  await openProviderPage(session, accountConfig, adapter);
+  await adapter.openPage(session.page, accountConfig);
   // 匿名面没有登录态可标记，写进去会让运营以为这个身份已经绑定成功。
   if (adapter.requiresStoredAuth !== false) {
     await markStorageStatePresent(pool, accountKey, session.hasStoredAuth, provider).catch(() => undefined);
@@ -175,16 +174,6 @@ async function getSession({ accountKey, provider }) {
   return session;
 }
 
-async function openProviderPage(session, config, adapter) {
-  // A provider with no page-open step is an anonymous or API surface: nothing to navigate
-  // before the first prompt beyond what the adapter itself does.
-  if (typeof adapter?.openPage === "function") {
-    await adapter.openPage(session.page, config);
-    return;
-  }
-  await openDoubao(session.page, config);
-}
-
 /**
  * 每问满 ONEGL_ROUND_PROMPT_LIMIT 次就关掉当前窗口、换一个干净窗口。
  *
@@ -196,7 +185,7 @@ async function prepareWindow(session, account) {
   if (!shouldRotateContext(session.contextPrompts, safety.roundPromptLimit)) return;
   const accountConfig = loadConfig(account);
   await session.rotateContext();
-  await openProviderPage(session, accountConfig, getProviderAdapter(account.provider));
+  await getProviderAdapter(account.provider).openPage(session.page, accountConfig);
   log({
     event: "window-rotated",
     account_key: account.accountKey,
