@@ -1,8 +1,6 @@
 FROM node:22-bookworm-slim
 
 ARG CAMOUFOX_PYTHON_VERSION=0.6.0
-ARG CAMOUFOX_VENDOR_VERSION=152.0.4-beta.30
-ARG CAMOUFOX_VENDOR_SHA256=5720d45b894ce1770543de024c6f10d514b38be560fa2dc3226b3d8586caf672
 
 ENV NODE_ENV=production \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
@@ -32,6 +30,9 @@ RUN apt-get update \
 
 COPY tools/prepare-camoufox-url.py /tmp/prepare-camoufox-url.py
 COPY tools/download-camoufox-range.mjs /tmp/download-camoufox-range.mjs
+
+ARG CAMOUFOX_VENDOR_VERSION=152.0.4-beta.30
+ARG CAMOUFOX_VENDOR_SHA256=5720d45b894ce1770543de024c6f10d514b38be560fa2dc3226b3d8586caf672
 
 USER onegl
 
