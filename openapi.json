@@ -2223,6 +2223,31 @@
               "null"
             ]
           },
+          "login_states": {
+            "description": "Observation surfaces behind these numbers. Empty before any run is recorded; two entries mean account and anonymous samples are blended in one rate.",
+            "items": {
+              "enum": [
+                "account",
+                "anonymous"
+              ],
+              "type": "string"
+            },
+            "maxItems": 2,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "platform": {
+            "description": "Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.",
+            "enum": [
+              "doubao",
+              "qianwen",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "progress": {
             "$ref": "#/components/schemas/ExecutionProgress"
           },
@@ -5534,6 +5559,18 @@
               "null"
             ]
           },
+          "platform": {
+            "description": "Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.",
+            "enum": [
+              "doubao",
+              "qianwen",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "report_id": {
             "pattern": "^rpt_[a-f0-9]{32}$",
             "type": "string"
@@ -5711,6 +5748,31 @@
             "additionalProperties": true,
             "type": [
               "object",
+              "null"
+            ]
+          },
+          "login_states": {
+            "description": "Observation surfaces behind these numbers. Empty before any run is recorded; two entries mean account and anonymous samples are blended in one rate.",
+            "items": {
+              "enum": [
+                "account",
+                "anonymous"
+              ],
+              "type": "string"
+            },
+            "maxItems": 2,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "platform": {
+            "description": "Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.",
+            "enum": [
+              "doubao",
+              "qianwen",
+              null
+            ],
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -5975,6 +6037,18 @@
               "null"
             ]
           },
+          "login_state": {
+            "description": "Whether the run behind this result was observed from a signed-in account or the anonymous surface. Null while no run has been recorded for the assignment.",
+            "enum": [
+              "account",
+              "anonymous",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "mention_count": {
             "minimum": 0,
             "type": [
@@ -6114,6 +6188,18 @@
               "null"
             ]
           },
+          "login_state": {
+            "description": "Whether the run behind this result was observed from a signed-in account or the anonymous surface. Null while no run has been recorded for the assignment.",
+            "enum": [
+              "account",
+              "anonymous",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "platform": {
             "enum": [
               "doubao",
@@ -6245,6 +6331,14 @@
             "pattern": "^run_[A-Za-z0-9_-]+$",
             "type": "string"
           },
+          "login_state": {
+            "description": "Observation surface this run was collected from. Runs that predate the column report 'account'.",
+            "enum": [
+              "account",
+              "anonymous"
+            ],
+            "type": "string"
+          },
           "project_id": {
             "type": [
               "integer",
@@ -6256,6 +6350,13 @@
               "string",
               "null"
             ]
+          },
+          "provider": {
+            "enum": [
+              "doubao",
+              "qianwen"
+            ],
+            "type": "string"
           },
           "started_at": {
             "format": "date-time",
@@ -6314,6 +6415,7 @@
           },
           "data": {
             "additionalProperties": true,
+            "description": "Event payload, whose shape follows `type`. execution.* events always name the platform and the observation surfaces, so a subscriber can route without fetching the execution first.",
             "type": "object"
           },
           "id": {
@@ -12060,7 +12162,7 @@
     },
     "/v1/providers": {
       "get": {
-        "description": "Doubao Web is the current product measurement surface. Provider identity remains explicit so measurements are auditable.",
+        "description": "Lists the collection adapters this instance has registered, which is exactly the set of platforms a Task can execute on. Provider identity stays explicit so every measurement remains attributable to the surface that produced it.",
         "operationId": "getProviders",
         "responses": {
           "200": {
@@ -15891,7 +15993,14 @@
                 "event": {
                   "value": {
                     "created_at": "2026-09-17T00:00:00.000Z",
-                    "data": {},
+                    "data": {
+                      "account_id": "qianwen-main",
+                      "cooldown_until": null,
+                      "last_error_code": "session_expired",
+                      "provider": "qianwen",
+                      "reason": "session_expired",
+                      "status": "session_expired"
+                    },
                     "id": "evt_0123456789abcdef0123456789abcdef",
                     "occurred_at": "2026-09-17T00:00:00.000Z",
                     "type": "account.action_required"
@@ -15982,7 +16091,11 @@
                 "event": {
                   "value": {
                     "created_at": "2026-09-17T00:00:00.000Z",
-                    "data": {},
+                    "data": {
+                      "account_id": "qianwen-main",
+                      "provider": "qianwen",
+                      "status": "ready"
+                    },
                     "id": "evt_0123456789abcdef0123456789abcdef",
                     "occurred_at": "2026-09-17T00:00:00.000Z",
                     "type": "account.ready"
@@ -16073,7 +16186,23 @@
                 "event": {
                   "value": {
                     "created_at": "2026-09-17T00:00:00.000Z",
-                    "data": {},
+                    "data": {
+                      "execution_id": "exe_0123456789abcdef0123456789abcdef",
+                      "finished_at": "2026-09-17T00:00:00.000Z",
+                      "login_states": [
+                        "account"
+                      ],
+                      "platform": "doubao",
+                      "progress": {
+                        "completed": 20,
+                        "failed": 0,
+                        "skipped": 0,
+                        "total": 20
+                      },
+                      "report_id": "rpt_0123456789abcdef0123456789abcdef",
+                      "status": "cancelled",
+                      "task_id": "tsk_0123456789abcdef0123456789abcdef"
+                    },
                     "id": "evt_0123456789abcdef0123456789abcdef",
                     "occurred_at": "2026-09-17T00:00:00.000Z",
                     "type": "execution.cancelled"
@@ -16164,7 +16293,23 @@
                 "event": {
                   "value": {
                     "created_at": "2026-09-17T00:00:00.000Z",
-                    "data": {},
+                    "data": {
+                      "execution_id": "exe_0123456789abcdef0123456789abcdef",
+                      "finished_at": "2026-09-17T00:00:00.000Z",
+                      "login_states": [
+                        "account"
+                      ],
+                      "platform": "doubao",
+                      "progress": {
+                        "completed": 20,
+                        "failed": 0,
+                        "skipped": 0,
+                        "total": 20
+                      },
+                      "report_id": "rpt_0123456789abcdef0123456789abcdef",
+                      "status": "completed",
+                      "task_id": "tsk_0123456789abcdef0123456789abcdef"
+                    },
                     "id": "evt_0123456789abcdef0123456789abcdef",
                     "occurred_at": "2026-09-17T00:00:00.000Z",
                     "type": "execution.completed"
@@ -16255,7 +16400,23 @@
                 "event": {
                   "value": {
                     "created_at": "2026-09-17T00:00:00.000Z",
-                    "data": {},
+                    "data": {
+                      "execution_id": "exe_0123456789abcdef0123456789abcdef",
+                      "finished_at": "2026-09-17T00:00:00.000Z",
+                      "login_states": [
+                        "account"
+                      ],
+                      "platform": "doubao",
+                      "progress": {
+                        "completed": 20,
+                        "failed": 0,
+                        "skipped": 0,
+                        "total": 20
+                      },
+                      "report_id": "rpt_0123456789abcdef0123456789abcdef",
+                      "status": "failed",
+                      "task_id": "tsk_0123456789abcdef0123456789abcdef"
+                    },
                     "id": "evt_0123456789abcdef0123456789abcdef",
                     "occurred_at": "2026-09-17T00:00:00.000Z",
                     "type": "execution.failed"
@@ -16346,7 +16507,23 @@
                 "event": {
                   "value": {
                     "created_at": "2026-09-17T00:00:00.000Z",
-                    "data": {},
+                    "data": {
+                      "execution_id": "exe_0123456789abcdef0123456789abcdef",
+                      "finished_at": "2026-09-17T00:00:00.000Z",
+                      "login_states": [
+                        "account"
+                      ],
+                      "platform": "doubao",
+                      "progress": {
+                        "completed": 20,
+                        "failed": 0,
+                        "skipped": 0,
+                        "total": 20
+                      },
+                      "report_id": "rpt_0123456789abcdef0123456789abcdef",
+                      "status": "partial",
+                      "task_id": "tsk_0123456789abcdef0123456789abcdef"
+                    },
                     "id": "evt_0123456789abcdef0123456789abcdef",
                     "occurred_at": "2026-09-17T00:00:00.000Z",
                     "type": "execution.partial"

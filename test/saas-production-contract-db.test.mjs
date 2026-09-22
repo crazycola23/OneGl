@@ -215,6 +215,9 @@ test("SaaS production contract provides idempotency, cursor pagination and publi
     assert.equal(executionEvent.rows[0]?.payload?.task_id, taskId);
     assert.equal(executionEvent.rows[0]?.payload?.execution_id, executionId);
     assert.equal(executionEvent.rows[0]?.payload?.report_id, reportId);
+    // A subscriber routes on these two without fetching the execution back.
+    assert.equal(executionEvent.rows[0]?.payload?.platform, "doubao");
+    assert.deepEqual(executionEvent.rows[0]?.payload?.login_states, []);
 
     await pool.query(
       "UPDATE accounts SET status = 'session_expired', updated_at = now() WHERE account_key = $1",

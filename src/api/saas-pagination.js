@@ -1,6 +1,13 @@
 import { ApiHttpError, sendJson } from "./http.js";
 import { requireScope } from "./service-store.js";
-import { getExecution, getExecutionInternal, getTask, getTaskInternal, publicResultFields } from "../tasks/service.js";
+import {
+  getExecution,
+  getExecutionInternal,
+  getTask,
+  getTaskInternal,
+  publicReportListItemFields,
+  publicResultFields,
+} from "../tasks/service.js";
 
 function encodeCursor(kind, id) {
   return Buffer.from(JSON.stringify({ v: 1, k: kind, i: Number(id) }), "utf8").toString("base64url");
@@ -37,10 +44,6 @@ function pageEnvelope(items, rows, limit, kind) {
       next_cursor: hasMore && visibleRows.length ? encodeCursor(kind, visibleRows[visibleRows.length - 1].id) : null,
     },
   };
-}
-
-function executionStatus(status) {
-  return status === "aborted" ? "cancelled" : status;
 }
 
 function localTime(hour, minute) {
@@ -101,6 +104,7 @@ export async function handleSaasPaginationRoute({ req, res, url, db, auth, tenan
       `SELECT sr.id, sr.public_id AS result_id, sr.question, sr.platform,
               sr.external_id, sr.repetition_index, sr.repetition_count,
               r.status AS run_status, r.brand_mentioned, r.mention_count, r.finished_at,
+              r.login_state AS run_login_state,
               r.error_code AS run_error_code, r.error_message AS run_error_message,
               b.status AS batch_status,
               t.public_id AS task_public_id,
@@ -147,7 +151,7 @@ export async function handleSaasPaginationRoute({ req, res, url, db, auth, tenan
     const cursor = decodeCursor(url.searchParams.get("cursor"), "reports");
     const { rows } = await db.query(
       `SELECT rp.id, rp.public_id AS report_id, e.public_id AS execution_id,
-              b.status, rp.created_at, b.finished_at
+              b.status, b.provider, rp.created_at, b.finished_at
          FROM service_reports rp
          JOIN service_task_executions e ON e.id = rp.execution_id
          JOIN sampling_batches b ON b.id = rp.batch_id
@@ -160,11 +164,8 @@ export async function handleSaasPaginationRoute({ req, res, url, db, auth, tenan
     const items = rows.slice(0, limit).map((row) => ({
       report_id: row.report_id,
       execution_id: row.execution_id,
-      status: ["completed", "partial", "failed", "aborted"].includes(row.status) ? "ready" : "generating",
-      execution_status: executionStatus(row.status),
       report_url: `/v1/reports/${row.report_id}`,
-      created_at: row.created_at,
-      finished_at: row.finished_at,
+      ...publicReportListItemFields(row),
     }));
     return sendJson(res, 200, pageEnvelope(items, rows, limit, "reports"));
   }

@@ -165,6 +165,7 @@ test("publicResultFields projects a terminal no-run assignment without leaking i
   });
 
   assert.equal(fields.assignment_status, "not_collected");
+  assert.equal(fields.login_state, null);
   assert.equal(fields.question_external_id, "obs-9");
   assert.equal(fields.repetition_index, 2);
   assert.equal(fields.repetition_count, 2);

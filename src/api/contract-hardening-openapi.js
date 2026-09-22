@@ -290,6 +290,12 @@ const coreSchemas = {
     properties: {
       local_run_id: { type: "string", pattern: "^run_[A-Za-z0-9_-]+$" },
       status: { type: "string" },
+      provider: { type: "string", enum: PROVIDERS() },
+      login_state: {
+        type: "string",
+        enum: ["account", "anonymous"],
+        description: "Observation surface this run was collected from. Runs that predate the column report 'account'.",
+      },
       project_id: { type: ["integer", "null"] },
       project_name: { type: ["string", "null"] },
       account_id: { type: ["string", "null"] },

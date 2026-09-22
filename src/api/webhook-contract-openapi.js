@@ -16,6 +16,40 @@ function pascal(value) {
     .join("");
 }
 
+/**
+ * Mirrors what the producers actually write into the event payload: `data` stays an open
+ * object in the schema, so an example is the only place the machine-readable contract tells a
+ * consumer that an execution event names its platform and observation surfaces.
+ */
+function exampleData(eventType) {
+  if (eventType.startsWith("execution.")) {
+    return {
+      task_id: "tsk_0123456789abcdef0123456789abcdef",
+      execution_id: "exe_0123456789abcdef0123456789abcdef",
+      report_id: "rpt_0123456789abcdef0123456789abcdef",
+      platform: "doubao",
+      status: eventType.slice("execution.".length),
+      progress: { total: 20, completed: 20, failed: 0, skipped: 0 },
+      login_states: ["account"],
+      finished_at: "2026-09-17T00:00:00.000Z",
+    };
+  }
+  if (eventType === "account.action_required") {
+    return {
+      provider: "qianwen",
+      account_id: "qianwen-main",
+      status: "session_expired",
+      reason: "session_expired",
+      cooldown_until: null,
+      last_error_code: "session_expired",
+    };
+  }
+  if (eventType === "account.ready") {
+    return { provider: "qianwen", account_id: "qianwen-main", status: "ready" };
+  }
+  return {};
+}
+
 function receiver(eventType) {
   return {
     post: {
@@ -73,7 +107,7 @@ function receiver(eventType) {
                   type: eventType,
                   occurred_at: "2026-09-17T00:00:00.000Z",
                   created_at: "2026-09-17T00:00:00.000Z",
-                  data: {},
+                  data: exampleData(eventType),
                 },
               },
             },

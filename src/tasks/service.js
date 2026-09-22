@@ -446,9 +446,12 @@ export async function ensureScheduledTaskExecutionForBatch(pool, { monitorPlanId
 export async function getExecution(pool, tenantId, executionId) {
   const { rows } = await pool.query(
     `SELECT e.*, t.public_id AS task_public_id, t.name AS task_name,
-            b.status AS batch_status, b.requested_jobs, b.completed_jobs, b.failed_jobs, b.skipped_jobs,
+            b.status AS batch_status, b.provider AS batch_provider,
+            b.requested_jobs, b.completed_jobs, b.failed_jobs, b.skipped_jobs,
             b.started_at, b.finished_at, b.queued_at, b.aborted_at,
-            r.public_id AS report_public_id
+            r.public_id AS report_public_id,
+            (SELECT array_agg(DISTINCT ru.login_state ORDER BY ru.login_state)
+               FROM runs ru WHERE ru.sampling_batch_id = e.batch_id) AS login_states
        FROM service_task_executions e
        JOIN service_tasks t ON t.id = e.task_id
        LEFT JOIN sampling_batches b ON b.id = e.batch_id
@@ -468,6 +471,10 @@ export async function getExecution(pool, tenantId, executionId) {
     task_id: row.task_public_id,
     task_name: row.task_name,
     report_id: row.report_public_id ?? null,
+    // Read off the execution's own batch rather than the Task's platform list: a Task may
+    // carry more than one platform, and a webhook consumer that has to GET the execution to
+    // learn which one produced the numbers cannot route at all.
+    platform: row.batch_provider ?? null,
     trigger: row.trigger_type,
     status: executionStatus(row.batch_status),
     progress: {
@@ -479,6 +486,8 @@ export async function getExecution(pool, tenantId, executionId) {
       remaining: Math.max(0, requested - done),
       percent: requested ? Math.round((done / requested) * 1000) / 10 : 0,
     },
+    // Two entries mean this execution's rates blend signed-out and account observations.
+    login_states: row.login_states ?? [],
     created_at: row.created_at,
     started_at: row.started_at,
     finished_at: row.finished_at,
@@ -551,6 +560,10 @@ export function publicResultFields(row) {
     repetition_count: row.repetition_count == null ? null : Number(row.repetition_count),
     task_id: row.task_public_id ?? null,
     execution_id: row.execution_public_id ?? null,
+    // null while nothing has run for this assignment. A signed-out observation is a different
+    // condition from an account observation, so a customer mixing the two into one rate would
+    // be reporting a number that describes no real user.
+    login_state: row.run_login_state ?? null,
     assignment_status: assignmentStatusFor({ runStatus, batchStatus }),
     terminal_reason: terminalReasonFor({
       runStatus,
@@ -568,6 +581,7 @@ export async function listExecutionResults(pool, tenantId, executionId) {
     `SELECT sr.public_id AS result_id, sr.question, sr.platform, sr.run_id,
             sr.external_id, sr.repetition_index, sr.repetition_count,
             r.status AS run_status, r.brand_mentioned, r.mention_count, r.finished_at,
+            r.login_state AS run_login_state,
             r.error_code AS run_error_code, r.error_message AS run_error_message,
             b.status AS batch_status,
             t.public_id AS task_public_id,
@@ -598,6 +612,7 @@ export async function getResult(pool, tenantId, resultId) {
   const { rows } = await pool.query(
     `SELECT sr.*, e.public_id AS execution_public_id, t.public_id AS task_public_id,
             r.id AS run_db_id, r.status AS run_status,
+            r.login_state AS run_login_state,
             r.error_code AS run_error_code, r.error_message AS run_error_message,
             b.status AS batch_status
        FROM service_task_results sr
@@ -654,7 +669,9 @@ export async function listBatchResultIdentities(pool, batchId) {
 export async function getReport(pool, tenantId, reportId) {
   const { rows } = await pool.query(
     `SELECT rp.*, e.public_id AS execution_public_id, t.public_id AS task_public_id,
-            t.name AS task_name, b.status AS batch_status
+            t.name AS task_name, b.status AS batch_status, b.provider AS batch_provider,
+            (SELECT array_agg(DISTINCT ru.login_state ORDER BY ru.login_state)
+               FROM runs ru WHERE ru.sampling_batch_id = rp.batch_id) AS login_states
        FROM service_reports rp
        JOIN service_task_executions e ON e.id = rp.execution_id
        JOIN service_tasks t ON t.id = e.task_id
@@ -676,12 +693,27 @@ export async function reportForExecution(pool, tenantId, executionId) {
   return rows[0]?.public_id ?? null;
 }
 
+/**
+ * Single projection for a report list item. The plain and cursor-paginated
+ * `/v1/tasks/{id}/reports` routes answer with the same object, so the batch columns they read
+ * are mapped here once instead of twice.
+ */
+export function publicReportListItemFields(row) {
+  return {
+    platform: row.provider ?? null,
+    status: TERMINAL_BATCH_STATUSES.includes(row.status) ? "ready" : "generating",
+    execution_status: executionStatus(row.status),
+    created_at: row.created_at ?? null,
+    finished_at: row.finished_at ?? null,
+  };
+}
+
 export async function listTaskReports(pool, tenantId, taskId, limit = 100) {
   const task = await getTaskInternal(pool, tenantId, taskId);
   if (!task) return null;
   const { rows } = await pool.query(
     `SELECT rp.public_id AS report_id, e.public_id AS execution_id, b.status,
-            rp.created_at, b.finished_at
+            b.provider, rp.created_at, b.finished_at
        FROM service_reports rp
        JOIN service_task_executions e ON e.id = rp.execution_id
        JOIN sampling_batches b ON b.id = rp.batch_id
@@ -692,10 +724,7 @@ export async function listTaskReports(pool, tenantId, taskId, limit = 100) {
   return rows.map((row) => ({
     report_id: row.report_id,
     execution_id: row.execution_id,
-    status: ["completed", "partial", "failed", "aborted"].includes(row.status) ? "ready" : "generating",
-    execution_status: executionStatus(row.status),
     report_url: `/v1/reports/${row.report_id}`,
-    created_at: row.created_at,
-    finished_at: row.finished_at,
+    ...publicReportListItemFields(row),
   }));
 }

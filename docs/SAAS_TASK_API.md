@@ -4,7 +4,7 @@ This is the stable server-to-server contract for integrating a SaaS product with
 
 The SaaS owns end-user login, billing, permissions and product UI. OneGl owns AI-platform login state, browser execution, evidence capture, progress, results and GEO reports.
 
-The first executable platform is `doubao`. The contract already uses `platforms` and platform-scoped results so more Chinese AI platforms can be added later without changing the Task → Execution → Result → Report model.
+An executable platform is one with a registered collection adapter — `doubao` and `qianwen` today. `GET /v1/providers` returns the list this instance actually runs, and a platform outside it is rejected with `unsupported_platform`; the contract uses `platforms` and platform-scoped results so more Chinese AI platforms can be added without changing the Task → Execution → Result → Report model.
 
 ## 0. Contract rules
 
@@ -305,6 +305,7 @@ Response:
     "task_id": "tsk_0123456789abcdef0123456789abcdef",
     "task_name": "小米汽车 GEO 监测",
     "report_id": "rpt_0123456789abcdef0123456789abcdef",
+    "platform": "doubao",
     "trigger": "manual",
     "status": "running",
     "progress": {
@@ -315,6 +316,7 @@ Response:
       "remaining": 12,
       "percent": 40
     },
+    "login_states": ["account"],
     "created_at": "2026-09-16T09:31:00.000Z",
     "started_at": "2026-09-16T09:31:04.000Z",
     "finished_at": null
@@ -385,6 +387,7 @@ Response:
       "question": "20万左右新能源SUV推荐",
       "platform": "doubao",
       "status": "success",
+      "login_state": "account",
       "brand_mentioned": true,
       "mention_count": 2,
       "finished_at": "2026-09-16T09:32:10.000Z",
@@ -393,6 +396,11 @@ Response:
   ]
 }
 ```
+
+`result.login_state` labels the observation surface the answer was captured from: `account` for
+a signed-in platform account, `anonymous` for a surface that needs no login (千问 today). It is
+`null` while no run has been recorded for the assignment. Keep the two apart when aggregating —
+a mention or citation rate that mixes them describes no real user.
 
 Result status values currently follow the capture-result vocabulary:
 
@@ -425,6 +433,7 @@ Pending result:
     "platform": "doubao",
     "question": "20万左右新能源SUV推荐",
     "status": "pending",
+    "login_state": null,
     "citations": []
   }
 }
@@ -441,6 +450,7 @@ Finished result:
     "platform": "doubao",
     "question": "20万左右新能源SUV推荐",
     "status": "success",
+    "login_state": "account",
     "answer": {
       "text": "……豆包回答正文……",
       "brand_mentioned": true,

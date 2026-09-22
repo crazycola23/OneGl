@@ -74,6 +74,24 @@ const paginationParameters = [
 ];
 
 const nullableDateTime = { type: ["string", "null"], format: "date-time" };
+const LOGIN_STATES = ["account", "anonymous"];
+const nullableLoginState = {
+  type: ["string", "null"],
+  enum: [...LOGIN_STATES, null],
+  description: "Whether the run behind this result was observed from a signed-in account or the anonymous surface. Null while no run has been recorded for the assignment.",
+};
+const nullablePlatform = {
+  type: ["string", "null"],
+  enum: [...PROVIDERS(), null],
+  description: "Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.",
+};
+const loginStates = {
+  type: "array",
+  maxItems: LOGIN_STATES.length,
+  uniqueItems: true,
+  items: { type: "string", enum: LOGIN_STATES },
+  description: "Observation surfaces behind these numbers. Empty before any run is recorded; two entries mean account and anonymous samples are blended in one rate.",
+};
 const taskId = { type: "string", pattern: "^tsk_[a-f0-9]{32}$" };
 const executionId = { type: "string", pattern: "^exe_[a-f0-9]{32}$" };
 const resultId = { type: "string", pattern: "^res_[a-f0-9]{32}$" };
@@ -218,9 +236,11 @@ export function applySaasOpenApi(document) {
         task_id: taskId,
         task_name: { type: "string" },
         report_id: { anyOf: [reportId, { type: "null" }] },
+        platform: nullablePlatform,
         trigger: { type: "string", enum: ["manual", "rerun", "schedule"] },
         status: { type: "string", enum: ["pending", "queued", "running", "paused", "completed", "partial", "failed", "cancelled"] },
         progress: { $ref: "#/components/schemas/ExecutionProgress" },
+        login_states: loginStates,
         created_at: { type: "string", format: "date-time" },
         started_at: nullableDateTime,
         finished_at: nullableDateTime,
@@ -236,6 +256,7 @@ export function applySaasOpenApi(document) {
         question: { type: "string" },
         platform: { type: "string", enum: PROVIDERS() },
         status: { type: "string", enum: ["pending", "running", "success", "partial", "failed"] },
+        login_state: nullableLoginState,
         brand_mentioned: { type: ["boolean", "null"] },
         mention_count: { type: ["integer", "null"], minimum: 0 },
         finished_at: nullableDateTime,
@@ -270,6 +291,7 @@ export function applySaasOpenApi(document) {
         platform: { type: "string", enum: PROVIDERS() },
         question: { type: "string" },
         status: { type: "string", enum: ["pending", "running", "success", "partial", "failed"] },
+        login_state: nullableLoginState,
         answer: {
           type: "object",
           required: ["text", "brand_mentioned", "mention_count"],
@@ -291,6 +313,7 @@ export function applySaasOpenApi(document) {
         report_id: reportId,
         task_id: taskId,
         execution_id: executionId,
+        platform: nullablePlatform,
         status: { type: "string", enum: ["generating", "ready"] },
         execution_status: { type: "string", enum: ["pending", "queued", "running", "paused", "completed", "partial", "failed", "cancelled"] },
         report_url: { type: "string" },
@@ -298,6 +321,7 @@ export function applySaasOpenApi(document) {
         sources: { type: ["object", "null"], additionalProperties: true },
         intelligence: { type: ["object", "null"], additionalProperties: true },
         created_at: { type: "string", format: "date-time" },
+        login_states: loginStates,
       },
     },
     ReportListItem: {
@@ -306,6 +330,7 @@ export function applySaasOpenApi(document) {
       properties: {
         report_id: reportId,
         execution_id: executionId,
+        platform: nullablePlatform,
         status: { type: "string", enum: ["generating", "ready"] },
         execution_status: { type: "string", enum: ["pending", "queued", "running", "paused", "completed", "partial", "failed", "cancelled"] },
         report_url: { type: "string" },
@@ -408,7 +433,11 @@ export function applySaasOpenApi(document) {
         },
         occurred_at: { type: "string", format: "date-time" },
         created_at: { type: "string", format: "date-time", description: "Compatibility alias for occurred_at." },
-        data: { type: "object", additionalProperties: true },
+        data: {
+          type: "object",
+          additionalProperties: true,
+          description: "Event payload, whose shape follows `type`. execution.* events always name the platform and the observation surfaces, so a subscriber can route without fetching the execution first.",
+        },
       },
     },
   });

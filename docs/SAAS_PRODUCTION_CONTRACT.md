@@ -167,6 +167,7 @@ Webhook body:
     "task_id": "tsk_...",
     "execution_id": "exe_...",
     "report_id": "rpt_...",
+    "platform": "doubao",
     "status": "completed",
     "progress": {
       "total": 20,
@@ -174,10 +175,16 @@ Webhook body:
       "failed": 0,
       "skipped": 0
     },
+    "login_states": ["account"],
     "finished_at": "2026-09-16T10:00:00.000Z"
   }
 }
 ```
+
+`data.platform` names the platform that execution collected on, so a subscriber can route the
+event without fetching the execution first. `data.login_states` lists the observation surfaces
+behind the numbers: `["account"]` was collected while signed in, `["anonymous"]` was not, and
+two entries mean the rates blend both.
 
 Important headers:
 

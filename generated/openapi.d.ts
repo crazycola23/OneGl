@@ -881,7 +881,7 @@ export interface paths {
         };
         /**
          * List configured provider adapter types
-         * @description Doubao Web is the current product measurement surface. Provider identity remains explicit so measurements are auditable.
+         * @description Lists the collection adapters this instance has registered, which is exactly the set of platforms a Task can execute on. Provider identity stays explicit so every measurement remains attributable to the surface that produced it.
          */
         get: operations["getProviders"];
         put?: never;
@@ -1963,6 +1963,13 @@ export interface components {
             execution_id: string;
             /** Format: date-time */
             finished_at?: string | null;
+            /** @description Observation surfaces behind these numbers. Empty before any run is recorded; two entries mean account and anonymous samples are blended in one rate. */
+            login_states?: ("account" | "anonymous")[];
+            /**
+             * @description Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.
+             * @enum {string|null}
+             */
+            platform?: "doubao" | "qianwen" | null;
             progress: components["schemas"]["ExecutionProgress"];
             report_id: string | null;
             /** @example /v1/reports/rpt_0123456789abcdef0123456789abcdef */
@@ -2744,6 +2751,11 @@ export interface components {
             execution_status: "pending" | "queued" | "running" | "paused" | "completed" | "partial" | "failed" | "cancelled";
             /** Format: date-time */
             finished_at?: string | null;
+            /**
+             * @description Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.
+             * @enum {string|null}
+             */
+            platform?: "doubao" | "qianwen" | null;
             report_id: string;
             report_url: string;
             /** @enum {string} */
@@ -2797,6 +2809,13 @@ export interface components {
             intelligence?: {
                 [key: string]: unknown;
             } | null;
+            /** @description Observation surfaces behind these numbers. Empty before any run is recorded; two entries mean account and anonymous samples are blended in one rate. */
+            login_states?: ("account" | "anonymous")[];
+            /**
+             * @description Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.
+             * @enum {string|null}
+             */
+            platform?: "doubao" | "qianwen" | null;
             readiness: components["schemas"]["ReportReadiness"];
             report_id: string;
             report_url: string;
@@ -2857,6 +2876,11 @@ export interface components {
             execution_id: string;
             /** Format: date-time */
             finished_at?: string | null;
+            /**
+             * @description Whether the run behind this result was observed from a signed-in account or the anonymous surface. Null while no run has been recorded for the assignment.
+             * @enum {string|null}
+             */
+            login_state?: "account" | "anonymous" | null;
             mention_count?: number | null;
             /** @enum {string} */
             platform: "doubao" | "qianwen";
@@ -2883,6 +2907,11 @@ export interface components {
             execution_id: string;
             /** Format: date-time */
             finished_at?: string | null;
+            /**
+             * @description Whether the run behind this result was observed from a signed-in account or the anonymous surface. Null while no run has been recorded for the assignment.
+             * @enum {string|null}
+             */
+            login_state?: "account" | "anonymous" | null;
             /** @enum {string} */
             platform: "doubao" | "qianwen";
             question: string;
@@ -2912,8 +2941,15 @@ export interface components {
             /** Format: date-time */
             finished_at?: string | null;
             local_run_id?: string;
+            /**
+             * @description Observation surface this run was collected from. Runs that predate the column report 'account'.
+             * @enum {string}
+             */
+            login_state?: "account" | "anonymous";
             project_id?: number | null;
             project_name?: string | null;
+            /** @enum {string} */
+            provider?: "doubao" | "qianwen";
             /** Format: date-time */
             started_at?: string | null;
             /** @enum {string} */
@@ -2941,6 +2977,7 @@ export interface components {
              * @description Compatibility alias for occurred_at.
              */
             created_at?: string;
+            /** @description Event payload, whose shape follows `type`. execution.* events always name the platform and the observation surfaces, so a subscriber can route without fetching the execution first. */
             data: {
                 [key: string]: unknown;
             };

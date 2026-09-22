@@ -170,7 +170,7 @@ export const openApiDocument = {
     "/v1/providers": {
       get: {
         summary: "List configured provider adapter types",
-        description: "Doubao Web is the current product measurement surface. Provider identity remains explicit so measurements are auditable.",
+        description: "Lists the collection adapters this instance has registered, which is exactly the set of platforms a Task can execute on. Provider identity stays explicit so every measurement remains attributable to the surface that produced it.",
         responses: { 200: jsonResponse("Provider adapters") },
       },
     },
