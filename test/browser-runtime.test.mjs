@@ -30,7 +30,7 @@ test("Camoufox runtime modes are explicit and validated", () => {
 });
 
 test("production deployment defaults to Camoufox virtual mode with Xvfb available", async () => {
-  const [dockerfile, envFile, compose, kubernetes, browserSource, readinessSource, assetResolver] = await Promise.all([
+  const [dockerfile, envFile, compose, kubernetes, browserSource, readinessSource, assetResolver, rangeDownloader] = await Promise.all([
     readFile("Dockerfile", "utf8"),
     readFile("deploy/.env.production.example", "utf8"),
     readFile("deploy/docker-compose.yml", "utf8"),
@@ -38,6 +38,7 @@ test("production deployment defaults to Camoufox virtual mode with Xvfb availabl
     readFile("src/browser.js", "utf8"),
     readFile("src/system/readiness.js", "utf8"),
     readFile("tools/prepare-camoufox-url.py", "utf8"),
+    readFile("tools/download-camoufox-range.mjs", "utf8"),
   ]);
 
   assert.match(dockerfile, /ONEGL_BROWSER=camoufox/);
@@ -47,7 +48,6 @@ test("production deployment defaults to Camoufox virtual mode with Xvfb availabl
   assert.match(dockerfile, /installed_verstr/);
   assert.match(dockerfile, /prepare-camoufox-url\.py/);
   assert.match(dockerfile, /prepare-camoufox-url\.py --install/);
-  assert.match(dockerfile, /apt-get install[^\n]*curl/);
   assert.match(dockerfile, /\bxvfb\b/);
   assert.match(dockerfile, /playwright-core install --with-deps chromium/);
   assert.match(browserSource, /exclude_addons/);
@@ -56,7 +56,8 @@ test("production deployment defaults to Camoufox virtual mode with Xvfb availabl
   assert.match(assetResolver, /releases\/assets/);
   assert.match(assetResolver, /application\/octet-stream/);
   assert.match(assetResolver, /CamoufoxFetcher/);
-  assert.match(assetResolver, /subprocess\.run/);
+  assert.match(assetResolver, /subprocess/);
+  assert.match(rangeDownloader, /Range:/);
 
   assert.match(envFile, /ONEGL_BROWSER=camoufox/);
   assert.match(envFile, /ONEGL_CAMOUFOX_MODE=virtual/);

@@ -137,34 +137,20 @@ def download_parallel(buffer, url: str):
 
     def fetch_part(index: int, start: int, end: int) -> Path:
         path = parts_dir / f"{index:04d}.part"
+        helper = os.environ.get("CAMOUFOX_RANGE_HELPER", "/tmp/download-camoufox-range.mjs")
         result = subprocess.run(
             [
-                "curl",
-                "--fail",
-                "--silent",
-                "--show-error",
-                "--location",
-                "--retry",
-                "3",
-                "--retry-delay",
-                "2",
-                "--connect-timeout",
-                "60",
-                "--max-time",
-                "900",
-                "--header",
-                "Accept-Encoding: identity",
-                "--range",
-                f"{start}-{end}",
-                "--output",
-                str(path),
+                "node",
+                helper,
                 url,
+                f"{start}-{end}",
+                str(path),
             ],
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
-            detail = (result.stderr or "curl failed").strip()
+            detail = (result.stderr or "range download failed").strip()
             raise RuntimeError(f"Camoufox range download failed: {detail[-400:]}")
         expected = end - start + 1
         received = path.stat().st_size if path.exists() else 0

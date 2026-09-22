@@ -17,7 +17,7 @@ COPY package.json package-lock.json ./
 # Keep Chromium installed as an explicit troubleshooting fallback. Camoufox uses
 # its own Firefox-derived binary but still needs the Linux Firefox runtime libs.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl python3 python3-venv xvfb \
+    && apt-get install -y --no-install-recommends python3 python3-venv xvfb \
     && npm ci --omit=dev \
     && npx playwright-core install --with-deps chromium \
     && npx playwright-core install-deps firefox \
@@ -29,6 +29,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY tools/prepare-camoufox-url.py /tmp/prepare-camoufox-url.py
+COPY tools/download-camoufox-range.mjs /tmp/download-camoufox-range.mjs
 
 USER onegl
 
