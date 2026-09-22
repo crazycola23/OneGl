@@ -12,6 +12,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
@@ -99,6 +102,10 @@ def install_selected(repo: dict, version: dict) -> None:
         asset_size=version.get("asset_size"),
         asset_updated_at=version.get("asset_updated_at"),
     )
+    # Camoufox's built-in downloader is deliberately simple and uses one
+    # connection. Release assets are large, so use ranged requests here while
+    # retaining Camoufox's own extraction, metadata, and activation logic.
+    CamoufoxFetcher.download_file = staticmethod(download_parallel)
     CamoufoxFetcher(repo_config=repo_config, selected_version=selected).install()
 
 
@@ -107,6 +114,70 @@ def restore_asset(version: dict) -> None:
     if original:
         version["url"] = original
         print("Restored the public Camoufox asset URL in repo_cache.json")
+
+
+def download_parallel(buffer, url: str):
+    """Download a large release asset with ranged requests, then join it."""
+    head = requests.head(url, allow_redirects=True, timeout=60)
+    head.raise_for_status()
+    total = int(head.headers.get("content-length", "0"))
+    if total <= 0:
+        raise RuntimeError("Camoufox asset did not provide a content length")
+
+    part_size = int(os.environ.get("CAMOUFOX_DOWNLOAD_PART_SIZE", 16 * 1024 * 1024))
+    workers = max(2, min(16, int(os.environ.get("CAMOUFOX_DOWNLOAD_WORKERS", "8"))))
+    ranges = [
+        (start, min(start + part_size - 1, total - 1))
+        for start in range(0, total, part_size)
+    ]
+    print(f"Downloading Camoufox asset in {len(ranges)} ranges with {workers} workers")
+
+    parts_dir = Path(tempfile.mkdtemp(prefix="camoufox-parts-"))
+
+    def fetch_part(index: int, start: int, end: int) -> Path:
+        path = parts_dir / f"{index:04d}.part"
+        response = requests.get(
+            url,
+            headers={"Range": f"bytes={start}-{end}", "Accept-Encoding": "identity"},
+            stream=True,
+            timeout=(60, 300),
+        )
+        response.raise_for_status()
+        if response.status_code != 206:
+            raise RuntimeError(f"Camoufox asset ignored range request: HTTP {response.status_code}")
+        expected = end - start + 1
+        received = 0
+        with path.open("wb") as output:
+            for chunk in response.iter_content(1024 * 1024):
+                if chunk:
+                    output.write(chunk)
+                    received += len(chunk)
+        if received != expected:
+            raise RuntimeError(
+                f"Camoufox range {start}-{end} was truncated: {received}/{expected} bytes"
+            )
+        return path
+
+    try:
+        completed = {}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(fetch_part, index, start, end): index
+                for index, (start, end) in enumerate(ranges)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                completed[index] = future.result()
+
+        buffer.seek(0)
+        buffer.truncate(0)
+        for index in range(len(ranges)):
+            with completed[index].open("rb") as part:
+                shutil.copyfileobj(part, buffer, length=1024 * 1024)
+        buffer.seek(0)
+        return buffer
+    finally:
+        shutil.rmtree(parts_dir, ignore_errors=True)
 
 
 def main() -> None:
