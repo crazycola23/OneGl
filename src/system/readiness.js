@@ -1,5 +1,6 @@
-import { readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -190,7 +191,54 @@ export async function camoufoxRuntimeReadiness({ role = "api", env = process.env
       required: false,
       configured: browser || null,
       version: null,
+      addon: { ready: true, required: false, path: null, version: null, message: "" },
       message: "",
+    };
+  }
+
+  const addonPath = String(
+    env.ONEGL_CAMOUFOX_UBLOCK_PATH ?? "/opt/onegl-addons/ublock",
+  ).trim() || "/opt/onegl-addons/ublock";
+  const expectedAddonVersion = String(env.ONEGL_CAMOUFOX_UBLOCK_VERSION ?? "").trim();
+  let addon;
+  try {
+    const manifest = JSON.parse(await readFile(join(addonPath, "manifest.json"), "utf8"));
+    const addonId =
+      manifest?.browser_specific_settings?.gecko?.id ?? manifest?.applications?.gecko?.id;
+    const addonVersion = String(manifest?.version ?? "").trim();
+    if (addonId !== "uBlock0@raymondhill.net") {
+      throw new Error(`unexpected extension id ${addonId || "<missing>"}`);
+    }
+    if (!addonVersion) throw new Error("manifest.json has no version");
+    if (expectedAddonVersion && addonVersion !== expectedAddonVersion) {
+      throw new Error(`expected version ${expectedAddonVersion}, found ${addonVersion}`);
+    }
+    addon = {
+      ready: true,
+      required: true,
+      path: addonPath,
+      version: addonVersion,
+      message: "",
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    addon = {
+      ready: false,
+      required: true,
+      path: addonPath,
+      version: null,
+      message: `Bundled uBlock add-on is not usable: ${detail.slice(0, 240)}`,
+    };
+  }
+
+  if (!addon.ready) {
+    return {
+      ready: false,
+      required: true,
+      configured: browser,
+      version: null,
+      addon,
+      message: addon.message,
     };
   }
 
@@ -203,7 +251,7 @@ export async function camoufoxRuntimeReadiness({ role = "api", env = process.env
     );
     const version = String(stdout).trim();
     if (!version) throw new Error("Camoufox did not report an installed version");
-    return { ready: true, required: true, configured: browser, version, message: "" };
+    return { ready: true, required: true, configured: browser, version, addon, message: "" };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return {
@@ -211,6 +259,7 @@ export async function camoufoxRuntimeReadiness({ role = "api", env = process.env
       required: true,
       configured: browser,
       version: null,
+      addon,
       message: `Camoufox runtime is not installed or not usable: ${detail.slice(0, 240)}`,
     };
   }

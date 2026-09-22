@@ -100,6 +100,17 @@ ONEGL_ALERT_SIGNING_KEY=<至少 32 个随机字符>
 
 ## Docker Compose
 
+生产构建默认强制使用国内源：Node 基础镜像走 DaoCloud、apt 走阿里云、npm 走 npmmirror、PyPI 走清华源，Playwright 浏览器包走 npmmirror。不要在生产构建中临时改回公网源。
+
+Camoufox 和 uBlock 不在构建时临时从外网下载，而是使用部署目录中的固定供应链文件：
+
+```text
+vendor/camoufox-lin.x86_64.zip
+vendor/ublock-origin.firefox.xpi
+```
+
+两者都会在 Docker 构建阶段校验 SHA256；uBlock 还会校验扩展 ID、版本和 `manifest.json`。文件缺失、校验不符或插件损坏时构建直接失败，不会生成一个启动后才发现浏览器不可用的镜像。
+
 镜像：
 
 ```bash
@@ -129,6 +140,8 @@ Compose 的 API 只绑定 `127.0.0.1`，应通过 TLS reverse proxy 或私网入
 ONEGL_BROWSER=camoufox
 ONEGL_CAMOUFOX_PYTHON=/opt/camoufox/bin/python
 ONEGL_CAMOUFOX_MODE=virtual
+ONEGL_CAMOUFOX_UBLOCK_PATH=/opt/onegl-addons/ublock
+ONEGL_CAMOUFOX_UBLOCK_VERSION=1.75.0
 ```
 
 `virtual` 模式不要求 Ubuntu Desktop、GNOME/KDE 或物理显示器。OneGl 为每个 Camoufox 浏览器会话启动独立 Xvfb display，浏览器仍以有窗口模式运行；会话关闭时 Xvfb 一起回收。API 的 Remote Auth 与 Worker 都走同一套 `launchBrowserSession()`，因此登录和后续采集保持同一浏览器后端。

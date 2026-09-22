@@ -44,9 +44,17 @@ if screen_size:
 # Camoufox otherwise downloads its default uBlock add-on on the first launch.
 # Production containers must not depend on runtime access to AMO (and a failed
 # download can leave an empty cache directory that fails every later launch with
-# InvalidAddonPath). If an add-on is ever required, it must be bundled and
-# validated during the image build instead.
+# InvalidAddonPath). The image build bundles a pinned, verified uBlock build;
+# load that extracted directory explicitly and keep the default auto-download
+# disabled.
 payload["exclude_addons"] = list(DefaultAddons)
+ublock_path = os.environ.get("ONEGL_CAMOUFOX_UBLOCK_PATH", "/opt/onegl-addons/ublock").strip()
+manifest_path = os.path.join(ublock_path, "manifest.json")
+if not os.path.isdir(ublock_path) or not os.path.isfile(manifest_path):
+    raise RuntimeError(
+        f"Bundled uBlock add-on is missing or invalid: {ublock_path} (manifest.json required)"
+    )
+payload["addons"] = [ublock_path]
 
 options = launch_options(**payload)
 print(json.dumps(options))

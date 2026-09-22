@@ -4,6 +4,13 @@ x-onegl-base: &onegl-base
   build:
     context: ..
     dockerfile: Dockerfile
+    args:
+      ONEGL_NODE_BASE_IMAGE: m.daocloud.io/docker.io/library/node:22-bookworm-slim
+      APT_MIRROR: http://mirrors.aliyun.com/debian
+      APT_SECURITY_MIRROR: http://mirrors.aliyun.com/debian-security
+      NPM_REGISTRY: https://registry.npmmirror.com
+      PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+      PLAYWRIGHT_DOWNLOAD_HOST: https://registry.npmmirror.com/-/binary/playwright
   env_file:
     - .env.production
   restart: unless-stopped

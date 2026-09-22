@@ -23,6 +23,8 @@ data:
   ONEGL_BROWSER: camoufox
   ONEGL_CAMOUFOX_PYTHON: /opt/camoufox/bin/python
   ONEGL_CAMOUFOX_MODE: virtual
+  ONEGL_CAMOUFOX_UBLOCK_PATH: /opt/onegl-addons/ublock
+  ONEGL_CAMOUFOX_UBLOCK_VERSION: 1.75.0
   ONEGL_HEADLESS: "true"
   ONEGL_BROWSER_LOCALE: zh-CN
   ONEGL_BROWSER_TIMEZONE: Asia/Shanghai
