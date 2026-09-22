@@ -1,6 +1,8 @@
 FROM node:22-bookworm-slim
 
 ARG CAMOUFOX_PYTHON_VERSION=0.6.0
+ARG CAMOUFOX_VENDOR_VERSION=152.0.4-beta.30
+ARG CAMOUFOX_VENDOR_SHA256=5720d45b894ce1770543de024c6f10d514b38be560fa2dc3226b3d8586caf672
 
 ENV NODE_ENV=production \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
@@ -35,10 +37,11 @@ USER onegl
 
 # Install the active Camoufox browser into the runtime user's cache so API remote-auth
 # sessions and workers resolve the same browser build without root-owned cache files.
-RUN /opt/camoufox/bin/python -m camoufox sync \
-    && /opt/camoufox/bin/python -m camoufox set official/stable \
-    && /opt/camoufox/bin/python /tmp/prepare-camoufox-url.py --install \
-    && /opt/camoufox/bin/python /tmp/prepare-camoufox-url.py --restore \
+RUN --mount=type=bind,source=vendor/camoufox-lin.x86_64.zip,target=/tmp/camoufox-lin.x86_64.zip,ro \
+    test "$(sha256sum /tmp/camoufox-lin.x86_64.zip | cut -d' ' -f1)" = "$CAMOUFOX_VENDOR_SHA256" \
+    && /opt/camoufox/bin/python -m camoufox sync \
+    && /opt/camoufox/bin/python -m camoufox set "official/stable/${CAMOUFOX_VENDOR_VERSION}" \
+    && CAMOUFOX_PINNED_VERSION="$CAMOUFOX_VENDOR_VERSION" /opt/camoufox/bin/python /tmp/prepare-camoufox-url.py --install --archive /tmp/camoufox-lin.x86_64.zip \
     && /opt/camoufox/bin/python -c "from camoufox.pkgman import installed_verstr; print('Camoufox installed:', installed_verstr())"
 
 COPY --chown=onegl:onegl . .

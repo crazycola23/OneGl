@@ -48,6 +48,8 @@ test("production deployment defaults to Camoufox virtual mode with Xvfb availabl
   assert.match(dockerfile, /installed_verstr/);
   assert.match(dockerfile, /prepare-camoufox-url\.py/);
   assert.match(dockerfile, /prepare-camoufox-url\.py --install/);
+  assert.match(dockerfile, /CAMOUFOX_VENDOR_SHA256/);
+  assert.match(dockerfile, /source=vendor\/camoufox-lin\.x86_64\.zip/);
   assert.match(dockerfile, /\bxvfb\b/);
   assert.match(dockerfile, /playwright-core install --with-deps chromium/);
   assert.match(browserSource, /exclude_addons/);
@@ -56,6 +58,7 @@ test("production deployment defaults to Camoufox virtual mode with Xvfb availabl
   assert.match(assetResolver, /releases\/assets/);
   assert.match(assetResolver, /application\/octet-stream/);
   assert.match(assetResolver, /CamoufoxFetcher/);
+  assert.match(assetResolver, /--archive/);
   assert.match(assetResolver, /subprocess/);
   assert.match(rangeDownloader, /Range:/);
 

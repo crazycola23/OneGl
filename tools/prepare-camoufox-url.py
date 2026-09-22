@@ -89,7 +89,7 @@ def resolve_asset(version: dict) -> None:
     )
 
 
-def install_selected(repo: dict, version: dict) -> None:
+def install_selected(repo: dict, version: dict, archive: str | None = None) -> None:
     from camoufox.pkgman import AvailableVersion, CamoufoxFetcher, RepoConfig, Version
 
     repo_config = RepoConfig.find_by_name(repo["name"])
@@ -103,10 +103,23 @@ def install_selected(repo: dict, version: dict) -> None:
         asset_size=version.get("asset_size"),
         asset_updated_at=version.get("asset_updated_at"),
     )
-    # Camoufox's built-in downloader is deliberately simple and uses one
-    # connection. Release assets are large, so use ranged requests here while
-    # retaining Camoufox's own extraction, metadata, and activation logic.
-    CamoufoxFetcher.download_file = staticmethod(download_parallel)
+    if archive:
+        archive_path = Path(archive)
+        if not archive_path.is_file():
+            raise RuntimeError(f"Camoufox vendor archive is missing: {archive_path}")
+
+        def copy_archive(buffer, _url: str):
+            with archive_path.open("rb") as source:
+                shutil.copyfileobj(source, buffer, length=1024 * 1024)
+            buffer.seek(0)
+            return buffer
+
+        CamoufoxFetcher.download_file = staticmethod(copy_archive)
+    else:
+        # Camoufox's built-in downloader is deliberately simple and uses one
+        # connection. Release assets are large, so use ranged requests here while
+        # retaining Camoufox's own extraction, metadata, and activation logic.
+        CamoufoxFetcher.download_file = staticmethod(download_parallel)
     CamoufoxFetcher(repo_config=repo_config, selected_version=selected).install()
 
 
@@ -186,6 +199,7 @@ def download_parallel(buffer, url: str):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--install", action="store_true")
+    parser.add_argument("--archive")
     parser.add_argument("--restore", action="store_true")
     args = parser.parse_args()
 
@@ -195,10 +209,11 @@ def main() -> None:
     if args.restore:
         restore_asset(version)
     else:
-        resolve_asset(version)
+        if not args.archive:
+            resolve_asset(version)
         if args.install:
             save_cache(path, cache)
-            install_selected(repo, version)
+            install_selected(repo, version, args.archive)
     save_cache(path, cache)
 
 
