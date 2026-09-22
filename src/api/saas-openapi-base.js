@@ -148,7 +148,10 @@ export function applySaasOpenApi(document) {
         platforms: {
           type: "array",
           minItems: 1,
-          maxItems: 20,
+          // The contract used to advertise up to 20 platforms while the server rejected
+          // anything but exactly one, so a spec-compliant client could build a request that
+          // could never succeed. One platform per task; multi-platform means one task each.
+          maxItems: 1,
           uniqueItems: true,
           items: { type: "string", enum: PROVIDERS() },
           default: [DEFAULT_PROVIDER()],

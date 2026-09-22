@@ -724,6 +724,15 @@
               "null"
             ]
           },
+          "platform": {
+            "default": "doubao",
+            "description": "Platform to collect on. The batch is single-platform, and the listed accounts must be bound to this same platform.",
+            "enum": [
+              "doubao",
+              "qianwen"
+            ],
+            "type": "string"
+          },
           "project_id": {
             "minimum": 1,
             "type": "integer"
@@ -5622,7 +5631,6 @@
         },
         "required": [
           "provider",
-          "login_states",
           "contract_version",
           "generated_at",
           "source"
@@ -6629,7 +6637,7 @@
               ],
               "type": "string"
             },
-            "maxItems": 20,
+            "maxItems": 1,
             "minItems": 1,
             "type": "array",
             "uniqueItems": true
@@ -7785,6 +7793,19 @@
           "name": "accountId",
           "required": true,
           "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Disambiguates an account id that is bound on more than one platform. Omit when the id is unique to one platform; send it when the call answers ambiguous_account_provider.",
+          "in": "query",
+          "name": "provider",
+          "required": false,
+          "schema": {
+            "enum": [
+              "doubao",
+              "qianwen"
+            ],
             "type": "string"
           }
         }

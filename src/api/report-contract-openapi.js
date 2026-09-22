@@ -118,7 +118,7 @@ const reportContractSchemas = {
     contract_version: { type: "string", const: "report-contract-v1" },
     generated_at: { type: "string", format: "date-time" },
     source: { type: "string", const: "onegl" },
-  }, { required: ["provider", "login_states", "contract_version", "generated_at", "source"] }),
+  }, { required: ["provider", "contract_version", "generated_at", "source"] }),
 
   ReportCollection: object({
     status: { type: "string", enum: ["pending", "queued", "running", "paused", "completed", "partial", "failed", "cancelled"] },

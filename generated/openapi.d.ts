@@ -113,7 +113,10 @@ export interface paths {
     };
     "/v1/accounts/{accountId}/auth-sessions": {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Disambiguates an account id that is bound on more than one platform. Omit when the id is unique to one platform; send it when the call answers ambiguous_account_provider. */
+                provider?: "doubao" | "qianwen";
+            };
             header?: never;
             path: {
                 accountId: string;
@@ -1642,6 +1645,12 @@ export interface components {
              */
             method: "stratified" | "random";
             name?: string | null;
+            /**
+             * @description Platform to collect on. The batch is single-platform, and the listed accounts must be bound to this same platform.
+             * @default doubao
+             * @enum {string}
+             */
+            platform: "doubao" | "qianwen";
             project_id: number;
             /** @default 1 */
             repeats: number;
@@ -2759,7 +2768,7 @@ export interface components {
             /** Format: date-time */
             generated_at: string;
             /** @description Observation surfaces that contributed to this report. Two entries mean the rates blend signed-out and account samples. */
-            login_states: ("account" | "anonymous")[];
+            login_states?: ("account" | "anonymous")[];
             /** @enum {string} */
             provider: "doubao_web" | "qianwen_web";
             /** @constant */
@@ -3584,7 +3593,10 @@ export interface operations {
     };
     createAccountsByAccountIdAuthSessions: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Disambiguates an account id that is bound on more than one platform. Omit when the id is unique to one platform; send it when the call answers ambiguous_account_provider. */
+                provider?: "doubao" | "qianwen";
+            };
             header?: never;
             path: {
                 accountId: string;

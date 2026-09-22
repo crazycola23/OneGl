@@ -98,6 +98,12 @@ export const openApiDocument = {
           method: { type: "string", enum: ["stratified", "random"], default: "stratified" },
           seed: { type: ["string", "null"] },
           accounts: { type: "array", minItems: 1, maxItems: 100, items: { type: "string" } },
+          platform: {
+            type: "string",
+            enum: PROVIDERS(),
+            default: DEFAULT_PROVIDER(),
+            description: "Platform to collect on. The batch is single-platform, and the listed accounts must be bound to this same platform.",
+          },
           repeats: { type: "integer", minimum: 1, maximum: 100, default: 1 },
           start: { type: "boolean", default: false },
         },
@@ -302,7 +308,16 @@ export const openApiDocument = {
       },
     },
     "/v1/accounts/{accountId}/auth-sessions": {
-      parameters: [{ name: "accountId", in: "path", required: true, schema: { type: "string" } }],
+      parameters: [
+        { name: "accountId", in: "path", required: true, schema: { type: "string" } },
+        {
+          name: "provider",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: PROVIDERS() },
+          description: "Disambiguates an account id that is bound on more than one platform. Omit when the id is unique to one platform; send it when the call answers ambiguous_account_provider.",
+        },
+      ],
       post: {
         summary: "Start constrained remote login session",
         description: "Starts an isolated browser session and exposes screenshots/status only. No arbitrary browser-control endpoint is provided.",

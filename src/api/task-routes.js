@@ -1,6 +1,7 @@
 import { ApiHttpError, readJsonBody, sendJson } from "./http.js";
 import {
   bindProject,
+  ensureTenantAccount,
   internalProjectName,
   requireScope,
   resolveTenantAccountKeys,
@@ -17,7 +18,7 @@ import { addQuestionEntries, countActiveKeywords } from "../project/keywords.js"
 import { batchProgress, enqueueBatch, stopBatch } from "../queue/batches.js";
 import { pauseBatch, resumeBatch } from "../queue/batch-control.js";
 import { evaluateBatchDetail } from "../report/evaluation.js";
-import { supportedProviderIds } from "../providers/index.js";
+import { getProviderAdapter, supportedProviderIds } from "../providers/index.js";
 import { buildOptimizationHtmlReport } from "../report/html-report-optimization.js";
 import { buildReportContract, contractToRenderDetail } from "../reporting/report-contract.js";
 import {
@@ -165,13 +166,24 @@ async function updateTaskResource(db, tenant, taskId, raw) {
   return getTask(db, tenant.id, taskId);
 }
 
-async function checkExecutionAccounts(db, tenantId, externalIds) {
-  if (!externalIds.length) throw new ApiHttpError(422, "account_required", "at least one logged-in platform account is required");
-  const resolved = await resolveTenantAccountKeys(db, tenantId, externalIds);
+/**
+ * Exported for testing rather than left inline: this gate is where a cross-platform mix-up
+ * becomes silent, and it was silent until a provider filter was added to the query.
+ */
+export async function checkExecutionAccounts(db, tenantId, externalIds, platform) {
+  if (!externalIds.length) {
+    throw new ApiHttpError(422, "account_required", `at least one logged-in ${platform} account is required`);
+  }
+  // The platform must be carried all the way down. Resolving bindings with the default
+  // provider and then matching accounts on account_key alone validated a Qianwen task
+  // against whichever Doubao row shared the key - the availability gate silently evaluated
+  // the wrong platform's cooldown and status.
+  const resolved = await resolveTenantAccountKeys(db, tenantId, externalIds, platform);
   const keys = resolved.map((row) => row.accountKey);
   const { rows } = await db.query(
-    "SELECT account_key, enabled, status, cooldown_until FROM accounts WHERE account_key = ANY($1::text[])",
-    [keys],
+    `SELECT account_key, enabled, status, cooldown_until
+       FROM accounts WHERE provider = $2 AND account_key = ANY($1::text[])`,
+    [keys, platform],
   );
   const byKey = new Map(rows.map((row) => [row.account_key, row]));
   const blocked = resolved.flatMap((item) => {
@@ -205,8 +217,21 @@ async function createExecutionResource(db, tenant, taskId, raw = {}, triggerType
     );
   }
   const platform = String(platforms[0]).toLowerCase();
-  const accountIds = raw.account_ids ?? task.account_ids;
-  const resolved = await checkExecutionAccounts(db, tenant.id, accountIds);
+  const adapter = getProviderAdapter(platform);
+  let accountIds = raw.account_ids ?? task.account_ids;
+  // An anonymous surface has nobody logged in, but it still needs one row to carry the rate
+  // limits, the queue lane and the cooldown - an unaccounted collection path is an ungoverned
+  // one. So provision a per-tenant lane instead of dropping the account requirement.
+  if (adapter.requiresStoredAuth === false && !accountIds?.length) {
+    const lane = await ensureTenantAccount(db, {
+      tenantId: tenant.id,
+      provider: platform,
+      externalId: `anon-${platform}`,
+      label: `${platform} anonymous lane`,
+    });
+    accountIds = [lane.external_id];
+  }
+  const resolved = await checkExecutionAccounts(db, tenant.id, accountIds, platform);
   const keywordStats = await countActiveKeywords(db, internal.project_id);
   if (!keywordStats.enabled) throw new ApiHttpError(409, "question_pool_empty", "task has no active questions");
 
@@ -288,6 +313,10 @@ async function createScheduleResource(db, tenant, taskId, raw) {
   const internal = await getTaskInternal(db, tenant.id, taskId);
   if (!task || !internal) throw new ApiHttpError(404, "task_not_found", "task was not found");
   const schedule = raw.schedule ?? raw;
+  // Schedules are deliberately NOT opened to anonymous surfaces yet: monitor plans have no
+  // platform column and monitor-worker resolves their accounts for 'doubao' only, so letting a
+  // Qianwen schedule be created would produce a plan that ticks and collects nothing.
+  // Opening this needs the plan's platform in the same change.
   const accounts = raw.account_ids ?? task.account_ids;
   await validateAccountIds(db, tenant.id, accounts);
   if (!accounts.length) throw new ApiHttpError(422, "account_required", "schedule requires at least one account_id");
