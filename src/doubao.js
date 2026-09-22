@@ -277,7 +277,7 @@ export async function requireHealthySession(page, config) {
   }
   if (state.state === "healthy") return state;
 
-  const hadStoredAuth = await fileExists(config.authStatePath);
+  const hadStoredAuth = await hasStoredStorageState(config);
   if (state.state === "verification_required") {
     throw new DoubaoMvpError(
       ErrorCode.VERIFICATION_REQUIRED,
