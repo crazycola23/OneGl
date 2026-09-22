@@ -77,6 +77,17 @@ export function loadConfig(overrides = {}) {
   if (!new Set(["virtual", "headless", "headful"]).has(camoufoxMode)) {
     throw new Error("ONEGL_CAMOUFOX_MODE must be virtual, headless, or headful");
   }
+  // Camoufox otherwise randomises the OS - and with it the UA, font metrics and WebGL
+  // vendor - on every launch, so the browser layer has to be pinned to match the locale,
+  // timezone and viewport pinned on the Playwright context.
+  const camoufoxOs = String(
+    overrides.camoufoxOs ?? process.env.ONEGL_CAMOUFOX_OS ?? "windows",
+  )
+    .trim()
+    .toLowerCase();
+  if (!new Set(["windows", "macos", "linux"]).has(camoufoxOs)) {
+    throw new Error("ONEGL_CAMOUFOX_OS must be windows, macos, or linux");
+  }
 
   const authStatePlaintextPath =
     accountKey === null
@@ -141,6 +152,7 @@ export function loadConfig(overrides = {}) {
     // boolean ONEGL_HEADLESS flag. If ONEGL_CAMOUFOX_MODE is omitted, preserve the
     // legacy ONEGL_HEADLESS behaviour for backwards compatibility.
     camoufoxMode,
+    camoufoxOs,
     headless,
     timeoutMs:
       overrides.timeoutMs ?? intEnv("DOUBAO_TIMEOUT_MS", 180_000, 10_000),

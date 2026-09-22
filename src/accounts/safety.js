@@ -33,7 +33,19 @@ export function safetyConfig() {
     cooldownMinutes: intEnv("ONEGL_ACCOUNT_COOLDOWN_MINUTES", 60, 1),
     rateLimitCooldownMinutes: intEnv("ONEGL_RATE_LIMIT_COOLDOWN_MINUTES", 180, 1),
     accountParallelism: intEnv("ONEGL_ACCOUNT_PARALLELISM", 1),
+    // Prompts served per browser window before the window is replaced. 0 disables rotation.
+    roundPromptLimit: intEnv("ONEGL_ROUND_PROMPT_LIMIT", 3, 0),
   };
+}
+
+/**
+ * Rotation resets conversation state, not device identity: the new window inherits the
+ * account's cookies and Camoufox fixes its fingerprint at launch, so the platform still
+ * sees one machine returning. A limit of 0 means "never rotate".
+ */
+export function shouldRotateContext(promptsSoFar, limit) {
+  if (!Number.isInteger(limit) || limit <= 0) return false;
+  return Number(promptsSoFar) >= limit;
 }
 
 export function randomDelayMs({ minDelayMs, maxDelayMs }) {

@@ -14,6 +14,7 @@ import {
   recordAccountFailure,
   recordAccountSuccess,
   safetyConfig,
+  shouldRotateContext,
 } from "./accounts/safety.js";
 import { reclaimStaleAccountWorkers } from "./accounts/worker-reconcile.js";
 import { launchBrowserSession } from "./browser.js";
@@ -151,12 +152,35 @@ async function getSession(accountKey) {
 
   const accountConfig = loadConfig({ accountKey });
   const session = await launchBrowserSession(accountConfig);
-  await openDoubao(session.page, accountConfig);
+  await openProviderPage(session, accountConfig);
   await markStorageStatePresent(pool, accountKey, session.hasStoredAuth).catch(() => undefined);
 
   sessions.set(accountKey, session);
   log({ event: "session-open", account_key: accountKey, stored_auth: session.hasStoredAuth });
   return session;
+}
+
+async function openProviderPage(session, config) {
+  await openDoubao(session.page, config);
+}
+
+/**
+ * 每问满 ONEGL_ROUND_PROMPT_LIMIT 次就关掉当前窗口、换一个干净窗口。
+ *
+ * 换的是会话状态（对话历史、页内存储、DOM），不是设备身份：新窗口继承账号 cookie，
+ * Camoufox 的指纹也在 launch 时就定下了，所以平台侧仍是「同一台机器回访」，而高频
+ * 重启 Camoufox 反而会去踩 browser.js 里那棵孤儿进程树的坑。
+ */
+async function prepareWindow(session, accountKey) {
+  if (!shouldRotateContext(session.contextPrompts, safety.roundPromptLimit)) return;
+  const accountConfig = loadConfig({ accountKey });
+  await session.rotateContext();
+  await openProviderPage(session, accountConfig);
+  log({
+    event: "window-rotated",
+    account_key: accountKey,
+    round_prompt_limit: safety.roundPromptLimit,
+  });
 }
 
 async function closeSession(accountKey) {
@@ -382,6 +406,7 @@ async function handleJob(job, token) {
     await beginAccountRun(pool, accountKey);
 
     const session = await getSession(accountKey);
+    await prepareWindow(session, accountKey);
     const brandRules = await brandRulesFor(projectName);
 
     const outcome = await runOnePrompt({
@@ -403,6 +428,9 @@ async function handleJob(job, token) {
         attempt,
       },
     });
+    // 计的是「这个窗口服务过几次提问」，与成功/失败无关：一个卡住的窗口不该因为
+    // 失败就一直续命。
+    session.contextPrompts += 1;
 
     const code = outcome.normalized?.code ?? null;
     const durationMs = Date.now() - startedAt;

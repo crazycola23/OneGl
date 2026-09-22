@@ -19,14 +19,65 @@ import sys
 
 try:
     from camoufox.utils import launch_options
+    from browserforge.fingerprints import Screen
 except Exception as exc:
     print(f"CAMOUFOX_IMPORT_ERROR::{exc}", file=sys.stderr)
     raise
 
 payload = json.loads(os.environ["ONEGL_CAMOUFOX_PAYLOAD"])
+
+# launch_options() takes a Screen object, not a dict, and Camoufox otherwise derives the
+# screen from the physical monitor. Under the virtual Xvfb display that monitor is 1x1, so
+# the reported screen contradicted the viewport Playwright pins on the context.
+screen_size = payload.pop("screen_size", None)
+if screen_size:
+    width = int(screen_size["width"])
+    height = int(screen_size["height"])
+    payload["screen"] = Screen(
+        min_width=width,
+        max_width=width,
+        min_height=height,
+        max_height=height,
+    )
+
 options = launch_options(**payload)
 print(json.dumps(options))
 `;
+
+/**
+ * The JSON handed to Camoufox's `launch_options()`.
+ *
+ * `os`, `locale` and the screen/window geometry are pinned on purpose. Camoufox otherwise
+ * picks a random OS (and therefore UA, font metrics and WebGL vendor) on every launch, while
+ * the Playwright context below pins locale, timezone and viewport - so a restarted worker
+ * could present a macOS user agent over Linux font metrics, on a zh-CN/Shanghai context.
+ * Fingerprint noise seeds (canvas/audio/font spacing) still rotate per launch; that is
+ * Camoufox's own default and is not device identity.
+ */
+export function camoufoxLaunchPayload(
+  config,
+  { mode = null, virtualDisplay = null } = {},
+) {
+  const width = Number(config.viewportWidth);
+  const height = Number(config.viewportHeight);
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
+    throw new DoubaoMvpError(
+      ErrorCode.UNKNOWN_ERROR,
+      `Camoufox screen must be a positive integer size (got ${JSON.stringify([width, height])}).`,
+      { stage: "camoufox_launch_options" },
+    );
+  }
+  const resolvedMode = mode ?? resolveCamoufoxMode(config);
+
+  return {
+    headless: resolvedMode === "headless",
+    os: config.camoufoxOs,
+    locale: config.locale,
+    window: [width, height],
+    screen_size: { width, height },
+    ...(virtualDisplay ? { virtual_display: virtualDisplay } : {}),
+  };
+}
 
 export function resolveCamoufoxMode(config, { forceHeadful = false } = {}) {
   if (forceHeadful) return "headful";
@@ -258,10 +309,7 @@ async function camoufoxLaunchOptions(config, { mode, virtualDisplay = null } = {
   // Do not request Camoufox behavior-humanization. OneGl's operational safety
   // comes from conservative rate limits, explicit backoff and manual handling
   // of verification/access restrictions.
-  const payload = {
-    headless: mode === "headless",
-    ...(virtualDisplay ? { virtual_display: virtualDisplay } : {}),
-  };
+  const payload = camoufoxLaunchPayload(config, { mode, virtualDisplay });
 
   try {
     const { stdout } = await execFileAsync(
@@ -292,6 +340,17 @@ async function camoufoxLaunchOptions(config, { mode, virtualDisplay = null } = {
       { cause: error },
     );
   }
+}
+
+function contextOptionsFrom(config, storedAuth) {
+  return {
+    storageState: storedAuth?.present ? storedAuth.state : undefined,
+    // Identical on every cold start, per account. Without this a restarted Worker
+    // presents a different locale/timezone/window than the session it is resuming.
+    locale: config.locale,
+    timezoneId: config.timezoneId,
+    viewport: { width: config.viewportWidth, height: config.viewportHeight },
+  };
 }
 
 export async function launchBrowserSession(
@@ -345,22 +404,23 @@ export async function launchBrowserSession(
       });
     }
 
-    const context = await browser.newContext({
-      storageState: storedAuth.present ? storedAuth.state : undefined,
-      // Identical on every cold start, per account. Without this a restarted Worker
-      // presents a different locale/timezone/window than the session it is resuming.
-      locale: config.locale,
-      timezoneId: config.timezoneId,
-      viewport: { width: config.viewportWidth, height: config.viewportHeight },
-    });
-    const page = await context.newPage();
+    let context = await browser.newContext(contextOptionsFrom(config, storedAuth));
+    let page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.setDefaultNavigationTimeout(60_000);
 
-    return {
+    const session = {
       browser,
-      context,
-      page,
+      // Getters, not snapshots: rotateContext() replaces both objects and every caller must
+      // see the live page rather than the one it captured at launch.
+      get context() {
+        return context;
+      },
+      get page() {
+        return page;
+      },
+      /** Prompts served by the current context; the worker rotates the window on this count. */
+      contextPrompts: 0,
       hasStoredAuth: storedAuth.present,
       storageStateEncrypted: storedAuth.encrypted,
       storageStateMigrated: storedAuth.migrated,
@@ -386,6 +446,29 @@ export async function launchBrowserSession(
         const state = await context.storageState();
         return saveStoredStorageState(config, state);
       },
+      /**
+       * Throw away conversation state and open a clean window, keeping the browser process.
+       *
+       * What this resets is the chat surface: history, localStorage, IndexedDB and the
+       * in-memory page. What it deliberately does not reset is device identity - Camoufox
+       * fixes the fingerprint at launch, so the platform still sees the same machine
+       * returning, which is what an account session should look like. Rotating by relaunch
+       * would also churn the camoufox process tree, and an un-reaped tree holds an auth
+       * session slot open (see the orphan-reaping note above).
+       */
+      async rotateContext() {
+        // Carry renewed cookies forward; everything else about the round is discarded.
+        const carried = await context.storageState().catch(() => storedAuth.state);
+        await context.close().catch(() => undefined);
+        context = await browser.newContext(
+          contextOptionsFrom(config, { present: Boolean(carried), state: carried }),
+        );
+        page = await context.newPage();
+        page.setDefaultTimeout(15_000);
+        page.setDefaultNavigationTimeout(60_000);
+        session.contextPrompts = 0;
+        return page;
+      },
       async close() {
         await context.close().catch(() => undefined);
         await browser.close().catch(() => undefined);
@@ -403,6 +486,7 @@ export async function launchBrowserSession(
         await virtualDisplay?.close().catch(() => undefined);
       },
     };
+    return session;
   } catch (error) {
     await browser?.close().catch(() => undefined);
     if (profilePath) {
