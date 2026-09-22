@@ -55,6 +55,12 @@ export function collectProfileErrors(profile) {
   if (typeof profile?.entryUrl !== "string" || !/^https:\/\//.test(profile.entryUrl)) {
     errors.push(`${id}.entryUrl must be an https:// URL`);
   }
+  // Every profile has to say outright whether it needs an account session. That single bit
+  // decides whether login state, conversation-isolation and the cap semantics below apply,
+  // and it is the only place the anonymous surface is allowed to be declared.
+  if (typeof profile?.requiresStoredAuth !== "boolean") {
+    errors.push(`${id}.requiresStoredAuth must be true (account) or false (anonymous surface)`);
+  }
   if (!Object.values(CITATION_TIERS).includes(profile?.citation?.tier)) {
     errors.push(`${id}.citation.tier must be one of ${Object.values(CITATION_TIERS).join(", ")}`);
   }
@@ -62,12 +68,23 @@ export function collectProfileErrors(profile) {
   patternList(profile?.login?.captchaPatterns, "login.captchaPatterns", id, errors);
   patternList(profile?.login?.restrictedPatterns, "login.restrictedPatterns", id, errors);
   patternList(profile?.login?.qrExpiredPatterns, "login.qrExpiredPatterns", id, errors);
-  stringList(profile?.login?.sessionCookies, "login.sessionCookies", id, errors);
+  if (profile?.requiresStoredAuth !== false) {
+    // An account surface cannot tell "logged in" from "anonymous" without a measured cookie
+    // list. An anonymous surface has no session to measure, but it does still need to
+    // distinguish a quota cap from a risk-control block, so the signal patterns stay required.
+    stringList(profile?.login?.sessionCookies, "login.sessionCookies", id, errors);
+  }
   stringList(profile?.chat?.composerSelectors, "chat.composerSelectors", id, errors);
   stringList(profile?.chat?.sendSelectors, "chat.sendSelectors", id, errors);
   stringList(profile?.chat?.answerSelectors, "chat.answerSelectors", id, errors);
   patternList(profile?.chat?.inProgressPatterns, "chat.inProgressPatterns", id, errors);
   stringList(profile?.chat?.userBubbleSelectors, "chat.userBubbleSelectors", id, errors);
+  if (profile?.requiresStoredAuth === false) {
+    stringList(profile?.quota?.exhaustedPatterns, "quota.exhaustedPatterns", id, errors);
+    if (!Number.isInteger(profile?.quota?.promptsPerWindow) || profile.quota.promptsPerWindow < 1) {
+      errors.push(`${id}.quota.promptsPerWindow must be a positive integer`);
+    }
+  }
 
   if (profile?.citation?.tier === CITATION_TIERS.SELF_REPORTED_COUNT) {
     const pattern = profile.citation.countPattern;

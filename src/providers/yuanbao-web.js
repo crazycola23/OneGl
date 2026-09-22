@@ -20,6 +20,7 @@ export const yuanbaoWebProfile = {
   entryUrl: "https://yuanbao.tencent.com/chat",
 
   validated: false,
+  requiresStoredAuth: true,
 
   login: {
     // Phase 0: anonymous-vs-logged-in cookie diff. Nothing here may be a CSRF or telemetry

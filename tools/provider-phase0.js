@@ -65,13 +65,37 @@ async function writeSnapshot(kind, payload) {
 const cookieMap = (snapshot) =>
   Object.fromEntries((snapshot?.cookies ?? []).map((entry) => [entry.name, String(entry.valueLength ?? 0)]));
 
+/**
+ * `domcontentloaded` plus a fixed sleep is not enough on these SPAs. The first qianwen.com
+ * capture saw 500 characters of body text and no composer, because the chat surface mounts
+ * after the shell does. Doubao learned the same lesson in 287fad3 (wait for the composer to
+ * mount before judging the front end), so the probe settles instead of guessing a duration.
+ */
+async function settlePage(page, { timeoutMs = 45_000, stableSamples = 2 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let last = -1;
+  let stable = 0;
+  while (Date.now() < deadline) {
+    const length = await page.evaluate(() => (document.body?.innerText ?? "").length).catch(() => 0);
+    if (length === last) stable += 1;
+    else {
+      stable = 0;
+      last = length;
+    }
+    if (stable >= stableSamples && last > 500) return last;
+    await page.waitForTimeout(1_500);
+  }
+  return last;
+}
+
 async function capture({ ignoreStoredAuth = true, waitForLogin = false, prompt = null } = {}) {
   const config = loadConfig({ provider: profile.provider, headless: ignoreStoredAuth && !waitForLogin });
   const session = await launchBrowserSession(config, { ignoreStoredAuth, forceHeadful: waitForLogin });
   try {
     const page = session.page;
     await page.goto(profile.entryUrl, { waitUntil: "domcontentloaded" }).catch(() => undefined);
-    await page.waitForTimeout(4_000);
+    const settledLength = await settlePage(page);
+    console.log(`页面文本稳定在 ${settledLength} 字符。`);
 
     if (waitForLogin) {
       console.log("请在打开的窗口里完成登录（扫码或手机号）。本工具不代填、不解析验证码。");
@@ -94,15 +118,44 @@ async function capture({ ignoreStoredAuth = true, waitForLogin = false, prompt =
     if (prompt) {
       const composer = flag("composer");
       const send = flag("send");
-      if (!composer || !send) {
-        console.error("chat 阶段需要 --composer <selector> 与 --send <selector>，取值先看 anonymous 阶段的 inputs/buttons。");
+      const sendKey = flag("send-key");
+      const dismiss = flag("dismiss");
+      if (dismiss) {
+        // 千问匿名首页会弹一个「工作助理再升级」营销浮层，它会吃掉回车。
+        await page.locator(dismiss).first().click({ force: true }).catch(() => undefined);
+        await page.waitForTimeout(1_000);
+      }
+      if (!composer) {
+        console.error("chat 阶段需要 --composer <selector>，取值看 anonymous 阶段的 inputs。");
         return { signals: await page.evaluate(collectPageSignals), page };
       }
-      await page.locator(composer).first().fill(prompt);
-      await page.locator(send).first().click({ force: true }).catch(async () => {
-        await page.locator(send).first().dispatchEvent("click");
+      const composerLocator = page.locator(composer).first();
+      await composerLocator.click({ force: true }).catch(() => undefined);
+      // 逐字键入而不是 fill()：fill 只改 DOM，不触发 Slate/ProseMirror 的 input 处理，
+      // 于是应用自己认为输入框还是空的，发送键永远禁用 —— 豆包的提交实现同样是多策略
+      // 键入，不是 fill。
+      await composerLocator.pressSequentially(prompt, { delay: 25 }).catch(async () => {
+        await page.keyboard.insertText(prompt);
       });
-      await page.waitForTimeout(Number(flag("wait") ?? 25_000));
+      await page.waitForTimeout(1_500);
+      const afterTyping = await page.evaluate(collectPageSignals);
+      const sendAppeared = suggestSelectors(
+        afterTyping.buttons.filter((entry) => /发送|send/i.test(`${entry.text} ${entry.aria ?? ""} ${entry.testid ?? ""}`)),
+      );
+      console.log(`键入后候选发送键：${sendAppeared.length ? sendAppeared.join(", ") : "仍无"}`);
+      if (send) {
+        await page.locator(send).first().click({ force: true }).catch(async () => {
+          await page.locator(send).first().dispatchEvent("click");
+        });
+      } else if (sendKey) {
+        // 很多对话站的发送键只在输入后出现，anonymous 首页看不到它 —— 用回车提交，
+        // 才能把答案与引用区一并测出来。
+        await page.keyboard.press(sendKey);
+      } else {
+        console.error("需要 --send <selector> 或 --send-key Enter 之一。");
+        return { signals: await page.evaluate(collectPageSignals), page };
+      }
+      await settlePage(page, { timeoutMs: Number(flag("wait") ?? 60_000) });
     }
 
     return { signals: await page.evaluate(collectPageSignals), page };
@@ -144,6 +197,13 @@ function summarize(signals, { prompt = null, previous = null } = {}) {
       .map((entry) => entry.text)
       .filter((text) => /登录|扫码/.test(text))
       .slice(0, 4),
+    // A probe-time search aid so an operator knows *whether* to go look, not a selector to
+    // ship: the wording that actually lands in a profile comes from reading the real text.
+    quotaTextObserved: /剩余|体验次数|次数用完|今日.{0,6}(次数|限额)|过于频繁|请(?:稍后|明天)/.test(
+      signals.pageText ?? "",
+    ),
+    loginWallObserved: /请先登录|登录后可|登录后继续|扫码登录/.test(signals.pageText ?? ""),
+    pageTextLength: (signals.pageText ?? "").length,
     cookieDiffAgainstAnonymous: previous
       ? deriveSessionCookieCandidates(cookieMap(previous), cookieMap(signals)).candidates
       : null,
@@ -154,6 +214,10 @@ if (stage === "anonymous") {
   const { signals } = await capture({ ignoreStoredAuth: true });
   await writeSnapshot("anonymous", summarize(signals));
 } else if (stage === "login") {
+  if (profile.requiresStoredAuth === false) {
+    console.error(`${profileId} 是匿名面（requiresStoredAuth: false），没有登录态可测。改跑 --stage chat。`);
+    process.exit(1);
+  }
   const anonymous = await readSnapshot("anonymous");
   if (!anonymous) {
     console.error("先跑 --stage anonymous，否则无法分辨哪些 cookie 是登录之后才出现的。");
@@ -167,7 +231,11 @@ if (stage === "anonymous") {
     console.error("chat 阶段需要 --prompt \"...\"，建议用一条明显会触发联网引用的问题。");
     process.exit(1);
   }
-  const { signals } = await capture({ ignoreStoredAuth: false, prompt });
+  // 匿名面本来就没有登录态，不去读任何账号凭据文件。
+  const { signals } = await capture({
+    ignoreStoredAuth: profile.requiresStoredAuth === false,
+    prompt,
+  });
   await writeSnapshot("chat", summarize(signals, { prompt }));
 } else if (stage === "report") {
   const [anonymous, loggedIn, chat] = await Promise.all([
@@ -179,10 +247,14 @@ if (stage === "anonymous") {
     console.error(`还没有任何观测记录：${snapshotPath("anonymous")} 不存在。`);
     process.exit(1);
   }
-  const capture_ = {
+  const observed = {
+    requiresStoredAuth: profile.requiresStoredAuth,
     hasLoggedIn: Boolean(loggedIn?.cookieDiffAgainstAnonymous?.length),
     qrSurfaceObserved: Boolean(chat?.qrSurfaceObserved ?? anonymous?.qrSurfaceObserved),
     expiredQrObserved: null,
+    quotaSignalObserved: Boolean(chat?.quotaTextObserved ?? anonymous?.quotaTextObserved),
+    controlPromptAnswered: false,
+    loginWallObserved: Boolean(anonymous?.loginWallObserved),
     answerCandidates: chat?.suggestedAnswerSelectors ?? [],
     selfReportedCitationCount: undefined,
     conversationUrlObserved: Boolean(chat && chat.url !== anonymous.url),
@@ -203,8 +275,9 @@ if (stage === "anonymous") {
   for (const entry of (chat ?? anonymous).citationCardHosts.slice(0, 10)) {
     console.log(`  ${entry.host} × ${entry.count}`);
   }
+  console.log(`\n观测到额度文案：${observed.quotaSignalObserved ? "有" : "无"}；登录墙文案：${observed.loginWallObserved ? "有" : "无"}`);
   console.log("\n仍需人工确认：");
-  for (const question of captureOpenQuestions(capture_)) console.log(`  ! ${question}`);
+  for (const question of captureOpenQuestions(observed)) console.log(`  ! ${question}`);
 } else {
   console.error(`未知 stage：${stage}`);
   process.exit(1);

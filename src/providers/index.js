@@ -1,6 +1,7 @@
 import { assertProviderAdapter } from "./contract.js";
 import { doubaoWebProvider } from "./doubao-web.js";
 import { assertProviderProfile, collectProfileErrors, isProfileValidated } from "./profile.js";
+import { qianwenWebProfile } from "./qianwen-web.js";
 import { yuanbaoWebProfile } from "./yuanbao-web.js";
 
 /**
@@ -9,7 +10,7 @@ import { yuanbaoWebProfile } from "./yuanbao-web.js";
  * live site with guessed selectors and guessed session cookies, which is how a platform that
  * was never logged into gets recorded as a successful capture.
  */
-export const pendingProviderProfiles = [yuanbaoWebProfile];
+export const pendingProviderProfiles = [yuanbaoWebProfile, qianwenWebProfile];
 
 const adapters = [doubaoWebProvider].map(assertProviderAdapter);
 const byId = new Map();

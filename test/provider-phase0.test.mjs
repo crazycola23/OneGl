@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   isHashBearingClass,
+  isUtilityClass,
+  isVolatileDataValue,
   suggestSelector,
   suggestSelectors,
   rankAnswerCandidates,
@@ -23,6 +25,7 @@ import {
   registerProviderProfile,
 } from "../src/providers/index.js";
 import { yuanbaoWebProfile } from "../src/providers/yuanbao-web.js";
+import { qianwenWebProfile } from "../src/providers/qianwen-web.js";
 
 test("build-hash class names are never turned into selectors", () => {
   // 豆包远端登录踩过这个：qrcode-DeN5Ny 换个构建就选不中了。
@@ -31,6 +34,46 @@ test("build-hash class names are never turned into selectors", () => {
   assert.equal(isHashBearingClass("md-box-root"), false);
   assert.equal(suggestSelector({ classTokens: ["qrcode-DeN5Ny"] }), '[class*="qrcode"]');
   assert.equal(suggestSelector({ classTokens: ["md-box-root", "foo"] }), ".md-box-root");
+});
+
+test("Tailwind utilities are rejected as selectors", () => {
+  // 第一次真实抓取千问时，探针交出的正是这两个"候选"：
+  //   composer -> .min-h-[24px]      send -> .inline-flex
+  // 它们描述的是布局，不是身份。
+  assert.equal(isUtilityClass("inline-flex"), true);
+  assert.equal(isUtilityClass("flex-col"), true);
+  assert.equal(isUtilityClass("min-h-[24px]"), true);
+  assert.equal(isUtilityClass("text-16"), true);
+  assert.equal(isUtilityClass("rounded-10"), true);
+  assert.equal(isUtilityClass("placeholder:text-disabled"), true);
+  assert.equal(isUtilityClass("md-box-root"), false);
+  assert.equal(suggestSelector({ classTokens: ["relative", "min-h-[24px]", "w-full"] }), null);
+  assert.equal(suggestSelector({ classTokens: ["inline-flex"] }), null);
+});
+
+test("semantic data attributes outrank copy, and runtime ids are rejected", () => {
+  // 千问输入框同时带 data-slate-editor="true" 和 data-placeholder="向千问提问"。
+  // 文案是会被产品改的那个，所以不能选它。
+  assert.equal(
+    suggestSelector({
+      data: { "data-slate-editor": "true", "data-placeholder": "向千问提问" },
+      classTokens: ["min-h-[24px]"],
+    }),
+    '[data-slate-editor="true"]',
+  );
+  // Radix/emotion 运行时 id（:ro:）每次构建都可能不同。
+  assert.equal(suggestSelector({ testid: ":ro:", data: { "data-testid": ":ro:" } }), null);
+  assert.equal(
+    suggestSelector({ data: { "data-testid": ":ro:" } }),
+    null,
+  );
+  assert.equal(
+    suggestSelector({ data: { "data-testid": "qianwen-layout-left-panel" } }),
+    '[data-testid="qianwen-layout-left-panel"]',
+  );
+  assert.equal(isVolatileDataValue("ab"), true);
+  assert.equal(isVolatileDataValue(":ro:"), true);
+  assert.equal(isVolatileDataValue("chat_input_input"), false);
 });
 
 test("structural attributes outrank classes and classes outrank nothing", () => {
@@ -45,8 +88,12 @@ test("structural attributes outrank classes and classes outrank nothing", () => 
   assert.equal(suggestSelector({ placeholder: "有问题尽管问我" }), '[placeholder*="有问题尽管问我"]');
   assert.equal(suggestSelector({ classTokens: [] }), null);
   assert.deepEqual(
-    suggestSelectors([{ testid: "a" }, { testid: "a" }, { testid: "b" }]),
-    ['[data-testid="a"]', '[data-testid="b"]'],
+    suggestSelectors([
+      { testid: "chat_input_send_button" },
+      { testid: "chat_input_send_button" },
+      { testid: "chat_input_input" },
+    ]),
+    ['[data-testid="chat_input_send_button"]', '[data-testid="chat_input_input"]'],
   );
 });
 
@@ -105,7 +152,7 @@ test("an unmeasured profile reports its gaps instead of crashing on import", () 
 test("a pending profile is not reachable as an adapter, validated or not", () => {
   assert.deepEqual(listProviderAdapters().map((entry) => entry.id), ["doubao-web"]);
   assert.throws(() => getProviderAdapter("yuanbao"), /Unsupported provider adapter/);
-  assert.deepEqual(pendingProviderProfiles.map((entry) => entry.id), ["yuanbao-web"]);
+  assert.deepEqual(pendingProviderProfiles.map((entry) => entry.id), ["yuanbao-web", "qianwen-web"]);
 
   // Even a profile marked validated stays unregistered while its measurements are missing.
   assert.throws(
@@ -138,6 +185,24 @@ function measuredProfile() {
     },
   };
 }
+
+test("an anonymous surface is judged on quota, not on a login it will never have", () => {
+  const gaps = collectProfileErrors(qianwenWebProfile);
+  assert.equal(qianwenWebProfile.requiresStoredAuth, false);
+  // No session to measure, so no cookie list may be demanded of it.
+  assert.equal(gaps.some((entry) => entry.includes("login.sessionCookies")), false);
+  // But the cap-vs-block distinction is exactly what must be measured before it runs.
+  assert.ok(gaps.some((entry) => entry.includes("quota.exhaustedPatterns")));
+  // promptsPerWindow is a design choice, not an observation, so it is already satisfiable.
+  assert.equal(gaps.some((entry) => entry.includes("quota.promptsPerWindow")), false);
+  assert.ok(gaps.some((entry) => entry.includes("chat.answerSelectors")));
+
+  const questions = captureOpenQuestions({ requiresStoredAuth: false, answerCandidates: [{ selector: ".x" }] });
+  assert.ok(questions.some((entry) => /额度/.test(entry)));
+  assert.ok(questions.some((entry) => /对照 prompt/.test(entry)));
+  // A missing login is not an open question when there is no login in this design.
+  assert.equal(questions.some((entry) => /session cookie 名单/.test(entry)), false);
+});
 
 test("open questions name the decisions a capture could not settle", () => {
   const questions = captureOpenQuestions({
