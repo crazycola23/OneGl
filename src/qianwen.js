@@ -216,12 +216,14 @@ export async function openQianwen(page, config, profile) {
       { stage: "open", url: current?.url ?? page.url() },
     );
   }
-  const clickable = await waitForClickableComposer(page, context);
+  // Short budget at open: this is best-effort clean-up, and the authoritative check happens at
+  // submit time. Deliberately not thrown here - openPage runs before the run record exists, so
+  // a throw would lose the failure entirely (no runs row, no error code, nothing for reports or
+  // alerting to see). Doubao keeps its session checks inside the execution for this reason.
+  const clickable = await waitForClickableComposer(page, context, { timeoutMs: 8_000 });
   if (!clickable.clickable) {
-    throw new DoubaoMvpError(
-      ErrorCode.PAGE_CHANGED,
-      "千问首页浮层持续遮挡输入框且清不掉；本轮不提问，避免把一次失败记成空答案。",
-      { stage: "open", dismissalAttempts: clickable.dismissalAttempts, url: page.url() },
+    console.warn(
+      `[qianwen] 打开阶段未能让输入框可点击（清浮层 ${clickable.dismissalAttempts} 次），留到提交时再判`,
     );
   }
   return page;
@@ -237,6 +239,16 @@ export async function openQianwen(page, config, profile) {
  */
 async function submitAndWait(page, prompt, config, context) {
   const composer = page.locator(context.composer).first();
+  // Authoritative here, inside the run: if an overlay still owns the page, this throws after
+  // the run record exists so the failure carries an error code instead of vanishing.
+  const clickable = await waitForClickableComposer(page, context);
+  if (!clickable.clickable) {
+    throw new DoubaoMvpError(
+      ErrorCode.PAGE_CHANGED,
+      "千问首页浮层持续遮挡输入框且清不掉；本轮不提问，避免把一次失败记成空答案。",
+      { stage: "submit", dismissalAttempts: clickable.dismissalAttempts, url: page.url(), promptSubmitted: false },
+    );
+  }
   // openQianwen already focused the composer, and Slate re-renders the editable node on focus.
   // Clicking a second time waits on a node that has since been replaced, which is how a run
   // died on a 10s click timeout *after* a successful open. Only click when it is not focused.
@@ -258,7 +270,26 @@ async function submitAndWait(page, prompt, config, context) {
       { stage: "submit", sendDisabled: afterTyping.sendDisabled, promptSubmitted: false },
     );
   }
-  await page.locator(context.send).first().click({ timeout: 10_000 });
+  // Three tiers, plain click first. A live run showed this click reaching its full timeout
+  // while the send control was demonstrably enabled, so something other than the element's own
+  // state blocks it some of the time - most likely the home-page overlay, which was proven to
+  // intercept pointer events over the composer. The exact mechanism is NOT established: a
+  // later run completed at the first tier (submissionMethod=click). force skips the
+  // actionability check, dispatchEvent skips hit-testing; both were verified to land on this
+  // surface, and a click that never lands costs a whole run.
+  const send = page.locator(context.send).first();
+  const sentBy = await send
+    .click({ timeout: 4_000 })
+    .then(() => "click")
+    .catch(async () => {
+      try {
+        await send.click({ force: true, timeout: 4_000 });
+        return "force_click";
+      } catch {
+        await send.dispatchEvent("click", undefined, { timeout: 4_000 });
+        return "dispatch_click";
+      }
+    });
 
   const deadline = Date.now() + (config.timeoutMs ?? 120_000);
   // Grace period first: immediately after the click the generation control has not appeared
@@ -267,7 +298,7 @@ async function submitAndWait(page, prompt, config, context) {
   let latest = null;
   while (Date.now() < deadline) {
     latest = await scan(page, context);
-    if (!latest.generating && latest.answerLength > 0) return latest;
+    if (!latest.generating && latest.answerLength > 0) return { scan: latest, sentBy };
     const reason = classifyFailure(latest, context);
     if (reason) {
       throw new DoubaoMvpError(reason, "千问在生成过程中报告了受限状态。", {
@@ -362,7 +393,7 @@ function reconcileCitations(scan, context) {
 export async function executeQianwenPrompt(page, prompt, config, profile) {
   const context = driverContext(profile);
   const before = page.url();
-  const scan = await submitAndWait(page, prompt, config, context);
+  const { scan, sentBy } = await submitAndWait(page, prompt, config, context);
 
   // On an anonymous surface the platform's own conversation id is the freshness proof: if the
   // URL never became /chat/<id>, this sample could not be re-opened for audit later, so the
@@ -389,7 +420,7 @@ export async function executeQianwenPrompt(page, prompt, config, profile) {
       captured: citationResult.citations.length,
       discarded: citationResult.discarded,
     },
-    submissionMethod: "send_button",
+    submissionMethod: sentBy,
     conversationReset: true,
     conversationResetConfirmed: true,
     modelVersion: scan.bodyText.match(/Qwen[\d.]+/)?.[0] ?? null,

@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { once } from "node:events";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -254,6 +255,12 @@ async function capture({ ignoreStoredAuth = true, waitForLogin = false, prompt =
       : [];
     return { signals, cardDetails, page };
   } finally {
+    // Diagnostics are unreadable from a window that already closed. --keep-open leaves the
+    // last page up so an operator can see what the platform actually showed.
+    if (flag("keep-open")) {
+      console.log("按 --keep-open 保留窗口；看完按 Ctrl+C 退出。");
+      await once(process, "SIGINT").catch(() => undefined);
+    }
     await session.close().catch(() => undefined);
   }
 }
