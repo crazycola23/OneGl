@@ -11,6 +11,21 @@ function publicId(prefix) {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
+/**
+ * Timestamps for a fixture the dashboard reads through a rolling window.
+ *
+ * `/v1/tasks/{id}/dashboard` windows by the server's own wall clock and takes no injected
+ * `now`, so absolute fixture dates silently age out of `days=7` on some future calendar day
+ * and the aggregate then drops a run. Anchoring each fixture day to today keeps the counts
+ * about the aggregation rather than about when CI happened to run.
+ */
+function utcDayAgo(daysAgo, hour) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - daysAgo);
+  date.setUTCHours(hour, 0, 0, 0);
+  return date.toISOString();
+}
+
 function startApi(port) {
   const child = spawn(process.execPath, ["src/api-entry.js"], {
     cwd: process.cwd(),
@@ -106,11 +121,12 @@ test("customer dashboard exposes front-end GEO metrics without internal IDs and 
     );
     const batchId = Number(batch.rows[0].id);
 
+    const runDays = [utcDayAgo(5, 10), utcDayAgo(3, 10), utcDayAgo(3, 12)];
     const runRows = [];
     for (const [index, row] of [
-      { answer: "品牌A和竞品B都值得考虑", brand: true, day: "2026-09-14T10:00:00Z", citations: 2 },
-      { answer: "竞品B更常被提到", brand: false, day: "2026-09-15T10:00:00Z", citations: 2 },
-      { answer: "品牌A的空间表现不错", brand: true, day: "2026-09-15T12:00:00Z", citations: 1 },
+      { answer: "品牌A和竞品B都值得考虑", brand: true, citations: 2 },
+      { answer: "竞品B更常被提到", brand: false, citations: 2 },
+      { answer: "品牌A的空间表现不错", brand: true, citations: 1 },
     ].entries()) {
       const inserted = await pool.query(
         `INSERT INTO runs
@@ -121,7 +137,7 @@ test("customer dashboard exposes front-end GEO metrics without internal IDs and 
          VALUES ($1, 'doubao', 'scraped', 'doubao', 'success', $2, $2, $3,
                  'found', $4, $4, '[]'::jsonb, 'found', $5, $6, true, $7, '[]'::jsonb, 1, $2)
          RETURNING id`,
-        [promptId, row.day, row.answer, row.citations, `run_dashboard_${suffix}_${index}`, batchId, row.brand],
+        [promptId, runDays[index], row.answer, row.citations, `run_dashboard_${suffix}_${index}`, batchId, row.brand],
       );
       runRows.push(Number(inserted.rows[0].id));
     }
@@ -149,12 +165,12 @@ test("customer dashboard exposes front-end GEO metrics without internal IDs and 
       `INSERT INTO citations
          (run_id, article_id, source_position, relation_status, visible_to_user, source_type, created_at)
        VALUES
-         ($1, $4, 1, 'unresolved', true, 'visible', '2026-09-14T10:00:00Z'),
-         ($1, $5, 2, 'unresolved', true, 'visible', '2026-09-14T10:00:00Z'),
-         ($2, $4, 1, 'unresolved', true, 'visible', '2026-09-15T10:00:00Z'),
-         ($2, $6, 2, 'unresolved', true, 'visible', '2026-09-15T10:00:00Z'),
-         ($3, $4, 1, 'unresolved', true, 'visible', '2026-09-15T12:00:00Z')`,
-      [...runRows, ...articleIds],
+         ($1, $4, 1, 'unresolved', true, 'visible', $7),
+         ($1, $5, 2, 'unresolved', true, 'visible', $7),
+         ($2, $4, 1, 'unresolved', true, 'visible', $8),
+         ($2, $6, 2, 'unresolved', true, 'visible', $8),
+         ($3, $4, 1, 'unresolved', true, 'visible', $9)`,
+      [...runRows, ...articleIds, ...runDays],
     );
 
     await pool.query(
