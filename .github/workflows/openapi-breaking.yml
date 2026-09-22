@@ -8,6 +8,16 @@ on:
       - 'src/api/**'
       - 'tools/build-openapi.js'
       - 'package.json'
+  # This repository pushes to main, and a gate that only listens to pull requests never
+  # sees those contract changes at all. A push is judged against the main commit it replaces,
+  # so the verdict arrives after the fact rather than before the merge.
+  push:
+    branches: [main]
+    paths:
+      - 'openapi.json'
+      - 'src/api/**'
+      - 'tools/build-openapi.js'
+      - 'package.json'
 
 permissions:
   contents: read
@@ -16,13 +26,10 @@ jobs:
   breaking-changes:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout pull request
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Fetch base branch
-        run: git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -36,16 +43,32 @@ jobs:
       - name: Build current OpenAPI contract
         run: npm run openapi:build
 
-      - name: Detect existing base contract
+      - name: Resolve contract baseline
         id: baseline
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
-          if git cat-file -e "origin/${{ github.base_ref }}:openapi.json" 2>/dev/null; then
-            git show "origin/${{ github.base_ref }}:openapi.json" > /tmp/base-openapi.json
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF"
+            rev="origin/$BASE_REF"
+          elif git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            rev="$BEFORE_SHA"
+          elif git cat-file -e 'HEAD^1' 2>/dev/null; then
+            rev='HEAD^1'
+          else
+            rev=''
+          fi
+
+          if [ -n "$rev" ] && git cat-file -e "$rev:openapi.json" 2>/dev/null; then
+            git show "$rev:openapi.json" > /tmp/base-openapi.json
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "No committed openapi.json exists on the base branch yet; this PR establishes the baseline."
+            echo "No committed openapi.json on the baseline; this change establishes it."
           fi
 
       - name: Check OpenAPI breaking changes

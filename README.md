@@ -315,7 +315,9 @@ npm run openapi:check
 
 The OpenAPI quality gate checks deterministic generation, Redocly validation, generated TypeScript declarations, request/response coverage, PATCH contracts, runtime/static parity, and generated-file drift.
 
-Pull requests also run an oasdiff breaking-change gate against the target branch once a baseline contract exists.
+Pull requests and pushes to `main` both run an oasdiff breaking-change gate once a baseline contract exists: a pull request compares against its target branch, a push compares against the `main` commit it replaced.
+
+Verified with `5e9105b..68f8482`, which widened the provider enums and made the new `platform` / `login_state` response fields required: oasdiff 1.32.1 reports no breaking changes.
 
 See [OpenAPI Contract Hardening](docs/OPENAPI_CONTRACT_HARDENING.md).
 

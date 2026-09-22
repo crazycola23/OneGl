@@ -25,7 +25,7 @@ npm run openapi:check
 
 `openapi:check` rebuilds the static contract, runs Redocly, regenerates TypeScript definitions, type-checks the generated declaration, runs contract coverage tests, and fails if committed generated files drift.
 
-Pull requests also run an `oasdiff` breaking-change gate. This PR establishes the first committed `openapi.json` baseline; after it is merged, future pull requests compare their contract against the target branch.
+An `oasdiff` breaking-change gate runs on pull requests *and* on pushes to `main`: a pull request compares its contract against the target branch, a push against the `main` commit it just replaced. The push trigger exists because this repository mostly lands by direct push, and a PR-only trigger had not judged a single contract change since the baseline was established. A push verdict is therefore after-the-fact — it reports on `main`, it cannot stop a merge.
 
 ## Compatibility policy
 
