@@ -28,7 +28,7 @@
     "openapi:types": "node -e \"require('fs').mkdirSync('generated',{recursive:true})\" && npx --yes openapi-typescript@7 openapi.json -o generated/openapi.d.ts",
     "openapi:typecheck": "npx --yes -p typescript@5.9.2 tsc --noEmit generated/openapi.d.ts",
     "openapi:check": "npm run openapi:build && npm run openapi:lint && npm run openapi:types && npm run openapi:typecheck && node --test test/openapi-build.test.mjs test/openapi-contract-coverage.test.mjs test/openapi-patch-contract.test.mjs test/openapi-runtime-parity.test.mjs && git diff --exit-code -- openapi.json generated/openapi.d.ts",
-    "check": "node --check src/*.js && node -e \"JSON.parse(require('fs').readFileSync('validation/phase0-prompts.json','utf8'))\"",
+    "check": "node tools/check-syntax.js src && node -e \"JSON.parse(require('fs').readFileSync('validation/phase0-prompts.json','utf8'))\"",
     "validate:scaffold": "node src/validate.js scaffold",
     "validate:evaluate": "node src/validate.js evaluate",
     "db:migrate": "node src/db/migrate.js",
