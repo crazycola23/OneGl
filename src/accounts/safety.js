@@ -285,8 +285,8 @@ export async function getAccountState(pool, accountKey, provider = "doubao") {
   return rows[0] ?? null;
 }
 
-export async function accountAvailability(pool, accountKey, config = safetyConfig()) {
-  const state = await getAccountState(pool, accountKey);
+export async function accountAvailability(pool, accountKey, config = safetyConfig(), provider = "doubao") {
+  const state = await getAccountState(pool, accountKey, provider);
   const verdict = classifyAccountState(state, { config });
   return {
     available: verdict.kind === AVAILABILITY.AVAILABLE,

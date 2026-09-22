@@ -76,10 +76,10 @@ function fakeDb(tenantId = 7) {
   };
 }
 
-async function seedStorageState(dataDir, accountKey, contents = "{}") {
+async function seedStorageState(dataDir, accountKey, contents = "{}", provider = "doubao") {
   const directory = path.join(dataDir, "auth", "accounts");
   await mkdir(directory, { recursive: true });
-  for (const file of accountStorageStatePaths(dataDir, accountKey)) {
+  for (const file of accountStorageStatePaths(dataDir, accountKey, provider)) {
     await writeFile(file, contents, "utf8");
   }
   return directory;
@@ -120,7 +120,9 @@ test("reclaim is idempotent and reports that nothing was removed the second time
 
   assert.equal(first.reclaimed, true);
   assert.equal(first.storage_state_removed, true);
-  assert.equal(first.storage_state_files_removed, 2);
+  // Doubao state exists under both the provider-scoped and the pre-scoping name, so a
+  // reclaim has to clear all four candidates rather than leave a live credential behind.
+  assert.equal(first.storage_state_files_removed, 4);
   assert.equal(second.reclaimed, false);
   assert.equal(second.storage_state_removed, false);
   assert.equal(second.storage_state_files_removed, 0);
@@ -140,7 +142,7 @@ test("reclaim of an unknown account id is a 404 account_not_found", async () => 
   assert.equal(db.state.queries.length, 1, "must not reach the UPDATE when the binding is missing");
 });
 
-test("reclaim clears both storage state candidates for that account only", async () => {
+test("reclaim clears provider-scoped and legacy Doubao state for that account only", async () => {
   const dataDir = await tempDataDir();
   const directory = await seedStorageState(dataDir, ACCOUNT_KEY, "mine");
   const neighbour = path.join(directory, "t8_otherkey.storage.json");
@@ -148,12 +150,26 @@ test("reclaim clears both storage state candidates for that account only", async
 
   const removed = await removeAccountStorageStates(dataDir, ACCOUNT_KEY);
   assert.deepEqual(removed.map((file) => path.basename(file)).sort(), [
+    `doubao__${ACCOUNT_KEY}.storage.json`,
+    `doubao__${ACCOUNT_KEY}.storage.json.enc`,
     `${ACCOUNT_KEY}.storage.json`,
     `${ACCOUNT_KEY}.storage.json.enc`,
   ]);
   assert.deepEqual(await removeAccountStorageStates(dataDir, ACCOUNT_KEY), [], "missing files are not an error");
   await assert.rejects(() => removeAccountStorageStates(dataDir, "../t8"));
   assert.equal(await readFile(neighbour, "utf8"), "not mine");
+});
+
+test("reclaiming one provider leaves the same account key on another provider intact", async () => {
+  const dataDir = await tempDataDir();
+  await seedStorageState(dataDir, ACCOUNT_KEY, "doubao-state", "doubao");
+  await seedStorageState(dataDir, ACCOUNT_KEY, "kimi-state", "kimi");
+
+  await removeAccountStorageStates(dataDir, ACCOUNT_KEY, "doubao");
+
+  for (const file of accountStorageStatePaths(dataDir, ACCOUNT_KEY, "kimi")) {
+    assert.equal(await readFile(file, "utf8"), "kimi-state", `${path.basename(file)} must survive`);
+  }
 });
 
 test("worker reconcile retires only accounts that left the enabled set", async () => {

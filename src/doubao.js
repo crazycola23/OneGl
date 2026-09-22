@@ -1,5 +1,5 @@
-import { stat } from "node:fs/promises";
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
+import { hasStoredStorageState } from "./security/storage-state.js";
 import { canonicalizeUrl, domainFromUrl, isExternalSourceUrl } from "./url.js";
 
 const ANSWER_SELECTOR = [
@@ -28,15 +28,6 @@ function normalizeText(value) {
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-async function fileExists(filePath) {
-  try {
-    await stat(filePath);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function allowedDoubaoUrl(raw) {

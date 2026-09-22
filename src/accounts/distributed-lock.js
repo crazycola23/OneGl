@@ -19,10 +19,12 @@ async function unlock(client, key) {
  * Locks live on a dedicated pooled connection and are automatically released by PostgreSQL
  * if the worker process/connection dies.
  */
-export async function acquireAccountExecutionLease(pool, { accountKey, parallelism = 1 }) {
+export async function acquireAccountExecutionLease(pool, { accountKey, provider = "doubao", parallelism = 1 }) {
   const slots = Math.max(1, Math.floor(Number(parallelism) || 1));
   const client = await pool.connect();
-  const accountLockKey = advisoryKey("onegl-account", accountKey);
+  // The account identity in PostgreSQL is (provider, account_key); the lock has to match it
+  // or one platform's serialization would freeze the same key on every other platform.
+  const accountLockKey = advisoryKey("onegl-account", `${provider}:${accountKey}`);
   let slotLockKey = null;
   let released = false;
 

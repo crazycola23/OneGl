@@ -1,14 +1,15 @@
 import { stat, unlink } from "node:fs/promises";
 import path from "node:path";
+import { normalizeProviderId } from "../config.js";
 
 /**
  * Account / browser-profile bookkeeping.
  *
- * An account is identified by an anonymous key such as account_01. Its Doubao
- * credentials live only in an on-disk Playwright storageState file, one per account so
- * the profiles stay independent:
+ * An account is identified by an anonymous key such as account_01 plus the platform it
+ * belongs to. Its credentials live only in an on-disk Playwright storageState file, one per
+ * (provider, account) pair so platforms stay independent of each other:
  *
- *   .onegl/auth/accounts/account_01.storage.json
+ *   .onegl/auth/accounts/doubao__account_01.storage.json
  *
  * Only the key is ever written to PostgreSQL.
  */
@@ -38,31 +39,41 @@ export function accountAuthDir(dataDir) {
   return path.join(dataDir, "auth", "accounts");
 }
 
-export function accountStatePath(dataDir, accountKey) {
-  return path.join(accountAuthDir(dataDir), `${normalizeAccountKey(accountKey)}.storage.json`);
+export function accountStatePath(dataDir, accountKey, provider = "doubao") {
+  return path.join(
+    accountAuthDir(dataDir),
+    `${normalizeProviderId(provider)}__${normalizeAccountKey(accountKey)}.storage.json`,
+  );
 }
 
-export async function hasStoredState(dataDir, accountKey) {
+export async function hasStoredState(dataDir, accountKey, provider = "doubao") {
   try {
-    await stat(accountStatePath(dataDir, accountKey));
+    await stat(accountStatePath(dataDir, accountKey, provider));
     return true;
   } catch {
     return false;
   }
 }
 
-export function accountStorageStatePaths(dataDir, accountKey) {
-  const plaintextPath = accountStatePath(dataDir, accountKey);
-  // 密文文件名沿用 config.js 的规则：明文路径加 .enc 后缀，即 <account_key>.storage.json.enc。
-  return [plaintextPath, `${plaintextPath}.enc`];
+export function accountStorageStatePaths(dataDir, accountKey, provider = "doubao") {
+  const plaintextPath = accountStatePath(dataDir, accountKey, provider);
+  // 密文文件名沿用 config.js 的规则：明文路径加 .enc 后缀，即 <provider>__<account_key>.storage.json.enc。
+  const paths = [plaintextPath, `${plaintextPath}.enc`];
+  // Doubao state written before provider scoping must be removed together with the current
+  // name, otherwise a reclaimed account leaves a live credential file on disk.
+  if (provider === "doubao") {
+    const legacy = path.join(accountAuthDir(dataDir), `${normalizeAccountKey(accountKey)}.storage.json`);
+    paths.push(legacy, `${legacy}.enc`);
+  }
+  return paths;
 }
 
-/** 删除账号在磁盘上的登录态；文件名一律由 account_key 派生，缺失文件不算错误。 */
-export async function removeAccountStorageStates(dataDir, accountKey) {
+/** 删除账号在磁盘上的登录态；文件名一律由 provider + account_key 派生，缺失文件不算错误。 */
+export async function removeAccountStorageStates(dataDir, accountKey, provider = "doubao") {
   const key = normalizeAccountKey(accountKey);
   const directory = path.resolve(accountAuthDir(dataDir));
   const removed = [];
-  for (const candidate of accountStorageStatePaths(dataDir, key)) {
+  for (const candidate of accountStorageStatePaths(dataDir, key, provider)) {
     // 目录穿越兜底：目标必须落在 accounts 目录的直接子层，绝不接受任何输入把删除带出目录。
     if (path.dirname(path.resolve(candidate)) !== directory) {
       throw new Error(`拒绝删除账号目录之外的登录态：${candidate}`);

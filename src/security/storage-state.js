@@ -77,6 +77,49 @@ function pathsFor(config) {
   return { plaintextPath, encryptedPath };
 }
 
+function legacyPathsFor(config) {
+  const plaintextPath = config.authStateLegacyPlaintextPath ?? null;
+  if (!plaintextPath) return null;
+  return {
+    plaintextPath,
+    encryptedPath: config.authStateLegacyEncryptedPath ?? `${plaintextPath}.enc`,
+  };
+}
+
+/**
+ * State written before storage state was provider-scoped is still valid for Doubao - the
+ * encryption scope string is unchanged - so it is read from the old file name and always
+ * rewritten under the provider-scoped one, never back into the legacy name.
+ */
+async function pathsForLoad(config) {
+  const current = pathsFor(config);
+  if ((await exists(current.encryptedPath)) || (await exists(current.plaintextPath))) {
+    return { ...current, write: current, legacy: false };
+  }
+  const legacy = legacyPathsFor(config);
+  if (legacy && ((await exists(legacy.encryptedPath)) || (await exists(legacy.plaintextPath)))) {
+    return { ...legacy, write: current, legacy: true };
+  }
+  return { ...current, write: current, legacy: false };
+}
+
+async function removeLegacyCopies(config) {
+  const legacy = legacyPathsFor(config);
+  if (!legacy) return;
+  await removeIfExists(legacy.encryptedPath);
+  await removeIfExists(legacy.plaintextPath);
+}
+
+/**
+ * Existence has to follow the same legacy fallback as loading does, or an account whose state
+ * still sits under the pre-scoping file name is reported as never having logged in - which
+ * turns a session expiry into a login requirement and changes how the account is paused.
+ */
+export async function hasStoredStorageState(config) {
+  const { encryptedPath, plaintextPath } = await pathsForLoad(config);
+  return (await exists(encryptedPath)) || (await exists(plaintextPath));
+}
+
 export function encryptStorageState(state, key, scope) {
   if (!key || key.length !== 32) throw new Error("storage state encryption requires a 32-byte key");
   const iv = crypto.randomBytes(IV_BYTES);
@@ -176,7 +219,7 @@ export function storageStateEncryptionStatus(config = {}) {
 }
 
 export async function loadStoredStorageState(config) {
-  const { plaintextPath, encryptedPath } = pathsFor(config);
+  const { plaintextPath, encryptedPath, write, legacy } = await pathsForLoad(config);
   const scope = scopeFor(config);
   const { key, required } = encryptionConfig(config);
 
@@ -189,12 +232,19 @@ export async function loadStoredStorageState(config) {
     const envelope = JSON.parse(await readFile(encryptedPath, "utf8"));
     const state = decryptStorageState(envelope, key, scope);
     await removeIfExists(plaintextPath);
+    if (legacy) {
+      // Re-key the envelope under the scoped name so the legacy file does not linger as a
+      // second live copy of the same credentials.
+      await atomicWrite(write.encryptedPath, `${JSON.stringify(encryptStorageState(state, key, scope))}\n`);
+      await removeLegacyCopies(config);
+    }
     return {
       present: true,
       encrypted: true,
       migrated: false,
+      legacy,
       state,
-      path: encryptedPath,
+      path: legacy ? write.encryptedPath : encryptedPath,
     };
   }
 
@@ -203,8 +253,9 @@ export async function loadStoredStorageState(config) {
       present: false,
       encrypted: Boolean(key),
       migrated: false,
+      legacy: false,
       state: null,
-      path: key ? encryptedPath : plaintextPath,
+      path: key ? write.encryptedPath : write.plaintextPath,
     };
   }
 
@@ -215,13 +266,27 @@ export async function loadStoredStorageState(config) {
   const state = JSON.parse(await readFile(plaintextPath, "utf8"));
   if (!key) {
     await chmod(plaintextPath, 0o600);
-    return { present: true, encrypted: false, migrated: false, state, path: plaintextPath };
+    return {
+      present: true,
+      encrypted: false,
+      migrated: false,
+      legacy,
+      state,
+      path: plaintextPath,
+    };
   }
 
-  const envelope = encryptStorageState(state, key, scope);
-  await atomicWrite(encryptedPath, `${JSON.stringify(envelope)}\n`);
+  await atomicWrite(write.encryptedPath, `${JSON.stringify(encryptStorageState(state, key, scope))}\n`);
   await removeIfExists(plaintextPath);
-  return { present: true, encrypted: true, migrated: true, state, path: encryptedPath };
+  await removeLegacyCopies(config);
+  return {
+    present: true,
+    encrypted: true,
+    migrated: true,
+    legacy,
+    state,
+    path: write.encryptedPath,
+  };
 }
 
 export async function saveStoredStorageState(config, state) {
@@ -233,6 +298,7 @@ export async function saveStoredStorageState(config, state) {
     const envelope = encryptStorageState(state, key, scope);
     await atomicWrite(encryptedPath, `${JSON.stringify(envelope)}\n`);
     await removeIfExists(plaintextPath);
+    await removeLegacyCopies(config);
     return { encrypted: true, path: encryptedPath };
   }
 
@@ -242,6 +308,7 @@ export async function saveStoredStorageState(config, state) {
     );
   }
   await atomicWrite(plaintextPath, `${JSON.stringify(state)}\n`);
+  await removeLegacyCopies(config);
   return { encrypted: false, path: plaintextPath };
 }
 

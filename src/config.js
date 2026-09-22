@@ -21,6 +21,22 @@ function intEnv(name, fallback, min = 1) {
   return parsed;
 }
 
+const PROVIDER_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+
+/**
+ * A provider id is part of the credential identity, so an unchecked value would let a
+ * misconfigured env var read (or overwrite) another platform's storage state.
+ */
+export function normalizeProviderId(value) {
+  const provider = String(value ?? "doubao").trim().toLowerCase();
+  if (!PROVIDER_PATTERN.test(provider)) {
+    throw new Error(
+      `Provider ${JSON.stringify(value)} is invalid; expected a lowercase adapter id such as "doubao"`,
+    );
+  }
+  return provider;
+}
+
 export function loadConfig(overrides = {}) {
   const dataDir = path.resolve(
     overrides.dataDir ?? process.env.ONEGL_DATA_DIR ?? ".onegl",
@@ -49,6 +65,12 @@ export function loadConfig(overrides = {}) {
     );
   }
 
+  // One account key can exist on several platforms; the browser session must know which
+  // platform's credentials it is loading, otherwise two providers share one state file.
+  const provider = normalizeProviderId(
+    overrides.provider ?? process.env.ONEGL_ACCOUNT_PROVIDER ?? "doubao",
+  );
+
   if (!new Set(["camoufox", "chromium", "firefox"]).has(browser)) {
     throw new Error("ONEGL_BROWSER must be camoufox, chromium, or firefox");
   }
@@ -58,19 +80,30 @@ export function loadConfig(overrides = {}) {
 
   const authStatePlaintextPath =
     accountKey === null
-      ? path.join(dataDir, "auth", "doubao.storage.json")
-      : path.join(dataDir, "auth", "accounts", `${accountKey}.storage.json`);
+      ? path.join(dataDir, "auth", `${provider}.storage.json`)
+      : path.join(dataDir, "auth", "accounts", `${provider}__${accountKey}.storage.json`);
   const authStateEncryptedPath = `${authStatePlaintextPath}.enc`;
+  // Doubao state predates provider scoping and lives at <account_key>.storage.json. Keep
+  // resolving it so a multi-provider deploy does not silently log every account out.
+  const authStateLegacyPlaintextPath =
+    provider === "doubao" && accountKey !== null
+      ? path.join(dataDir, "auth", "accounts", `${accountKey}.storage.json`)
+      : null;
   const storageStateKey =
     overrides.storageStateKey ?? process.env.ONEGL_STORAGE_STATE_KEY ?? null;
 
   return {
     dataDir,
     accountKey,
+    provider,
     // Keep both paths explicit: authStatePlaintextPath is only for legacy migration / optional
     // local plaintext mode. authStatePath is the effective destination displayed to operators.
     authStatePlaintextPath,
     authStateEncryptedPath,
+    authStateLegacyPlaintextPath,
+    authStateLegacyEncryptedPath: authStateLegacyPlaintextPath
+      ? `${authStateLegacyPlaintextPath}.enc`
+      : null,
     authStatePath:
       storageStateKey == null || String(storageStateKey).trim() === ""
         ? authStatePlaintextPath

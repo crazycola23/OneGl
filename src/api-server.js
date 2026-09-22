@@ -60,6 +60,7 @@ import {
   listRuns,
 } from "./db/dashboard.js";
 import { addKeywords, countActiveKeywords, listProjectKeywords } from "./project/keywords.js";
+import { getProviderAdapter } from "./providers/index.js";
 import { batchProgress, enqueueBatch, stopBatch } from "./queue/batches.js";
 import { isQueueConfigured } from "./queue/connection.js";
 import { createSamplingBatch } from "./sampling/batch.js";
@@ -432,6 +433,18 @@ async function routeApi(req, res, url) {
     const externalId = decodeURIComponent(createAuth[1]);
     const account = await getAccountBinding(db, tenant.id, externalId);
     if (!account) throw new ApiHttpError(404, "account_not_found", `account ${externalId} was not found`);
+    // Remote login drives a concrete provider surface. Without a registered adapter the
+    // session would open one platform's login modal and store the result under another
+    // platform's credential scope, so it must fail before any auth session row is written.
+    try {
+      getProviderAdapter(account.provider);
+    } catch {
+      throw new ApiHttpError(
+        400,
+        "provider_not_supported",
+        `provider ${account.provider} has no registered adapter for remote login`,
+      );
+    }
     const body = await readJsonBody(req);
     const authRow = await createAuthSessionRow(db, {
       tenantId: tenant.id,

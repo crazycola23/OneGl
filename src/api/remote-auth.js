@@ -473,7 +473,11 @@ export async function startRemoteAuthSession({ pool, tenantId, authRow, account 
 
   const remoteHeadless = boolEnv("ONEGL_REMOTE_AUTH_HEADLESS", true);
   const pollMs = intEnv("ONEGL_REMOTE_AUTH_POLL_MS", 1500, 500, 10000);
-  const config = loadConfig({ accountKey: account.account_key, headless: remoteHeadless });
+  const config = loadConfig({
+    accountKey: account.account_key,
+    provider: account.provider,
+    headless: remoteHeadless,
+  });
   const runtime = {
     id: authRow.id,
     pool,

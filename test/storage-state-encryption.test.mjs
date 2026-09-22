@@ -51,9 +51,24 @@ test("config exposes encrypted auth path when a key is present", () => {
     accountKey: "account_a",
     storageStateKey: KEY_A,
   });
-  assert.match(config.authStatePlaintextPath, /account_a\.storage\.json$/);
-  assert.match(config.authStateEncryptedPath, /account_a\.storage\.json\.enc$/);
+  assert.match(config.authStatePlaintextPath, /doubao__account_a\.storage\.json$/);
+  assert.match(config.authStateEncryptedPath, /doubao__account_a\.storage\.json\.enc$/);
   assert.equal(config.authStatePath, config.authStateEncryptedPath);
+});
+
+test("storage state is scoped per provider so one account key cannot span platforms", () => {
+  const doubao = loadConfig({ dataDir: "/tmp/onegl-test-data", accountKey: "account_a" });
+  const kimi = loadConfig({ dataDir: "/tmp/onegl-test-data", accountKey: "account_a", provider: "kimi" });
+
+  assert.equal(doubao.provider, "doubao");
+  assert.equal(kimi.provider, "kimi");
+  assert.notEqual(doubao.authStatePlaintextPath, kimi.authStatePlaintextPath);
+  assert.notEqual(doubao.authStateEncryptedPath, kimi.authStateEncryptedPath);
+  // Doubao predates provider scoping, so its legacy file name must still resolve; a second
+  // platform must never inherit that fallback.
+  assert.match(doubao.authStateLegacyPlaintextPath, /[/\\]account_a\.storage\.json$/);
+  assert.equal(kimi.authStateLegacyPlaintextPath, null);
+  assert.throws(() => loadConfig({ accountKey: "account_a", provider: "../etc" }), /is invalid/);
 });
 
 test("AES-GCM storage state is authenticated and account-bound", () => {
@@ -147,4 +162,57 @@ test("required encryption fails closed before browser use", () => {
     algorithm: "aes-256-gcm",
   });
   assert.throws(() => parseStorageStateKey("base64:too-short"), /exactly 32 bytes/);
+});
+
+test("providers sharing an account key keep independent login state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "onegl-storage-provider-"));
+  try {
+    const base = { dataDir: root, accountKey: "account_a", storageStateKey: KEY_A };
+    const doubao = loadConfig(base);
+    const kimi = loadConfig({ ...base, provider: "kimi" });
+    const kimiState = { ...SAMPLE_STATE, cookies: [{ ...SAMPLE_STATE.cookies[0], value: "kimi-cookie" }] };
+
+    await saveStoredStorageState(doubao, SAMPLE_STATE);
+    await saveStoredStorageState(kimi, kimiState);
+
+    // A second platform logging in must not displace the first platform's session - the two
+    // files used to resolve to the same path, which silently logged the account out of Doubao.
+    assert.deepEqual((await loadStoredStorageState(doubao)).state, SAMPLE_STATE);
+    assert.deepEqual((await loadStoredStorageState(kimi)).state, kimiState);
+
+    const foreign = JSON.parse(await readFile(kimi.authStateEncryptedPath, "utf8"));
+    assert.equal(foreign.scope, "provider=kimi;account=account_a");
+    assert.throws(
+      () => decryptStorageState(foreign, KEY_A, "provider=doubao;account=account_a"),
+      /different account scope/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy Doubao state is read from the unscoped name and moved to the scoped one", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "onegl-storage-legacy-"));
+  try {
+    const config = loadConfig({ dataDir: root, accountKey: "account_a", storageStateKey: KEY_A });
+    const legacyPlaintext = config.authStateLegacyPlaintextPath;
+    await mkdir(path.dirname(legacyPlaintext), { recursive: true });
+    await writeFile(legacyPlaintext, JSON.stringify(SAMPLE_STATE));
+
+    const loaded = await loadStoredStorageState(config);
+    assert.equal(loaded.present, true);
+    assert.equal(loaded.legacy, true);
+    assert.deepEqual(loaded.state, SAMPLE_STATE);
+    assert.equal(loaded.path, config.authStateEncryptedPath);
+
+    await assert.rejects(readFile(legacyPlaintext, "utf8"), /ENOENT/);
+    assert.equal(
+      JSON.parse(await readFile(config.authStateEncryptedPath, "utf8")).scope,
+      "provider=doubao;account=account_a",
+    );
+    // Reading must not leave a second live copy of the credentials behind under either name.
+    await assert.rejects(readFile(config.authStateLegacyEncryptedPath, "utf8"), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

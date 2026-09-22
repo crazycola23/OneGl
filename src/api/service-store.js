@@ -274,7 +274,7 @@ export async function reclaimTenantAccount(
       RETURNING updated_at`,
     [provider, accountKey],
   );
-  const removed = await removeAccountStorageStates(dataDir, accountKey);
+  const removed = await removeAccountStorageStates(dataDir, accountKey, provider);
 
   return {
     account_id: external,
