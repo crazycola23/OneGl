@@ -39,14 +39,17 @@ async function resolveAccountKey(db, { tenantId, provider, externalId }) {
  */
 export async function countAccountQueueJobs(
   accountKey,
-  { queueFactory = (name) => new Queue(name, { connection: getRedis() }) } = {},
+  {
+    provider = "doubao",
+    queueFactory = (name) => new Queue(name, { connection: getRedis() }),
+  } = {},
 ) {
   if (!isQueueConfigured()) {
     throw unavailable("REDIS_URL is not configured, so in-flight jobs cannot be observed");
   }
   let queue = null;
   try {
-    queue = queueFactory(accountQueueName(accountKey));
+    queue = queueFactory(accountQueueName(accountKey, provider));
     const counts = await queue.getJobCounts(...JOB_STATES);
     const result = {};
     for (const state of JOB_STATES) {
@@ -104,7 +107,7 @@ export async function accountInflightState(
   const accountKey = await resolveAccountKey(db, { tenantId, provider, externalId: external });
   let counts;
   try {
-    counts = await queueCounter(accountKey);
+    counts = await queueCounter(accountKey, { provider });
   } catch (error) {
     // 计数拿不到就不可能给出 reclaim_safe：宁可 503，也不返回一个带 0 的「可以回收」。
     throw queueUnavailable(error);

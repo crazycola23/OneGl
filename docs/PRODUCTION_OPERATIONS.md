@@ -140,6 +140,30 @@ ONEGL_CAMOUFOX_MODE=virtual
 
 Docker 镜像仍安装 Chromium，便于临时设置 `ONEGL_BROWSER=chromium` 排查浏览器兼容问题；生产默认不再是 Chromium。
 
+Camoufox 默认每次启动随机选择操作系统（连带 UA、字体度量、WebGL 厂商），而 OneGl 又把 locale / 时区 / viewport 固定在同一套值上，两层会互相矛盾。因此 `ONEGL_CAMOUFOX_OS`（`windows` / `macos` / `linux`，默认 `windows`）会被显式传给 Camoufox，屏幕与窗口尺寸也按 `ONEGL_BROWSER_VIEWPORT_*` 钉住，不再从物理显示器推导——`virtual` 模式下的 Xvfb 只有一块 1x1 的虚拟屏。
+
+```env
+ONEGL_CAMOUFOX_OS=windows
+```
+
+## 队列改名与发版顺序
+
+账号队列名是 `onegl-run-<provider>-<account_key>`，一个 (平台, 账号) 一条队列，队列自身保证单账号串行。
+
+改名前必须先排空，否则旧队列里 `waiting`/`delayed` 的任务会变成孤儿：新 Worker 只订阅新名字，旧任务没人领取，而批次状态仍停在 `running`，表现为「批次永远跑不完」而不是报错。
+
+```bash
+# 1. 停掉仍在排队的批次（只移除未领取任务，执行中的会安全收尾）
+npm run batch:stop -- --batch <id>
+
+# 2. 等 Worker 心跳里的队列清空后再替换镜像；确认旧队列已无在飞任务
+npm run ops:summary
+
+# 3. 若已存在遗留队列，显式删除属于本次操作窗口的队列键
+```
+
+停线（`stopWorkerFor`）有意不删队列键——删队列等于丢弃未完成任务，必须留到单独的操作窗口处理。
+
 ## Kubernetes
 
 模板位于 `deploy/kubernetes/`。

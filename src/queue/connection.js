@@ -19,9 +19,33 @@ export function queuePrefix() {
   return process.env.ONEGL_QUEUE_PREFIX ?? "onegl";
 }
 
-/** 每个账号一条队列：队列本身串行，天然保证单账号 concurrency = 1。 */
-export function accountQueueName(accountKey) {
-  return `${queuePrefix()}-run-${accountKey}`;
+/**
+ * 每个 (平台, 账号) 一条队列：队列本身串行，天然保证单账号 concurrency = 1。
+ *
+ * 平台必须在名字里。账号身份在数据库里是 (provider, account_key)，同一个 account_key
+ * 在两个平台下是两份互不相干的登录态；共用一条队列就等于让它们排同一个串行通道，
+ * 一个平台的冷却会把另一个平台一起冻住。
+ */
+export function accountQueueName(accountKey, provider = "doubao") {
+  return `${queuePrefix()}-run-${provider}-${accountKey}`;
+}
+
+/**
+ * worker 内部按这个键索引会话与 BullMQ Worker。
+ * ':' 不在 account_key 允许的字符集（[A-Za-z0-9._-]）里，也不在 provider id 里，所以无歧义。
+ */
+export function accountIdentity(accountKey, provider = "doubao") {
+  return `${provider}:${accountKey}`;
+}
+
+/** accountIdentity 的反向操作。缺分隔符说明键不是身份串，静默按豆包处理会停错平台的 worker。 */
+export function parseAccountIdentity(identity) {
+  const text = String(identity ?? "");
+  const index = text.indexOf(":");
+  if (index <= 0 || index === text.length - 1) {
+    throw new Error(`账号身份串不合法：${JSON.stringify(identity)}`);
+  }
+  return { provider: text.slice(0, index), accountKey: text.slice(index + 1) };
 }
 
 /**

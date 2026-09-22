@@ -7,12 +7,15 @@
 
 function staleAccountKeys(trackedKeys, enabledKeys) {
   const enabled = new Set(enabledKeys);
-  return [...trackedKeys].filter((accountKey) => !enabled.has(accountKey));
+  return [...trackedKeys].filter((identity) => !enabled.has(identity));
 }
 
 /**
  * 对账时停掉已不在 enabled 集合里的账号 worker，返回被停掉的 key 列表。
  * 只增不减会让软删账号继续常驻消费自己的队列，带着已回收的登录态去采集。
+ *
+ * 两侧都是 accountIdentity(accountKey, provider) 的不透明身份串：同一个 account_key 在
+ * 两个平台下是两条队列，按平台分开判定才不会停掉一个而连带停掉另一个。
  */
 export async function reclaimStaleAccountWorkers(trackedKeys, enabledKeys, stopWorkerFor) {
   const stale = staleAccountKeys(trackedKeys, enabledKeys);

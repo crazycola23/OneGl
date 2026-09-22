@@ -27,11 +27,14 @@ import { loadConfig } from "./config.js";
 import { createPool } from "./db/pool.js";
 import { openDoubao } from "./doubao.js";
 import { loadBrandRules } from "./project/init.js";
+import { getProviderAdapter } from "./providers/index.js";
 import {
+  accountIdentity,
   accountQueueName,
   closeRedis,
   getRedis,
   isQueueConfigured,
+  parseAccountIdentity,
   sourceIntelligenceQueueName,
 } from "./queue/connection.js";
 import { refreshBatchProgress, runIdFor, runTokenFor } from "./queue/batches.js";
@@ -83,6 +86,8 @@ const SOURCE_INTELLIGENCE_SCRIPT = fileURLToPath(
 // 否则账号长期不可用（例如连续失败一直续冷却）时任务会无限期地挂着。
 const MAX_COOLDOWN_WAITS = 3;
 
+// sessions 与 workers 都以 accountIdentity(accountKey, provider) 为键：
+// 同一个 account_key 在两个平台下是两份独立登录态，必须各走各的队列与会话。
 const sessions = new Map();
 const brandRulesCache = new Map();
 const workers = new Map();
@@ -139,24 +144,30 @@ async function publishHeartbeat() {
   }
 }
 
-/** 每个账号一个浏览器会话，复用以免每次任务都重启一次 Camoufox。 */
-async function getSession(accountKey) {
-  const existing = sessions.get(accountKey);
+/** 每个 (平台, 账号) 一个浏览器会话，复用以免每次任务都重启一次 Camoufox。 */
+async function getSession({ accountKey, provider }) {
+  const identity = accountIdentity(accountKey, provider);
+  const existing = sessions.get(identity);
   if (existing) {
     // 复用前先确认会话还活着。坏掉的会话会让后面每个任务都稳定失败，看起来像
     // 平台在拒绝我们，实际只是浏览器进程已经死了。重建是廉价操作。
     if (existing.isHealthy?.() !== false) return existing;
-    log({ event: "session-unhealthy", account_key: accountKey });
-    await closeSession(accountKey);
+    log({ event: "session-unhealthy", account_key: accountKey, provider });
+    await closeSession({ accountKey, provider });
   }
 
-  const accountConfig = loadConfig({ accountKey });
+  const accountConfig = loadConfig({ accountKey, provider });
   const session = await launchBrowserSession(accountConfig);
   await openProviderPage(session, accountConfig);
-  await markStorageStatePresent(pool, accountKey, session.hasStoredAuth).catch(() => undefined);
+  await markStorageStatePresent(pool, accountKey, session.hasStoredAuth, provider).catch(() => undefined);
 
-  sessions.set(accountKey, session);
-  log({ event: "session-open", account_key: accountKey, stored_auth: session.hasStoredAuth });
+  sessions.set(identity, session);
+  log({
+    event: "session-open",
+    account_key: accountKey,
+    provider,
+    stored_auth: session.hasStoredAuth,
+  });
   return session;
 }
 
@@ -171,24 +182,26 @@ async function openProviderPage(session, config) {
  * Camoufox 的指纹也在 launch 时就定下了，所以平台侧仍是「同一台机器回访」，而高频
  * 重启 Camoufox 反而会去踩 browser.js 里那棵孤儿进程树的坑。
  */
-async function prepareWindow(session, accountKey) {
+async function prepareWindow(session, account) {
   if (!shouldRotateContext(session.contextPrompts, safety.roundPromptLimit)) return;
-  const accountConfig = loadConfig({ accountKey });
+  const accountConfig = loadConfig(account);
   await session.rotateContext();
   await openProviderPage(session, accountConfig);
   log({
     event: "window-rotated",
-    account_key: accountKey,
+    account_key: account.accountKey,
+    provider: account.provider,
     round_prompt_limit: safety.roundPromptLimit,
   });
 }
 
-async function closeSession(accountKey) {
-  const session = sessions.get(accountKey);
-  sessions.delete(accountKey);
+async function closeSession({ accountKey, provider }) {
+  const identity = accountIdentity(accountKey, provider);
+  const session = sessions.get(identity);
+  sessions.delete(identity);
   if (!session) return;
   await session.close().catch(() => undefined);
-  log({ event: "session-close", account_key: accountKey });
+  log({ event: "session-close", account_key: accountKey, provider });
 }
 
 async function brandRulesFor(projectName) {
@@ -243,6 +256,15 @@ async function markSkipped(batchId, reason) {
 
 async function handleJob(job, token) {
   const { batchId, selectionIndex, accountKey, projectName } = job.data;
+  const provider = job.data.provider ?? "doubao";
+  const account = { accountKey, provider };
+  // 平台必须已注册 adapter。否则浏览器会话会打开豆包的登录面、却把结果存进另一个
+  // 平台的登录态里，所以要在任何设备动作之前拦下来。
+  try {
+    getProviderAdapter(provider);
+  } catch {
+    throw new UnrecoverableError(`平台 ${provider} 没有已注册的 adapter，已跳过任务`);
+  }
   const runToken = runTokenFor(batchId, selectionIndex);
   const runId = runIdFor(batchId, selectionIndex);
   const startedAt = Date.now();
@@ -255,6 +277,7 @@ async function handleJob(job, token) {
     run_id: runId,
     prompt_id: selectionIndex,
     account_key: accountKey,
+    provider,
     attempt,
   });
 
@@ -342,7 +365,7 @@ async function handleJob(job, token) {
     };
   }
 
-  const availability = await accountAvailability(pool, accountKey, safety);
+  const availability = await accountAvailability(pool, accountKey, safety, provider);
   if (!availability.available) {
     const plan = planUnavailableJob({
       availability,
@@ -384,6 +407,7 @@ async function handleJob(job, token) {
 
   const executionLease = await acquireAccountExecutionLease(pool, {
     accountKey,
+    provider,
     parallelism: safety.accountParallelism,
   });
   if (!executionLease) {
@@ -403,16 +427,16 @@ async function handleJob(job, token) {
   try {
     // 两次提问之间在配置区间内随机等待，避免固定节奏的机械化请求
     await sleep(randomDelayMs(safety));
-    await beginAccountRun(pool, accountKey);
+    await beginAccountRun(pool, accountKey, provider);
 
-    const session = await getSession(accountKey);
-    await prepareWindow(session, accountKey);
+    const session = await getSession(account);
+    await prepareWindow(session, account);
     const brandRules = await brandRulesFor(projectName);
 
     const outcome = await runOnePrompt({
       page: session.page,
       store,
-      config: loadConfig({ accountKey }),
+      config: loadConfig(account),
       prompt: promptText,
       project: projectName,
       pool,
@@ -420,6 +444,7 @@ async function handleJob(job, token) {
       validation,
       context: {
         accountKey,
+        provider,
         samplingBatchId: batchId,
         brandRules,
         runToken,
@@ -438,7 +463,7 @@ async function handleJob(job, token) {
     if (outcome.persistError) {
       // Provider collection succeeded but OneGl infrastructure did not. Preserve provider
       // health as successful, then let BullMQ retry only the immutable persistence replay.
-      if (outcome.ok) await recordAccountSuccess(pool, accountKey).catch(() => undefined);
+      if (outcome.ok) await recordAccountSuccess(pool, accountKey, provider).catch(() => undefined);
       await refreshBatchProgress(pool, batchId);
       log({
         event: "job-db-error",
@@ -451,7 +476,7 @@ async function handleJob(job, token) {
     }
 
     if (outcome.ok) {
-      await recordAccountSuccess(pool, accountKey);
+      await recordAccountSuccess(pool, accountKey, provider);
       log({
         event: "job-done",
         batch_id: batchId,
@@ -467,7 +492,7 @@ async function handleJob(job, token) {
       return { status: outcome.saved.status, citations: outcome.saved.citations?.length ?? 0 };
     }
 
-    const failure = await recordAccountFailure(pool, { accountKey, errorCode: code, config: safety });
+    const failure = await recordAccountFailure(pool, { accountKey, provider, errorCode: code, config: safety });
     if (failure.blocked) {
       log({
         event: "account-blocked",
@@ -518,10 +543,11 @@ async function handleJob(job, token) {
   }
 }
 
-async function startWorkerFor(accountKey) {
-  if (workers.has(accountKey) || shuttingDown) return;
+async function startWorkerFor(accountKey, provider = "doubao") {
+  const identity = accountIdentity(accountKey, provider);
+  if (workers.has(identity) || shuttingDown) return;
 
-  const name = accountQueueName(accountKey);
+  const name = accountQueueName(accountKey, provider);
   // token 必须透传给处理器：moveToDelayed 需要它来把任务挪到冷却结束时刻。
   const worker = new Worker(name, (job, token) => handleJob(job, token), {
     connection: getRedis(),
@@ -550,20 +576,26 @@ async function startWorkerFor(accountKey) {
     console.error(`[worker] 队列错误 ${name}：${error.message}`);
   });
 
-  workers.set(accountKey, worker);
-  log({ event: "worker-started", queue: name, account_key: accountKey });
+  workers.set(identity, worker);
+  log({ event: "worker-started", queue: name, account_key: accountKey, provider });
 }
 
 /** 与 startWorkerFor 对称：软删的账号必须能下线，否则常驻 worker 会带着已回收的登录态继续采集。 */
-async function stopWorkerFor(accountKey) {
-  const worker = workers.get(accountKey);
+async function stopWorkerFor(identity) {
+  const worker = workers.get(identity);
   if (!worker) return;
+  const { accountKey, provider } = parseAccountIdentity(identity);
   // 先摘 map 再 close：close 要等在跑的任务收尾，期间这个 key 不该被重复停止或重新启动。
-  workers.delete(accountKey);
+  workers.delete(identity);
   await worker.close().catch(() => undefined);
-  await closeSession(accountKey);
-  // Redis 队列 onegl-run-<key> 有意保留：删它等于丢弃未完成任务，需要单独的操作窗口。
-  log({ event: "worker-stopped", queue: accountQueueName(accountKey), account_key: accountKey });
+  await closeSession({ accountKey, provider });
+  // Redis 队列 onegl-run-<platform>-<key> 有意保留：删它等于丢弃未完成任务，需要单独的操作窗口。
+  log({
+    event: "worker-stopped",
+    queue: accountQueueName(accountKey, provider),
+    account_key: accountKey,
+    provider,
+  });
 }
 
 function runSourceIntelligenceChild(batchId) {
@@ -706,12 +738,12 @@ async function reconcileIntelligence() {
 
 async function discoverAccounts() {
   const { rows } = await pool.query(
-    `SELECT account_key FROM accounts WHERE enabled = true ORDER BY account_key`,
+    `SELECT account_key, provider FROM accounts WHERE enabled = true ORDER BY provider, account_key`,
   );
   for (const row of rows) {
-    await startWorkerFor(row.account_key);
+    await startWorkerFor(row.account_key, row.provider);
   }
-  listeningAccounts = rows.map((row) => row.account_key);
+  listeningAccounts = rows.map((row) => accountIdentity(row.account_key, row.provider));
   // 停线放在 listeningAccounts 刷新之后：心跳立刻反映账号已下线，慢 close 也不拖住新账号接入。
   const stopped = await reclaimStaleAccountWorkers(workers.keys(), listeningAccounts, stopWorkerFor);
   if (stopped.length) log({ event: "accounts-reclaimed", account_keys: stopped.join(",") });
@@ -730,7 +762,9 @@ async function shutdown(signal) {
     sourceIntelligenceWorker = null;
     await worker.close().catch(() => undefined);
   }
-  await Promise.all([...sessions.keys()].map((accountKey) => closeSession(accountKey)));
+  await Promise.all(
+    [...sessions.keys()].map((identity) => closeSession(parseAccountIdentity(identity))),
+  );
   await pool.end().catch(() => undefined);
   // 主动删掉心跳，界面立刻就能反映「Worker 已停止」，不用等 TTL 过期。
   await getRedis()

@@ -25,6 +25,18 @@ export function runIdFor(batchId, selectionIndex) {
 
 const TERMINAL_JOB_STATES = new Set(["completed", "failed"]);
 
+/**
+ * 一批分配涉及的队列名。
+ *
+ * 「按账号找队列」这件事必须只有一个算法，否则入队、停止、进度和对账会各自拼一遍
+ * 名字，拼错的那条就是静默失效：任务停在没人监听的队列里，批次看起来永远在跑。
+ */
+export function accountQueueNamesFor(assignments) {
+  return [...new Set(assignments.map(
+    (assignment) => accountQueueName(assignment.accountKey, assignment.provider),
+  ))];
+}
+
 export async function enqueueBatch(pool, batchId, { log = console.log } = {}) {
   if (!isQueueConfigured()) {
     return { started: false, reason: "REDIS_URL 未配置，无法使用后台队列" };
@@ -38,7 +50,7 @@ export async function enqueueBatch(pool, batchId, { log = console.log } = {}) {
 
   const byAccount = new Map();
   for (const assignment of assignments) {
-    const key = assignment.accountKey;
+    const key = accountIdentity(assignment.accountKey, assignment.provider);
     if (!byAccount.has(key)) byAccount.set(key, []);
     byAccount.get(key).push(assignment);
   }
@@ -46,8 +58,8 @@ export async function enqueueBatch(pool, batchId, { log = console.log } = {}) {
   // 幂等判定不只看状态：如果状态是 running 但队列里已经没有活任务了
   // （例如 Worker 崩溃、或上一次执行失败收尾），应当允许重新启动。
   let liveJobs = 0;
-  for (const accountKey of byAccount.keys()) {
-    const queue = new Queue(accountQueueName(accountKey), { connection: getRedis() });
+  for (const name of accountQueueNamesFor(assignments)) {
+    const queue = new Queue(name, { connection: getRedis() });
     try {
       const jobs = await queue.getJobs(["waiting", "active", "delayed", "paused"], 0, 500);
       liveJobs += jobs.filter((job) => job.data?.batchId === batchId).length;
@@ -64,8 +76,9 @@ export async function enqueueBatch(pool, batchId, { log = console.log } = {}) {
 
   let enqueued = 0;
 
-  for (const [accountKey, accountAssignments] of byAccount) {
-    const queue = new Queue(accountQueueName(accountKey), { connection: getRedis() });
+  for (const [, accountAssignments] of byAccount) {
+    const { accountKey, provider } = accountAssignments[0];
+    const queue = new Queue(accountQueueName(accountKey, provider), { connection: getRedis() });
     try {
       // 允许重跑失败或中止的批次：先清掉已经终止的旧任务。
       // 仍在等待中的任务保留，保持 jobId 幂等。
@@ -79,26 +92,25 @@ export async function enqueueBatch(pool, batchId, { log = console.log } = {}) {
         }
       }
 
-      const jobs = accountAssignments
-        .filter((assignment) => assignment.accountKey === accountKey)
-        .map((assignment) => ({
-          name: "run-prompt",
-          data: {
-            batchId,
-            selectionIndex: assignment.selectionIndex,
-            accountKey,
-            projectName: batch.project_name,
-            promptId: assignment.promptId,
-          },
-          opts: {
-            jobId: runTokenFor(batchId, assignment.selectionIndex),
-            // 首次 + 2 次重试；不可重试的错误会在处理器里抛 UnrecoverableError
-            attempts: 3,
-            backoff: { type: "exponential", delay: 5_000 },
-            removeOnComplete: false,
-            removeOnFail: false,
-          },
-        }));
+      const jobs = accountAssignments.map((assignment) => ({
+        name: "run-prompt",
+        data: {
+          batchId,
+          selectionIndex: assignment.selectionIndex,
+          accountKey,
+          provider,
+          projectName: batch.project_name,
+          promptId: assignment.promptId,
+        },
+        opts: {
+          jobId: runTokenFor(batchId, assignment.selectionIndex),
+          // 首次 + 2 次重试；不可重试的错误会在处理器里抛 UnrecoverableError
+          attempts: 3,
+          backoff: { type: "exponential", delay: 5_000 },
+          removeOnComplete: false,
+          removeOnFail: false,
+        },
+      }));
 
       if (jobs.length) {
         await queue.addBulk(jobs);
@@ -124,11 +136,16 @@ export async function enqueueBatch(pool, batchId, { log = console.log } = {}) {
   );
 
   log(`批次 #${batchId} 已入队：${enqueued} 个任务，覆盖 ${byAccount.size} 个账号`);
-  for (const [accountKey, list] of byAccount) {
-    log(`  账号 ${accountKey}: ${list.length} 个任务`);
+  for (const [identity, list] of byAccount) {
+    log(`  账号 ${identity}: ${list.length} 个任务`);
   }
 
-  return { started: true, enqueued, accounts: [...byAccount.keys()] };
+  return {
+    started: true,
+    enqueued,
+    // 对外的账号身份仍然是 account_key：SaaS 侧要拿它换回租户的 external_id。
+    accounts: [...new Set(assignments.map((assignment) => assignment.accountKey))],
+  };
 }
 
 export async function stopBatch(pool, batchId, { log = console.log } = {}) {
@@ -146,10 +163,9 @@ export async function stopBatch(pool, batchId, { log = console.log } = {}) {
   let removed = 0;
   if (isQueueConfigured()) {
     const assignments = await loadBatchAssignments(pool, batchId);
-    const accounts = [...new Set(assignments.map((a) => a.accountKey))];
 
-    for (const accountKey of accounts) {
-      const queue = new Queue(accountQueueName(accountKey), { connection: getRedis() });
+    for (const name of accountQueueNamesFor(assignments)) {
+      const queue = new Queue(name, { connection: getRedis() });
       try {
         // 只移除还没被领取的任务；正在执行的任务会自行安全结束
         const pending = await queue.getJobs(["waiting", "delayed", "paused"], 0, 500);
@@ -258,10 +274,9 @@ export async function batchProgress(pool, batchId) {
   let activeScoped = 0;
   if (isQueueConfigured()) {
     const assignments = await loadBatchAssignments(pool, batchId);
-    const accounts = [...new Set(assignments.map((a) => a.accountKey))];
 
-    for (const accountKey of accounts) {
-      const queue = new Queue(accountQueueName(accountKey), { connection: getRedis() });
+    for (const name of accountQueueNamesFor(assignments)) {
+      const queue = new Queue(name, { connection: getRedis() });
       try {
         const activeJobs = await queue.getJobs(["active"], 0, 100);
         activeScoped += activeJobs.filter((job) => job.data?.batchId === batchId).length;

@@ -202,10 +202,31 @@ test("the real queue counter reads the per-account queue name and its three stat
         close: async () => undefined,
       }),
     });
-    assert.equal(seen.name, `onegl-run-${ACCOUNT_KEY}`);
+    assert.equal(seen.name, `onegl-run-doubao-${ACCOUNT_KEY}`);
     assert.deepEqual(seen.states, ["waiting", "active", "delayed"]);
     // Redis 的 SCARD/ZCARD 回字符串，返回体里必须是数字。
     assert.deepEqual(result, { waiting: 2, active: 1, delayed: 0 });
+  });
+});
+
+test("the in-flight count is scoped to the provider's own queue", async () => {
+  const names = [];
+  await withEnv("REDIS_URL", "redis://127.0.0.1:6379", async () => {
+    const factory = (name) => ({
+      getJobCounts: async () => {
+        names.push(name);
+        return { waiting: 0, active: 0, delayed: 0 };
+      },
+      close: async () => undefined,
+    });
+    // 同一个 account_key 在两个平台下是两条队列：只数豆包队列会漏掉另一边的在飞任务，
+    // 于是 reclaim_safe 会在对方还在跑的时候报「可以回收」。
+    await countAccountQueueJobs(ACCOUNT_KEY, { provider: "doubao", queueFactory: factory });
+    await countAccountQueueJobs(ACCOUNT_KEY, { provider: "yuanbao", queueFactory: factory });
+    assert.deepEqual(names, [
+      `onegl-run-doubao-${ACCOUNT_KEY}`,
+      `onegl-run-yuanbao-${ACCOUNT_KEY}`,
+    ]);
   });
 });
 

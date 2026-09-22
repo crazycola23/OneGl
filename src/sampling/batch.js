@@ -171,9 +171,10 @@ export async function loadBatch(pool, batchId) {
 export async function loadBatchAssignments(pool, batchId) {
   const { rows } = await pool.query(
     // 优先读批次内快照，快照缺失时才回退到关键词池
-    `SELECT sbp.selection_index, sbp.category, sbp.account_key,
+    `SELECT sbp.selection_index, sbp.category, sbp.account_key, b.provider,
             p.id AS prompt_id, COALESCE(sbp.prompt_text, p.prompt) AS prompt
        FROM sampling_batch_prompts sbp
+       JOIN sampling_batches b ON b.id = sbp.batch_id
        LEFT JOIN prompts p ON p.id = sbp.prompt_id
       WHERE sbp.batch_id = $1
       ORDER BY sbp.selection_index`,
@@ -183,6 +184,8 @@ export async function loadBatchAssignments(pool, batchId) {
     selectionIndex: Number(row.selection_index),
     category: row.category,
     accountKey: row.account_key,
+    // 队列名、浏览器会话和账号限流都要按平台分开，所以每条分配自带平台身份。
+    provider: row.provider,
     promptId: Number(row.prompt_id),
     prompt: row.prompt,
   }));

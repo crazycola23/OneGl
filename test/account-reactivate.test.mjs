@@ -201,9 +201,12 @@ test("worker discovery picks a reactivated account back up on the next 60s sweep
   // 真行为在 src/worker.js：discoverAccounts 按 enabled = true 取 key 并 startWorkerFor，
   // 这个 60s 扫描就是「恢复后自动接回、无需重启」的全部依据，所以把它钉住。
   const source = await readFile(new URL("../src/worker.js", import.meta.url), "utf8");
-  assert.match(source, /SELECT account_key FROM accounts WHERE enabled = true/);
+  assert.match(source, /SELECT account_key, provider FROM accounts WHERE enabled = true/);
   assert.match(source, /\}, 60_000\)\.unref\(\)/);
-  assert.match(source, /for \(const row of rows\) \{\s*await startWorkerFor\(row\.account_key\);/);
+  assert.match(
+    source,
+    /for \(const row of rows\) \{\s*await startWorkerFor\(row\.account_key, row\.provider\);/,
+  );
 
   // 对称的停线路径仍是按 key 移除被回收的账号，恢复后该 key 重新出现在 enabled 集合里。
   const workers = new Map();

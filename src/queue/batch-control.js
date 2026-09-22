@@ -1,7 +1,7 @@
 import { Queue } from "bullmq";
 
-import { accountQueueName, getRedis, isQueueConfigured } from "./connection.js";
-import { runTokenFor } from "./batches.js";
+import { accountIdentity, accountQueueName, getRedis, isQueueConfigured } from "./connection.js";
+import { accountQueueNamesFor, runTokenFor } from "./batches.js";
 import { loadBatch, loadBatchAssignments } from "../sampling/batch.js";
 
 const TERMINAL_RUN_STATES = new Set(["success", "partial", "failed"]);
@@ -18,9 +18,8 @@ export async function pauseBatch(pool, batchId) {
   let removed = 0;
   if (isQueueConfigured()) {
     const assignments = await loadBatchAssignments(pool, batchId);
-    const accounts = [...new Set(assignments.map((row) => row.accountKey))];
-    for (const accountKey of accounts) {
-      const queue = new Queue(accountQueueName(accountKey), { connection: getRedis() });
+    for (const name of accountQueueNamesFor(assignments)) {
+      const queue = new Queue(name, { connection: getRedis() });
       try {
         const jobs = await queue.getJobs(["waiting", "delayed", "paused"], 0, 500);
         for (const job of jobs) {
@@ -53,15 +52,18 @@ export async function resumeBatch(pool, batchId) {
   );
 
   const remaining = assignments.filter((assignment) => !settled.has(runTokenFor(batchId, assignment.selectionIndex)));
+  // 分组键必须是 (平台, 账号)：只在豆包队列里排过的账号，重跑时不能落到别的平台队列上。
   const byAccount = new Map();
   for (const assignment of remaining) {
-    if (!byAccount.has(assignment.accountKey)) byAccount.set(assignment.accountKey, []);
-    byAccount.get(assignment.accountKey).push(assignment);
+    const key = accountIdentity(assignment.accountKey, assignment.provider);
+    if (!byAccount.has(key)) byAccount.set(key, []);
+    byAccount.get(key).push(assignment);
   }
 
   let enqueued = 0;
-  for (const [accountKey, rows] of byAccount) {
-    const queue = new Queue(accountQueueName(accountKey), { connection: getRedis() });
+  for (const rows of byAccount.values()) {
+    const { accountKey, provider } = rows[0];
+    const queue = new Queue(accountQueueName(accountKey, provider), { connection: getRedis() });
     try {
       const jobs = rows.map((assignment) => ({
         name: "run-prompt",
@@ -69,6 +71,7 @@ export async function resumeBatch(pool, batchId) {
           batchId,
           selectionIndex: assignment.selectionIndex,
           accountKey,
+          provider,
           projectName: batch.project_name,
           promptId: assignment.promptId,
         },
