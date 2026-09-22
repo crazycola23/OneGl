@@ -14,7 +14,6 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-COPY tools/prepare-camoufox-url.py /tmp/prepare-camoufox-url.py
 # Keep Chromium installed as an explicit troubleshooting fallback. Camoufox uses
 # its own Firefox-derived binary but still needs the Linux Firefox runtime libs.
 RUN apt-get update \
@@ -28,6 +27,8 @@ RUN apt-get update \
     && mkdir -p /var/lib/onegl /ms-playwright \
     && chown -R onegl:onegl /app /var/lib/onegl /ms-playwright /home/onegl \
     && rm -rf /var/lib/apt/lists/*
+
+COPY tools/prepare-camoufox-url.py /tmp/prepare-camoufox-url.py
 
 USER onegl
 
