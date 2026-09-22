@@ -19,6 +19,7 @@
     "monitor:worker": "node src/monitor-worker-entry.js",
     "alert:worker": "node src/alert-worker-entry.js",
     "runtime:check": "node tools/runtime-check.js",
+    "provider:phase0": "node tools/provider-phase0.js",
     "storage:rotate": "node tools/storage-state-rotate.js",
     "audit:list": "node tools/audit-log.js",
     "ops:summary": "node tools/ops-summary.js",
