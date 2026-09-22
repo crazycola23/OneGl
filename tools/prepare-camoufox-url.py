@@ -85,6 +85,23 @@ def resolve_asset(version: dict) -> None:
     )
 
 
+def install_selected(repo: dict, version: dict) -> None:
+    from camoufox.pkgman import AvailableVersion, CamoufoxFetcher, RepoConfig, Version
+
+    repo_config = RepoConfig.find_by_name(repo["name"])
+    if repo_config is None:
+        raise RuntimeError(f"Camoufox repository is not configured: {repo['name']}")
+    selected = AvailableVersion(
+        version=Version(build=version["build"], version=version["version"]),
+        url=version["url"],
+        is_prerelease=bool(version.get("is_prerelease")),
+        asset_id=version.get("asset_id"),
+        asset_size=version.get("asset_size"),
+        asset_updated_at=version.get("asset_updated_at"),
+    )
+    CamoufoxFetcher(repo_config=repo_config, selected_version=selected).install()
+
+
 def restore_asset(version: dict) -> None:
     original = version.pop("_onegl_original_url", None)
     if original:
@@ -94,16 +111,20 @@ def restore_asset(version: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--install", action="store_true")
     parser.add_argument("--restore", action="store_true")
     args = parser.parse_args()
 
     path = cache_path()
     cache = load_cache(path)
-    _repo, version = selected_version(cache)
+    repo, version = selected_version(cache)
     if args.restore:
         restore_asset(version)
     else:
         resolve_asset(version)
+        if args.install:
+            save_cache(path, cache)
+            install_selected(repo, version)
     save_cache(path, cache)
 
 

@@ -46,6 +46,7 @@ test("production deployment defaults to Camoufox virtual mode with Xvfb availabl
   assert.match(dockerfile, /cloverlabs-camoufox\[geoip\]/);
   assert.match(dockerfile, /installed_verstr/);
   assert.match(dockerfile, /prepare-camoufox-url\.py/);
+  assert.match(dockerfile, /prepare-camoufox-url\.py --install/);
   assert.match(dockerfile, /\bxvfb\b/);
   assert.match(dockerfile, /playwright-core install --with-deps chromium/);
   assert.match(browserSource, /exclude_addons/);
@@ -53,6 +54,7 @@ test("production deployment defaults to Camoufox virtual mode with Xvfb availabl
   assert.match(readinessSource, /camoufoxRuntimeReadiness/);
   assert.match(assetResolver, /releases\/assets/);
   assert.match(assetResolver, /application\/octet-stream/);
+  assert.match(assetResolver, /CamoufoxFetcher/);
 
   assert.match(envFile, /ONEGL_BROWSER=camoufox/);
   assert.match(envFile, /ONEGL_CAMOUFOX_MODE=virtual/);
