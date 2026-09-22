@@ -33,7 +33,8 @@ USER onegl
 # Install the active Camoufox browser into the runtime user's cache so API remote-auth
 # sessions and workers resolve the same browser build without root-owned cache files.
 RUN /opt/camoufox/bin/python -m camoufox set official/stable \
-    && /opt/camoufox/bin/python -m camoufox fetch
+    && /opt/camoufox/bin/python -m camoufox fetch \
+    && /opt/camoufox/bin/python -c "from camoufox.pkgman import installed_verstr; print('Camoufox installed:', installed_verstr())"
 
 COPY --chown=onegl:onegl . .
 

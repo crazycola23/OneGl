@@ -19,6 +19,7 @@ import sys
 
 try:
     from camoufox.utils import launch_options
+    from camoufox.addons import DefaultAddons
     from browserforge.fingerprints import Screen
 except Exception as exc:
     print(f"CAMOUFOX_IMPORT_ERROR::{exc}", file=sys.stderr)
@@ -39,6 +40,13 @@ if screen_size:
         min_height=height,
         max_height=height,
     )
+
+# Camoufox otherwise downloads its default uBlock add-on on the first launch.
+# Production containers must not depend on runtime access to AMO (and a failed
+# download can leave an empty cache directory that fails every later launch with
+# InvalidAddonPath). If an add-on is ever required, it must be bundled and
+# validated during the image build instead.
+payload["exclude_addons"] = list(DefaultAddons)
 
 options = launch_options(**payload)
 print(json.dumps(options))

@@ -46,6 +46,12 @@ services:
     volumes:
       - onegl-data:/var/lib/onegl
     shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "node", "tools/runtime-check.js", "--role", "worker"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
 
   monitor:
     <<: *onegl-base

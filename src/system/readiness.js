@@ -1,11 +1,14 @@
 import { readdir } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { databaseReady } from "../db/dashboard.js";
 import { checkRedis, isQueueConfigured } from "../queue/connection.js";
 import { storageStateEncryptionStatus } from "../security/storage-state.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../../migrations/", import.meta.url));
+const execFileAsync = promisify(execFile);
 
 function boolValue(value, fallback = false) {
   if (value == null || value === "") return fallback;
@@ -172,6 +175,47 @@ async function migrationReadiness(pool) {
   }
 }
 
+/**
+ * Camoufox is a runtime dependency of both the API remote-auth path and the
+ * collection worker. Keep it in readiness rather than letting the first login
+ * request discover a broken image. The check is opt-in by explicit
+ * ONEGL_BROWSER=camoufox so local API tests do not require a browser install.
+ */
+export async function camoufoxRuntimeReadiness({ role = "api", env = process.env } = {}) {
+  const browser = String(env.ONEGL_BROWSER ?? "").trim().toLowerCase();
+  const required = browser === "camoufox" && new Set(["api", "worker"]).has(role);
+  if (!required) {
+    return {
+      ready: true,
+      required: false,
+      configured: browser || null,
+      version: null,
+      message: "",
+    };
+  }
+
+  const python = String(env.ONEGL_CAMOUFOX_PYTHON ?? "python3").trim() || "python3";
+  try {
+    const { stdout } = await execFileAsync(
+      python,
+      ["-c", "from camoufox.pkgman import installed_verstr; print(installed_verstr())"],
+      { encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024 },
+    );
+    const version = String(stdout).trim();
+    if (!version) throw new Error("Camoufox did not report an installed version");
+    return { ready: true, required: true, configured: browser, version, message: "" };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      ready: false,
+      required: true,
+      configured: browser,
+      version: null,
+      message: `Camoufox runtime is not installed or not usable: ${detail.slice(0, 240)}`,
+    };
+  }
+}
+
 export async function readinessReport({ pool = null, role = "api", env = process.env } = {}) {
   const staticReport = staticSafetyReport({ role, env });
   const database = pool
@@ -183,8 +227,9 @@ export async function readinessReport({ pool = null, role = "api", env = process
   const queue = roleRequiresQueue(role)
     ? await checkRedis()
     : { ready: true, configured: isQueueConfigured(), message: "queue is not required for this role" };
+  const camoufox = await camoufoxRuntimeReadiness({ role, env });
 
-  const dynamic = { database, migrations, queue };
+  const dynamic = { database, migrations, queue, camoufox };
   const ready = staticReport.ready && Object.values(dynamic).every((check) => check.ready);
   return {
     service: `onegl-${role}`,
