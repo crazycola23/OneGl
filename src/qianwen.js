@@ -356,12 +356,15 @@ async function submitAndWait(page, prompt, config, context) {
     latest = await scan(page, context);
     if (!latest.generating && latest.answerLength > 0) return { scan: latest, sentBy };
     // Fallback that does not depend on knowing the platform's busy control: an answer that has
-    // stopped growing while the composer is usable again is finished. Four polls of the
-    // configured interval, so a slow build cannot be mistaken for a completed one.
+    // stopped growing while the composer is usable again is finished. The window is deliberately
+    // long: a generation that pauses for a few seconds mid-list is normal, and a short window
+    // captured truncated answers (measured: one run ended on "…仓桥直街128" because four polls
+    // of quiet were treated as completion). The busy signal above is the primary criterion; this
+    // only catches a build that loses it.
     stablePolls = previous && previous.answerLength > 0 && previous.answerLength === latest.answerLength
       ? stablePolls + 1
       : 0;
-    if (latest.answerLength > 0 && stablePolls >= 4 && latest.sendDisabled === false) {
+    if (latest.answerLength > 0 && stablePolls >= 20 && latest.sendDisabled === false) {
       return { scan: latest, sentBy };
     }
     const reason = classifyFailure(latest, context);
