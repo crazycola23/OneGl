@@ -102,6 +102,11 @@ export function collectProfileFindings(profile) {
   stringList(profile?.chat?.answerSelectors, "chat.answerSelectors", id, push);
   patternList(profile?.chat?.inProgressPatterns, "chat.inProgressPatterns", id, push);
   stringList(profile?.chat?.userBubbleSelectors, "chat.userBubbleSelectors", id, push);
+  // Optional. True means the send control disappears while the platform is answering, which is
+  // how a surface without a readable in-progress label still reports that it is busy.
+  if (profile?.chat?.busyWhenSendMissing !== undefined && typeof profile.chat.busyWhenSendMissing !== "boolean") {
+    errors.push(`${id}.chat.busyWhenSendMissing must be a boolean when present`);
+  }
   if (profile?.requiresStoredAuth === false) {
     stringList(profile?.quota?.exhaustedPatterns, "quota.exhaustedPatterns", id, push);
     if (!Number.isInteger(profile?.quota?.promptsPerWindow) || profile.quota.promptsPerWindow < 1) {

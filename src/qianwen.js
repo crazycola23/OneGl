@@ -27,10 +27,14 @@ function toRegExpList(entries = []) {
 function driverContext(profile) {
   const countPattern = toRegExpList([profile.citation.countPattern])[0] ?? null;
   return {
-    composer: profile.chat.composerSelectors[0],
-    send: profile.chat.sendSelectors[0],
+    // Joined so a build that drops one control still matches the others: the send button was
+    // measured under two different selectors on Chromium and on Camoufox.
+    composer: profile.chat.composerSelectors.join(","),
+    send: profile.chat.sendSelectors.join(","),
+    answerSelectors: profile.chat.answerSelectors ?? [],
     userBubbleSelectors: profile.chat.userBubbleSelectors,
     citationBlockSelectors: profile.citation.blockSelectors ?? [],
+    busyWhenSendMissing: profile.chat.busyWhenSendMissing === true,
     inProgressPatterns: toRegExpList(profile.chat.inProgressPatterns),
     countPattern,
     quota: toRegExpList(profile.quota?.exhaustedPatterns),
@@ -78,12 +82,14 @@ function scanQianwenPage(cfg) {
         return false;
       }
     });
-  const answerCards = [...document.querySelectorAll('[class*="message-card"]')]
+  const answerSelector = (cfg.answerSelectors ?? []).join(",") || '[class*="message-card"]';
+  const answerCards = [...document.querySelectorAll(answerSelector)]
     .filter((card) => visible(card) && !isUserBubble(card));
   const lastAnswer = answerCards.at(-1) ?? null;
 
   const composer = document.querySelector(cfg.composer);
   const send = document.querySelector(cfg.send);
+  const sendVisible = Boolean(send && visible(send));
 
   // "message-card" matches several nested and sibling cards within one turn, so taking the
   // last one is not "the assistant answer": measured that way the answer text was right while
@@ -105,6 +111,19 @@ function scanQianwenPage(cfg) {
     }
   }
 
+  // "停止回答" is the platform's own generation control, matched as button text rather than as
+  // a class, because classes are what changes between builds. Camoufox was measured to show no
+  // such control at all, so a profile can instead declare the busy *absence* of the send
+  // control - read only while an answer card exists, so the empty home page is never "busy".
+  const generatingByPattern = inProgress.length
+    ? [...document.querySelectorAll("button, [role=button]")]
+        .some((node) => visible(node) && inProgress.some((pattern) => pattern.test(textOf(node))))
+    : false;
+  const generatingByBusyControl = cfg.busyWhenSendMissing === true
+    && Boolean(composer && visible(composer))
+    && !sendVisible
+    && answerCards.length > 0;
+
   return {
     url: location.href,
     bodyText: textOf(document.body),
@@ -115,11 +134,10 @@ function scanQianwenPage(cfg) {
         || /cursor-not-allowed/.test(send.className)
       : null,
     // "停止回答" is the platform's own generation control, matched as button text rather than
-    // as a class, because classes are what changes between builds.
-    generating: inProgress.length
-      ? [...document.querySelectorAll("button, [role=button]")]
-          .some((node) => visible(node) && inProgress.some((pattern) => pattern.test(textOf(node))))
-      : false,
+    // as a class, because classes are what changes between builds. Camoufox was measured to show
+    // no such control at all, so a profile can instead declare the busy *absence* of the send
+    // control - which is only read while an answer card exists, never on the empty home page.
+    generating: generatingByPattern || generatingByBusyControl,
     answerLength: lastAnswer ? textOf(lastAnswer).length : 0,
     answer: lastAnswer ? textOf(lastAnswer) : null,
     links: [...anchors].map(([url, title]) => ({ url, title })),
@@ -135,8 +153,10 @@ function scanConfig(context) {
   return {
     composer: context.composer,
     send: context.send,
+    answerSelectors: context.answerSelectors ?? [],
     userBubbleSelectors: context.userBubbleSelectors,
     citationBlockSelectors: context.citationBlockSelectors,
+    busyWhenSendMissing: context.busyWhenSendMissing === true,
     inProgressSources: context.inProgressPatterns.map((pattern) => pattern.source),
     countPatternSource: context.countPattern?.source ?? null,
   };
@@ -296,9 +316,20 @@ async function submitAndWait(page, prompt, config, context) {
   // yet, and checking it then reads as "already finished".
   await page.waitForTimeout(6_000);
   let latest = null;
+  let stablePolls = 0;
   while (Date.now() < deadline) {
+    const previous = latest;
     latest = await scan(page, context);
     if (!latest.generating && latest.answerLength > 0) return { scan: latest, sentBy };
+    // Fallback that does not depend on knowing the platform's busy control: an answer that has
+    // stopped growing while the composer is usable again is finished. Four polls of the
+    // configured interval, so a slow build cannot be mistaken for a completed one.
+    stablePolls = previous && previous.answerLength > 0 && previous.answerLength === latest.answerLength
+      ? stablePolls + 1
+      : 0;
+    if (latest.answerLength > 0 && stablePolls >= 4 && latest.sendDisabled === false) {
+      return { scan: latest, sentBy };
+    }
     const reason = classifyFailure(latest, context);
     if (reason) {
       throw new DoubaoMvpError(reason, "千问在生成过程中报告了受限状态。", {

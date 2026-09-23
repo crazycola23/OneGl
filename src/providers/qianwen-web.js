@@ -53,15 +53,21 @@ export const qianwenWebProfile = {
   },
 
   chat: {
-    // 以下全部是 2026-09-22 tools/provider-phase0.js 匿名实测结果，不是推测。
+    // composer / send / answer 的选择器都跑过两轮实测：2026-09-22 在 Chromium 上，
+    // 2026-09-23 在**真正出货的引擎**（部署容器里的 Camoufox）上重测。第二次是必须的：
+    // 回答卡的类名在 Camoufox 上是 answer-common-card / qk-markdown，不再是 message-card，
+    // 而采集器当时把 message-card 写死在页面扫描里，于是每次提问都读不到答案、一路拖到超时。
     composerSelectors: ['[data-slate-editor="true"]'],
-    sendSelectors: ['[data-session-switch-target="send-query"]'],
-    // 提问卡类名可读（message-card-wrap question），回答卡类名带构建哈希
-    // （message-card-j_n6rq）。所以只能用 message-card 这个共同子串，再**排除**用户卡。
-    answerSelectors: ['[class*="message-card"]'],
-    userBubbleSelectors: ['[class*="message-card"][class*="question"]'],
-    // 完成判据是「停止回答」按钮消失，不是文本不再增长：实测有一次深度检索阶段正文
-    // 长时间只有几百字符仍在生成，用文本稳定会在空答案上收尾并把它记成真结论。
+    // Camoufox 实测两个都在：data-session-switch-target 与 aria-label="发送消息"。
+    sendSelectors: ['[data-session-switch-target="send-query"]', '[aria-label="发送消息"]'],
+    // 提问卡类名可读（message-card-wrap question），回答卡在 Chromium 上带构建哈希
+    // （message-card-j_n6rq）、在 Camoufox 上叫 answer-common-card；三种都留着，取并集。
+    answerSelectors: ['[class*="message-card"]', '[class*="answer-common-card"]', '[class*="qk-markdown"]'],
+    userBubbleSelectors: ['[class*="message-card"][class*="question"]', '[class*="question-card-wrap"]'],
+    // Camoufox 实测：回答期间**发送控件整体消失**，回答结束后回来（1→0→1）。这比「停止回答」
+    // 可靠 —— 后者在实测里自始至终没有出现过（stopCount 恒为 0），拿它当完成判据等于永远等。
+    busyWhenSendMissing: true,
+    // 旧判据（「停止回答」消失）保留给还能命中的构建；它与 busyWhenSendMissing 是或关系。
     inProgressPatterns: [/停止回答/],
     conversationUrlPattern: /\/chat\/([a-z0-9-]{16,})/,
   },
