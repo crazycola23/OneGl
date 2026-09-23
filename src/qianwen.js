@@ -314,13 +314,6 @@ async function submitAndWait(page, prompt, config, context) {
       { stage: "submit", sendDisabled: afterTyping.sendDisabled, promptSubmitted: false },
     );
   }
-  // Three tiers, plain click first. A live run showed this click reaching its full timeout
-  // while the send control was demonstrably enabled, so something other than the element's own
-  // state blocks it some of the time - most likely the home-page overlay, which was proven to
-  // intercept pointer events over the composer. The exact mechanism is NOT established: a
-  // later run completed at the first tier (submissionMethod=click). force skips the
-  // actionability check, dispatchEvent skips hit-testing; both were verified to land on this
-  // surface, and a click that never lands costs a whole run.
   // Order matters, and it is the measured order: on the shipped Camoufox build a pointer click
   // never lands (something intercepts it over the send control) while dispatching the button's
   // own click event and pressing Enter both submit. A *force* click is deliberately last and
@@ -354,17 +347,18 @@ async function submitAndWait(page, prompt, config, context) {
   while (Date.now() < deadline) {
     const previous = latest;
     latest = await scan(page, context);
-    if (!latest.generating && latest.answerLength > 0) return { scan: latest, sentBy };
-    // Fallback that does not depend on knowing the platform's busy control: an answer that has
-    // stopped growing while the composer is usable again is finished. The window is deliberately
-    // long: a generation that pauses for a few seconds mid-list is normal, and a short window
-    // captured truncated answers (measured: one run ended on "…仓桥直街128" because four polls
-    // of quiet were treated as completion). The busy signal above is the primary criterion; this
-    // only catches a build that loses it.
+    // Completion needs the answer to have stopped growing, whatever else the page says. The busy
+    // control alone is not enough: measured on Camoufox it comes back *during* a generation
+    // (between list items), so trusting it captured answers cut mid-sentence ("…体态问"). The
+    // platform also pauses for many seconds mid-generation on deep-search questions, so the quiet
+    // window has to outlast a pause rather than a repaint.
     stablePolls = previous && previous.answerLength > 0 && previous.answerLength === latest.answerLength
       ? stablePolls + 1
       : 0;
-    if (latest.answerLength > 0 && stablePolls >= 20 && latest.sendDisabled === false) {
+    if (latest.answerLength > 0 && stablePolls >= 20 && !latest.generating) {
+      return { scan: latest, sentBy };
+    }
+    if (latest.answerLength > 0 && stablePolls >= 40 && latest.sendDisabled === false) {
       return { scan: latest, sentBy };
     }
     const reason = classifyFailure(latest, context);
