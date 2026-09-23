@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
 
 import { ApiHttpError } from "../api/http.js";
+import { defaultProviderId, supportedProviderIds } from "../providers/index.js";
 import { runIdFor } from "../queue/batches.js";
 
-const SUPPORTED_PLATFORMS = new Set(["doubao"]);
 const METHODS = new Set(["stratified", "random"]);
 
 /** Caller-owned mapping keys must survive a round-trip through URLs, JSON and logs. */
@@ -149,12 +149,15 @@ export function normalizeTaskInput(input = {}, current = null) {
   }
 
   const platforms = input.platforms === undefined
-    ? current?.platforms ?? ["doubao"]
+    ? current?.platforms ?? [defaultProviderId()]
     : cleanStrings(input.platforms, "platforms", { required: true, max: 20 }).map((value) => value.toLowerCase());
-  const unsupported = platforms.filter((value) => !SUPPORTED_PLATFORMS.has(value));
+  // Validated against the adapter table. A literal here is how the API came to advertise a
+  // Qianwen channel it then refused with 422 while the collector was already able to run it.
+  const supported = new Set(supportedProviderIds());
+  const unsupported = platforms.filter((value) => !supported.has(value));
   if (unsupported.length) {
     throw new ApiHttpError(422, "unsupported_platform", `unsupported platform(s): ${unsupported.join(", ")}`, {
-      supported_platforms: [...SUPPORTED_PLATFORMS],
+      supported_platforms: [...supported].sort(),
     });
   }
 

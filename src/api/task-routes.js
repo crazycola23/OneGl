@@ -18,7 +18,7 @@ import { addQuestionEntries, countActiveKeywords } from "../project/keywords.js"
 import { batchProgress, enqueueBatch, stopBatch } from "../queue/batches.js";
 import { pauseBatch, resumeBatch } from "../queue/batch-control.js";
 import { evaluateBatchDetail } from "../report/evaluation.js";
-import { getProviderAdapter, supportedProviderIds } from "../providers/index.js";
+import { getProviderAdapter, defaultProviderId, supportedProviderIds } from "../providers/index.js";
 import { buildOptimizationHtmlReport } from "../report/html-report-optimization.js";
 import { buildReportContract, contractToRenderDetail } from "../reporting/report-contract.js";
 import {
@@ -62,6 +62,15 @@ const MANUAL_ACCOUNT_STATES = new Set([
   "paused",
 ]);
 
+/**
+ * The single provider a scheduled run can collect on. Service monitor plans carry no platform
+ * column and `src/monitor-worker.js` resolves their accounts with `provider = 'doubao'`, so a
+ * schedule naming any other platform would not just collect nothing - it would run the task's
+ * questions through Doubao and store them as Doubao observations. This is an implementation
+ * limit of the scheduler, not a statement about the registry: executions are unrestricted.
+ */
+const SCHEDULE_PROVIDER = "doubao";
+
 function positiveLimit(raw, fallback = 100, max = 500) {
   if (raw == null || raw === "") return fallback;
   const value = Number(raw);
@@ -101,7 +110,7 @@ function decodeRevisionCursor(raw) {
 export async function validateAccountIds(db, tenantId, accountIds, platforms) {
   if (!accountIds?.length) return [];
   const wanted = [...new Set(accountIds.map(String))];
-  const list = [...new Set((platforms?.length ? platforms : ["doubao"]).map((value) => String(value).toLowerCase()))];
+  const list = [...new Set((platforms?.length ? platforms : [defaultProviderId()]).map((value) => String(value).toLowerCase()))];
   const resolved = new Map();
   for (const platform of list) {
     for (const row of await resolveTenantAccountKeys(db, tenantId, wanted, platform, { strict: false })) {
@@ -339,17 +348,13 @@ export async function createScheduleResource(db, tenant, taskId, raw) {
   const internal = await getTaskInternal(db, tenant.id, taskId);
   if (!task || !internal) throw new ApiHttpError(404, "task_not_found", "task was not found");
   const schedule = raw.schedule ?? raw;
-  // Monitor plans carry no platform column and monitor-worker resolves their accounts as
-  // 'doubao' (src/monitor-worker.js), so a schedule on any other platform would not merely
-  // collect nothing - it would run this task's questions through Doubao and store them as
-  // Doubao observations. Closed until the plan itself names the platform it collects.
   const platforms = (task.platforms ?? []).map((value) => String(value).toLowerCase());
-  if (platforms.length !== 1 || platforms[0] !== "doubao") {
+  if (platforms.length !== 1 || platforms[0] !== SCHEDULE_PROVIDER) {
     throw new ApiHttpError(
       422,
       "unsupported_schedule_platform",
-      `schedules run only doubao for now; this task collects ${platforms.join(", ") || "no platform"}. Create an execution instead.`,
-      { supported: ["doubao"], platforms },
+      `schedules run only ${SCHEDULE_PROVIDER} for now; this task collects ${platforms.join(", ") || "no platform"}. Create an execution instead.`,
+      { supported: [SCHEDULE_PROVIDER], platforms },
     );
   }
   const accounts = raw.account_ids ?? task.account_ids;

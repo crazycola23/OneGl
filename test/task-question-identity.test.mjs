@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ApiHttpError } from "../src/api/http.js";
+import { supportedProviderIds } from "../src/providers/index.js";
 import {
   ASSIGNMENT_STATUSES,
   assignmentStatusFor,
@@ -80,6 +81,20 @@ test("legacy string-only questions still de-duplicate by text and stay backward 
   const inherited = normalizeTaskInput({ name: "旧任务" }, current);
   assert.deepEqual(inherited.questions, ["a", "b"]);
   assert.deepEqual(inherited.questionEntries.map((entry) => entry.externalId), [null, null]);
+});
+
+test("a task accepts every registered provider, not only the first one", () => {
+  // The Task API once validated against a literal `new Set(["doubao"])` while /v1/providers
+  // advertised the registry, so a Qianwen task was rejected by a service that could run it.
+  const registered = supportedProviderIds();
+  assert.ok(registered.length >= 2, `expected more than one provider, got ${registered.join(", ")}`);
+  for (const platform of registered) {
+    assert.deepEqual(normalizeTaskInput(taskInput(["问题"], { platforms: [platform] })).platforms, [platform]);
+  }
+  assert.throws(
+    () => normalizeTaskInput(taskInput(["问题"], { platforms: ["not-a-provider"] })),
+    (error) => throwsApi(error, 422, "unsupported_platform"),
+  );
 });
 
 test("question identity validation rejects bad ids and multi-repeat external_id submissions", () => {
