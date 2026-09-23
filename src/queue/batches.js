@@ -1,6 +1,6 @@
 import { Queue } from "bullmq";
 import { safetyConfig } from "../accounts/safety.js";
-import { accountQueueName, getRedis, isQueueConfigured } from "./connection.js";
+import { accountIdentity, accountQueueName, getRedis, isQueueConfigured } from "./connection.js";
 import { loadBatch, loadBatchAssignments } from "../sampling/batch.js";
 import { resolveBatchOutcome } from "./batch-status.js";
 
@@ -37,6 +37,22 @@ export function accountQueueNamesFor(assignments) {
   ))];
 }
 
+/**
+ * 按 (平台, 账号) 分组，一个组一条队列。
+ *
+ * 单独抽出来是因为这一步就是「两个平台会不会挤进同一条串行队列」的唯一决定点，
+ * 而 enqueueBatch 要到 Redis 连接建立之后才走到这里，测试环境里根本到不了。
+ */
+export function assignmentsByAccount(assignments) {
+  const byAccount = new Map();
+  for (const assignment of assignments) {
+    const key = accountIdentity(assignment.accountKey, assignment.provider);
+    if (!byAccount.has(key)) byAccount.set(key, []);
+    byAccount.get(key).push(assignment);
+  }
+  return byAccount;
+}
+
 export async function enqueueBatch(pool, batchId, { log = console.log } = {}) {
   if (!isQueueConfigured()) {
     return { started: false, reason: "REDIS_URL 未配置，无法使用后台队列" };
@@ -48,12 +64,7 @@ export async function enqueueBatch(pool, batchId, { log = console.log } = {}) {
     return { started: false, reason: "该批次没有分配任何提问" };
   }
 
-  const byAccount = new Map();
-  for (const assignment of assignments) {
-    const key = accountIdentity(assignment.accountKey, assignment.provider);
-    if (!byAccount.has(key)) byAccount.set(key, []);
-    byAccount.get(key).push(assignment);
-  }
+  const byAccount = assignmentsByAccount(assignments);
 
   // 幂等判定不只看状态：如果状态是 running 但队列里已经没有活任务了
   // （例如 Worker 崩溃、或上一次执行失败收尾），应当允许重新启动。
