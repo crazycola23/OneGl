@@ -180,6 +180,11 @@ function scanConfig(context) {
     busyWhenSendMissing: context.busyWhenSendMissing === true,
     inProgressSources: context.inProgressPatterns.map((pattern) => pattern.source),
     countPatternSource: context.countPattern?.source ?? null,
+    // Every field scanQianwenPage reads has to be listed here: this function is the only path
+    // across the page.evaluate boundary, and a field missing from it arrives as undefined -
+    // which is how the login-surface check silently did nothing while looking correct on both
+    // sides of the boundary.
+    loginSurfaceSelectors: context.loginSurfaceSelectors ?? [],
   };
 }
 
