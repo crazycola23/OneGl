@@ -1272,7 +1272,7 @@ export interface paths {
         put?: never;
         /**
          * Create daily/weekly task schedule
-         * @description Create daily/weekly task schedule
+         * @description Schedules run only on doubao for now: a monitor plan has no platform dimension and its accounts resolve as doubao, so a task collecting any other platform is rejected with unsupported_schedule_platform rather than collecting under the wrong one.
          */
         post: operations["createTasksByTaskIdSchedules"];
         delete?: never;
@@ -7055,6 +7055,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["SaasConflict"];
+            422: components["responses"]["SaasBadRequest"];
             /** @description API request rate limit exceeded. */
             429: {
                 headers: {

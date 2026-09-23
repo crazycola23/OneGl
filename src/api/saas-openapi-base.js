@@ -560,9 +560,14 @@ export function applySaasOpenApi(document) {
       },
       post: {
         summary: "Create daily/weekly task schedule",
+        description: "Schedules run only on doubao for now: a monitor plan has no platform dimension and its accounts resolve as doubao, so a task collecting any other platform is rejected with unsupported_schedule_platform rather than collecting under the wrong one.",
         parameters: [idempotencyHeader],
         requestBody: body({ $ref: "#/components/schemas/TaskScheduleCreate" }, { name: "每日豆包监测", schedule: { cadence: "daily", time_zone: "Asia/Shanghai", local_time: "09:00" }, account_ids: ["doubao-main"], enabled: true }),
-        responses: { 201: json("Schedule", { $ref: "#/components/schemas/ScheduleResource" }), 409: { $ref: "#/components/responses/SaasConflict" } },
+        responses: {
+          201: json("Schedule", { $ref: "#/components/schemas/ScheduleResource" }),
+          409: { $ref: "#/components/responses/SaasConflict" },
+          422: { $ref: "#/components/responses/SaasBadRequest" },
+        },
       },
     },
     "/v1/schedules/{scheduleId}": {

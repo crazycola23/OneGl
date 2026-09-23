@@ -88,14 +88,39 @@ function decodeRevisionCursor(raw) {
   }
 }
 
-async function validateAccountIds(db, tenantId, accountIds) {
+/**
+ * Validate a task's account ids on the platforms that task actually collects.
+ *
+ * Resolving against the default provider only was wrong twice over: a Qianwen task whose
+ * accounts are bound on Qianwen was rejected as `unknown_accounts`, while a Doubao binding
+ * the task could never use was accepted. An id that resolves fully on any one platform is
+ * good enough, because a single platform runs per execution.
+ *
+ * Exported for testing: this is where a cross-platform account mapping fails silently.
+ */
+export async function validateAccountIds(db, tenantId, accountIds, platforms) {
   if (!accountIds?.length) return [];
-  return resolveTenantAccountKeys(db, tenantId, accountIds);
+  const wanted = [...new Set(accountIds.map(String))];
+  const list = [...new Set((platforms?.length ? platforms : ["doubao"]).map((value) => String(value).toLowerCase()))];
+  const resolved = new Map();
+  for (const platform of list) {
+    for (const row of await resolveTenantAccountKeys(db, tenantId, wanted, platform, { strict: false })) {
+      if (!resolved.has(row.externalId)) resolved.set(row.externalId, row);
+    }
+  }
+  const missing = wanted.filter((id) => !resolved.has(id));
+  if (missing.length) {
+    throw new ApiHttpError(422, "unknown_accounts", "one or more accounts are not registered on the task's platforms", {
+      accounts: missing,
+      platforms: list,
+    });
+  }
+  return wanted.map((id) => resolved.get(id));
 }
 
 async function createTaskResource(db, tenant, raw) {
   const input = normalizeTaskInput(raw);
-  await validateAccountIds(db, tenant.id, input.accountIds);
+  await validateAccountIds(db, tenant.id, input.accountIds, input.platforms);
   const taskId = publicId("tsk");
   const internalName = internalProjectName(tenant, `task-${taskId}`);
   const client = await db.connect();
@@ -140,7 +165,7 @@ async function updateTaskResource(db, tenant, taskId, raw) {
   const internal = await getTaskInternal(db, tenant.id, taskId);
   if (!current || !internal) throw new ApiHttpError(404, "task_not_found", "task was not found");
   const input = normalizeTaskInput(raw, current);
-  await validateAccountIds(db, tenant.id, input.accountIds);
+  await validateAccountIds(db, tenant.id, input.accountIds, input.platforms);
 
   const lockedFields = ["target_brand", "questions", "platforms", "account_ids", "sampling", "sampling_method", "repeats"];
   const changesExecutionShape = lockedFields.some((key) => Object.hasOwn(raw, key));
@@ -308,18 +333,28 @@ async function getScheduleMapping(db, tenantId, scheduleId) {
   return rows[0] ?? null;
 }
 
-async function createScheduleResource(db, tenant, taskId, raw) {
+/** Exported for testing: the gate below is what stops a schedule collecting under another platform. */
+export async function createScheduleResource(db, tenant, taskId, raw) {
   const task = await getTask(db, tenant.id, taskId);
   const internal = await getTaskInternal(db, tenant.id, taskId);
   if (!task || !internal) throw new ApiHttpError(404, "task_not_found", "task was not found");
   const schedule = raw.schedule ?? raw;
-  // Schedules are deliberately NOT opened to anonymous surfaces yet: monitor plans have no
-  // platform column and monitor-worker resolves their accounts for 'doubao' only, so letting a
-  // Qianwen schedule be created would produce a plan that ticks and collects nothing.
-  // Opening this needs the plan's platform in the same change.
+  // Monitor plans carry no platform column and monitor-worker resolves their accounts as
+  // 'doubao' (src/monitor-worker.js), so a schedule on any other platform would not merely
+  // collect nothing - it would run this task's questions through Doubao and store them as
+  // Doubao observations. Closed until the plan itself names the platform it collects.
+  const platforms = (task.platforms ?? []).map((value) => String(value).toLowerCase());
+  if (platforms.length !== 1 || platforms[0] !== "doubao") {
+    throw new ApiHttpError(
+      422,
+      "unsupported_schedule_platform",
+      `schedules run only doubao for now; this task collects ${platforms.join(", ") || "no platform"}. Create an execution instead.`,
+      { supported: ["doubao"], platforms },
+    );
+  }
   const accounts = raw.account_ids ?? task.account_ids;
-  await validateAccountIds(db, tenant.id, accounts);
   if (!accounts.length) throw new ApiHttpError(422, "account_required", "schedule requires at least one account_id");
+  await validateAccountIds(db, tenant.id, accounts, platforms);
   const plan = await createMonitorPlan(db, {
     tenantId: tenant.id,
     projectId: internal.project_id,
@@ -681,7 +716,7 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
       const task = await getTask(db, tenant.id, mapping.task_public_id);
       const schedule = body.schedule ?? body;
       const accounts = body.account_ids ?? undefined;
-      if (accounts !== undefined) await validateAccountIds(db, tenant.id, accounts);
+      if (accounts !== undefined) await validateAccountIds(db, tenant.id, accounts, task?.platforms);
       await updateMonitorPlan(db, {
         tenantId: tenant.id,
         planId: Number(mapping.monitor_plan_id),

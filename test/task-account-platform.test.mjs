@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { checkExecutionAccounts } from "../src/api/task-routes.js";
+import { checkExecutionAccounts, validateAccountIds } from "../src/api/task-routes.js";
 import { ApiHttpError } from "../src/api/http.js";
 
 /**
@@ -96,5 +96,45 @@ test("an account-less request is rejected with the platform named", async () => 
   await assert.rejects(
     () => checkExecutionAccounts(db, 7, [], "qianwen"),
     (error) => error.code === "account_required" && /qianwen/.test(error.message),
+  );
+});
+
+/**
+ * Task creation validates account_ids before any execution exists, and it used to resolve
+ * them with the default provider: a Qianwen task holding Qianwen accounts was rejected as
+ * "not registered", so the second platform could never enter the product API at all.
+ */
+test("a Qianwen task validates its accounts on Qianwen", async () => {
+  const db = fakeDb({ bindings: BINDINGS, accounts: ACCOUNTS });
+  const resolved = await validateAccountIds(db, 7, ["acct-qw"], ["qianwen"]);
+  assert.deepEqual(resolved.map((row) => row.accountKey), ["lane_01"]);
+});
+
+test("an omitted platform still means Doubao, so existing callers do not change", async () => {
+  const db = fakeDb({ bindings: BINDINGS, accounts: ACCOUNTS });
+  await assert.rejects(
+    () => validateAccountIds(db, 7, ["acct-qw"]),
+    (error) => error.code === "unknown_accounts" && error.details.accounts.includes("acct-qw"),
+  );
+});
+
+test("a multi-platform task accepts accounts bound on either of its platforms", async () => {
+  // One platform runs per execution, and that execution re-validates against its own
+  // platform, so task creation only has to know the id exists on some platform in the set.
+  const db = fakeDb({ bindings: BINDINGS, accounts: ACCOUNTS });
+  const resolved = await validateAccountIds(db, 7, ["acct-main", "acct-qw"], ["doubao", "qianwen"]);
+  assert.deepEqual(resolved.map((row) => row.externalId), ["acct-main", "acct-qw"]);
+});
+
+test("an id bound on none of the task's platforms is named, with the platforms tried", async () => {
+  const db = fakeDb({ bindings: BINDINGS, accounts: ACCOUNTS });
+  await assert.rejects(
+    () => validateAccountIds(db, 7, ["acct-main", "acct-nope"], ["doubao", "qianwen"]),
+    (error) => {
+      assert.equal(error.code, "unknown_accounts");
+      assert.deepEqual(error.details.accounts, ["acct-nope"]);
+      assert.deepEqual(error.details.platforms, ["doubao", "qianwen"]);
+      return true;
+    },
   );
 });

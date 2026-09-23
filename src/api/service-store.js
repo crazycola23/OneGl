@@ -346,7 +346,7 @@ export async function listTenantAccounts(pool, tenantId) {
   )).rows;
 }
 
-export async function resolveTenantAccountKeys(pool, tenantId, externalIds, provider = "doubao") {
+export async function resolveTenantAccountKeys(pool, tenantId, externalIds, provider = "doubao", { strict = true } = {}) {
   const wanted = [...new Set(externalIds.map(String))];
   const { rows } = await pool.query(
     `SELECT external_id, account_key
@@ -356,10 +356,12 @@ export async function resolveTenantAccountKeys(pool, tenantId, externalIds, prov
   );
   const map = new Map(rows.map((row) => [row.external_id, row.account_key]));
   const missing = wanted.filter((id) => !map.has(id));
-  if (missing.length) {
+  if (missing.length && strict) {
     throw new ApiHttpError(422, "unknown_accounts", "one or more accounts are not registered", { accounts: missing });
   }
-  return wanted.map((id) => ({ externalId: id, accountKey: map.get(id) }));
+  // strict=false answers "what does this platform know about these ids?" instead of refusing,
+  // so a caller can union several platforms and report the gaps itself.
+  return wanted.filter((id) => map.has(id)).map((id) => ({ externalId: id, accountKey: map.get(id) }));
 }
 
 export async function accountExternalIdMap(pool, tenantId) {
