@@ -309,7 +309,7 @@ async function handleJob(job, token) {
   // 关键词正文优先取批次内快照。必须在账号 gate 之前拿到，因为 DB-only replay
   // 需要用同一份 prompt identity 验证本地证据，但绝不能因此启动浏览器或消耗配额。
   const { rows: assignmentRows } = await pool.query(
-    `SELECT COALESCE(sbp.prompt_text, p.prompt) AS prompt, sbp.category
+    `SELECT COALESCE(sbp.prompt_text, p.prompt) AS prompt, sbp.category, p.external_id AS prompt_external_id
        FROM sampling_batch_prompts sbp
        LEFT JOIN prompts p ON p.id = sbp.prompt_id
       WHERE sbp.batch_id = $1 AND sbp.selection_index = $2`,
@@ -317,8 +317,11 @@ async function handleJob(job, token) {
   );
   const promptText = assignmentRows[0]?.prompt;
   if (!promptText) throw new UnrecoverableError(`批次 ${batchId} 缺少分配 ${selectionIndex} 的关键词`);
+  // The prompt's own identity, not this run's. Passing the run token here made persistence insert a
+  // *new* prompt row for a text that already existed (the upsert keys on text + external_id), so
+  // every collected run enlarged the pool and the next execution sampled the bigger pool.
   const validation = {
-    caseId: runToken,
+    caseId: assignmentRows[0]?.prompt_external_id ?? null,
     targetScenario: assignmentRows[0]?.category ?? null,
     tags: assignmentRows[0]?.category ? [assignmentRows[0].category] : [],
   };

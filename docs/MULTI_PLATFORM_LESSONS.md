@@ -1,0 +1,82 @@
+# 多平台接入与上线：踩坑复盘
+
+写给后面接平台、上线、改判据的人。每条都是**实测过的**，不是推测；症状 → 根因 → 经验，能省的就省掉。
+
+## 1. 测量：必须量在出货引擎上
+
+**症状**：千问每条提问都等满 319 秒然后 `DOBAO_TIMEOUT`，一条答案都拿不到。
+
+**根因**：profile（选择器与完成判据）是在 **Chromium** 上量的，线上跑的是 **Camoufox**。两个引擎上同一页面结构不同：
+- 回答卡在 Chromium 是 `message-card-*`，在 Camoufox 是 `answer-common-card` / `qk-markdown`；
+- Chromium 上用来判完成的「停止回答」按钮，**在 Camoufox 上根本不存在**（整轮 `stopCount` 恒为 0）。
+
+**经验**
+- 改判据前先把 `tools/provider-phase0.js` 放在**出货容器里**跑：`docker exec <onegl-worker> node tools/provider-phase0.js --profile qianwen-web --stage anonymous|chat`。同镜像 = 同引擎，量的才作数。
+- 报错码也可能是错的：千问失败报的是 `DOUBAO_TIMEOUT`/`PAGE_CHANGED`，别按名字推断平台。
+
+## 2. 判据：逐个单独测，不要三段兜底一起放
+
+**症状**：运行记录写着 `prompt_submitted=true`，却等满超时也没有答案。
+
+**根因**：发送链是「click → force click → dispatch → Enter」。在 Camoufox 上指针点击**永远落不到按钮上**（被首页浮层拦截），而 **force click 会"成功"返回但并没有点到按钮** —— 于是运行以为提交了，实际什么都没发出去。
+
+**经验**
+- 每种发送方式**单独**测一遍再决定顺序。实测结论：`click` 永不生效、`dispatchEvent('click')` 与 `keyboard.press('Enter')` 生效。把不可信的 force click 放到最后。
+- 同理适用于一切"兜底链"：兜底里只要有一档会**假成功**，整条链的语义就废了。
+
+## 3. 完成判据：不能只靠单一信号，也不能只靠"安静"
+
+**症状**：部分运行"成功"了，但答案**被截断**：结尾停在「…体态问」「…仓桥直街128」，而同一批里另一条是完整的 1221 字、以结论收尾。
+
+**根因**（两层，都实测过）
+- 平台的**忙信号会在生成中途回来**（列表项之间发送控件重新出现），所以"不忙=完成"会把答案拦腰截断；
+- 平台的**深检索阶段会长时间静止**（正文几百字不动），所以"文本安静 N 秒=完成"同样会提前收尾。
+
+**经验**
+- 用双门：`文本长度停止增长 ≥ 20 个轮询` 且 `平台不忙`，另一条 `稳定 ≥ 40 轮询 且 输入框可用` 作为没有忙信号时的兜底。窗口必须**长于平台的中途停顿**，不是长于一次重绘。
+- 答案容器可能是"**存在但隐藏**"60–100 秒后才显现（`len 0 / visible false`），读取时要按可见性过滤。
+- **被截断的答案比失败更危险**：它看起来是成功，却让品牌提及率、引用数统计失真。放量前必须抽查答案**结尾是否完整**，不能只看 `status=success`。
+
+## 4. 账号与限额
+
+- **无登录面不应背账号限额**。豁免要按"面"绑定（`isCredentialFreeSurface(provider)`），只对 `requiresStoredAuth === false` 的平台去掉每日/每小时上限、运行间隔门与失败冷却；`enabled` 开关仍是运营的唯一硬开关。豆包这类真账号**全量保留**限额。
+- **解除冷却不止清一个字段**。worker 是按存储的 `pause_reason`/`paused_at` 判定「连续失败 3 次，冷却 60 分钟」的，只清 `cooldown_until` + `consecutive_failures` 会让每条任务都 `job-skipped-permanent`。正确做法：`status`、`cooldown_until`、`consecutive_failures`、`paused_at`、`pause_reason` 一起清，**并重启 worker**（它会缓存账号状态）。
+- worker 启动横幅会打印真实限额与间隔（每日 40 次、30–90 秒随机）。做 ETA 就用它，别猜。
+
+## 5. 部署：最容易白忙半天的一条
+
+**症状**：同一个库里、同一份代码，**本地跑 202，部署端 500**；而 500 与采集毫无关系。
+
+**根因**：`/data/onegl` 是**同步过去的源码树，不是 git checkout**。每次只 scp 自己改的文件，其他地方会悄悄停在旧版本 —— 这次是旧 `src/queue/batches.js` 用了 `accountIdentity` 却没 import，于是任何"创建执行"的请求都 `ReferenceError` → 500。
+
+**经验**
+- **同步就同步整棵树**（`tar czf - --exclude=.git --exclude=node_modules --exclude=vendor --exclude=.env … | ssh … 'tar xzf - -C /data/onegl'`），别一个文件一个文件搬；`vendor/`、`deploy/.env.production` 是服务器独有的，绝不能删。
+- 生产模式**不写日志也不回 details**：用**同镜像 + `NODE_ENV=development`** 起一个临时容器复现（务必 `--network onegl-net`，否则 `onegl-redis`/`onegl-postgres` 主机名解析不到），拿到 `details.message` 后删掉容器。
+- 改 worker 要重建镜像、并把 `onegl-worker:latest` 从同一镜像重新打 tag，再重建 **worker** 容器 —— 只重建 api 不会让采集行为改变。
+- `--force-recreate` 遇到容器名冲突时，先 `docker rm -f` 目标容器再 `up -d`；否则会出现 `c59ad70181e4_onegl-app-onegl-api-1` 这种带前缀的临时名。
+- 容器内改动（`docker cp`、临时脚本）不落镜像，重建即丢；验证脚本记得 `rm`。
+
+## 6. 数据模型：运行身份 ≠ 问题身份
+
+**症状**：同一任务的批次请求量自己往上长：100 → 103 → 106 → 109 → 114；实测该项目 122 行 prompts，其中 23 行的 `external_id` 形如 `b53_i2`。
+
+**根因**：`prompts` 的唯一键是 `(project_id, prompt_md5, external_id)`（这是给「同文本不同观测」用的，设计如此）。而 worker 把**运行令牌**当成了 prompt 的 external_id 传下去（`caseId: runToken`），运行令牌每次都不同 → **每跑一条就插一行 prompt**；批次大小取自"活跃 prompt 数"，于是下一轮又更大。
+
+**经验**
+- 运行持久化只能带**问题自己的身份**（`sampling_batch_prompts → prompts.external_id`），没有就传 null（走文本去重）。
+- 清理只能 `enabled = false`：`runs.prompt_id` 是 `ON DELETE CASCADE`，**删 prompt 会连带删掉已采集的 runs**。实测：22 个项目共 80 行受污染，停用后任务项目回到 100 条活跃。
+- 回归钉子见 `test/queue-identity.test.mjs`：禁止 `caseId: runToken`，要求查询里带 `prompt_external_id`。
+
+## 7. 伴生产品（SCRM 工作台）的硬限制
+
+- 单次问题生成上限 **25 条**（`/geo/questions` 与「发起检测」第 2 步都是），要 100 条得跑 4 轮；
+- 工作台→OneGl 的探测接口（`/prod-api/geo/onegl/accounts`）一旦失败，「确认并开始检测」会直接禁用并显示"豆包采集暂不可用"，**不是任务坏了**；
+- 生成任务会卡在"运行中"且界面只有「删除」没有「停止」。
+
+## 8. 放量前检查清单
+
+1. 整树同步 → 重建镜像 → 重建 **api 与 worker** 两个容器；
+2. 确认 `/v1/providers` 里有目标平台、`/readyz` 为 ready、容器 env 里超时值符合预期；
+3. **小批量真跑 3–5 条**（用生产路径，不是手工探针）；
+4. 逐条检查：`status`、`error_code`、**答案字数与结尾是否完整**、`login_state`、引用数；
+5. 连续 N 条都完整，再放全量；否则先改判据，别用配额换一堆看似成功的废样本。

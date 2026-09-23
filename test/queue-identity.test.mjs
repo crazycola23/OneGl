@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -65,4 +67,13 @@ test("a key that is not an identity is rejected instead of defaulting to Doubao"
   for (const bad of ["account_01", ":account_01", "doubao:", null, undefined]) {
     assert.throws(() => parseAccountIdentity(bad), /账号身份串不合法/);
   }
+});
+
+test("a run never labels its prompt with the run's own token", async () => {
+  // The prompt's external_id has to be the question's identity. Persisting with the run token
+  // keys the upsert on (text, run token), which is unique per run, so every collected run
+  // inserted another prompt row and the next execution sampled a bigger pool (100 → 103 → 114…).
+  const worker = await readFile(path.resolve("src/worker.js"), "utf8");
+  assert.doesNotMatch(worker, /caseId:\s*runToken/);
+  assert.match(worker, /prompt_external_id/);
 });
