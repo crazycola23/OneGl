@@ -203,10 +203,24 @@ async function waitForClickableComposer(page, context, { timeoutMs = 30_000 } = 
     try {
       await composer.click({ trial: true, timeout: 2_000 });
       await composer.click({ timeout: 5_000 });
-      return { clickable: true, dismissalAttempts };
+      return { clickable: true, dismissalAttempts, mode: "click" };
     } catch {
       // not clickable yet
     }
+    // Measured on the shipped Camoufox build: the home page keeps something intercepting pointer
+    // events over the composer, so a click never lands, while focusing the editor through the DOM
+    // and typing with the keyboard does reach it and the answer comes back. Accept focus as
+    // usable - submitAndWait still verifies the text arrived, so this cannot record an empty
+    // answer as a real one (the send control only enables once the editor holds the prompt).
+    const focused = await page
+      .evaluate((selector) => {
+        const editor = document.querySelector(selector);
+        if (!editor) return false;
+        editor.focus();
+        return document.activeElement === editor;
+      }, context.composer)
+      .catch(() => false);
+    if (focused) return { clickable: true, dismissalAttempts, mode: "focus" };
     if (Date.now() > deadline) return { clickable: false, dismissalAttempts };
     dismissalAttempts += 1;
     await page.keyboard.press("Escape").catch(() => undefined);
@@ -276,10 +290,20 @@ async function submitAndWait(page, prompt, config, context) {
     .evaluate(() => document.activeElement?.getAttribute("data-slate-editor") === "true")
     .catch(() => false);
   if (!focused) {
-    // No force: force skips the hit-test and lands the click on whatever overlay is on top.
-    await composer.click({ timeout: 6_000 });
+    if (clickable.mode === "focus") {
+      await page.evaluate((selector) => document.querySelector(selector)?.focus(), context.composer);
+    } else {
+      // No force: force skips the hit-test and lands the click on whatever overlay is on top.
+      await composer.click({ timeout: 6_000 });
+    }
   }
-  await composer.pressSequentially(prompt, { delay: 25 });
+  if (clickable.mode === "focus") {
+    // Typed at the keyboard rather than through the locator: that is the path measured to work
+    // when a pointer click cannot reach the editor at all.
+    await page.keyboard.type(prompt, { delay: 25 });
+  } else {
+    await composer.pressSequentially(prompt, { delay: 25 });
+  }
 
   const afterTyping = await scan(page, context);
   if (afterTyping.sendDisabled !== false) {
@@ -306,8 +330,15 @@ async function submitAndWait(page, prompt, config, context) {
         await send.click({ force: true, timeout: 4_000 });
         return "force_click";
       } catch {
-        await send.dispatchEvent("click", undefined, { timeout: 4_000 });
-        return "dispatch_click";
+        try {
+          await send.dispatchEvent("click", undefined, { timeout: 4_000 });
+          return "dispatch_click";
+        } catch {
+          // Last resort, and the path measured to work on Camoufox where the pointer never
+          // reaches the button: send from the editor itself.
+          await page.keyboard.press("Enter");
+          return "enter";
+        }
       }
     });
 

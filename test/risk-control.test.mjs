@@ -133,3 +133,42 @@ test("risk audit marks aggressive cadence and parallelism as high risk", () => {
   assert.ok(report.findings.some((item) => item.area === "parallelism" && item.level === "high"));
   assert.ok(report.findings.some((item) => item.area === "cadence" && item.level === "high"));
 });
+
+test("a credential-free surface is exempt from the caps, the spacing and the cooldown", () => {
+  const now = at("2026-09-14T10:00:00Z");
+  const limits = {
+    accountDailyLimit: 40,
+    accountHourlyLimit: 10,
+    minInterRunMs: 30_000,
+    cooldownMinutes: 60,
+    maxConsecutiveFailures: 3,
+  };
+  // Every gate that exists to keep a real account from being blocked, all tripped at once.
+  const wornOut = {
+    provider: "qianwen",
+    enabled: true,
+    status: "cooldown",
+    runs_today: 999,
+    runs_today_date: "2026-09-14",
+    last_run_at: at("2026-09-14T09:59:59Z"),
+    runs_last_hour: 99,
+    cooldown_until: at("2026-09-14T11:00:00Z"),
+    paused_at: at("2026-09-14T09:00:00Z"),
+    pause_reason: "连续失败 3 次，冷却 60 分钟",
+  };
+  assert.equal(classifyAccountState(wornOut, { now, config: limits }).kind, AVAILABILITY.AVAILABLE);
+
+  // The operator's own switch still stops the lane: that is the only claim left on a surface
+  // with no credential behind it.
+  assert.equal(
+    classifyAccountState({ ...wornOut, enabled: false }, { now, config: limits }).kind,
+    AVAILABILITY.PERMANENT,
+  );
+
+  // The exemption is the surface's, not a global loosening: the same state on an account-driven
+  // provider is still refused.
+  assert.notEqual(
+    classifyAccountState({ ...wornOut, provider: "doubao" }, { now, config: limits }).kind,
+    AVAILABILITY.AVAILABLE,
+  );
+});

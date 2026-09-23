@@ -6,6 +6,7 @@
  *
  * 这里不做任何验证码识别、行为伪装或限制规避。
  */
+import { isCredentialFreeSurface } from "../providers/index.js";
 
 function intEnv(name, fallback, min = 1) {
   const raw = process.env[name];
@@ -211,6 +212,15 @@ export function classifyAccountState(state, { config = safetyConfig(), now = new
   if (!state.enabled) {
     return { kind: AVAILABILITY.PERMANENT, reason: "账号已被禁用", retryAt: null };
   }
+
+  // A surface with no credential behind it cannot be burned, so nothing here protects anything:
+  // the caps, the spacing and the failure cooldown exist to keep a *real* account from being
+  // blocked by the platform. Only the operator's enabled flag still gates such a lane (and a
+  // manual pause is expressed by disabling it).
+  if (isCredentialFreeSurface(state.provider)) {
+    return { kind: AVAILABILITY.AVAILABLE, reason: null, retryAt: null };
+  }
+
   if (state.paused_at && !state.cooldown_until) {
     return {
       kind: AVAILABILITY.PERMANENT,
@@ -364,6 +374,12 @@ export async function recordAccountFailure(
       failures: null,
       infrastructure: true,
     };
+  }
+  // A failure on a credential-free surface is a bug or a bad day on the site, never a spent
+  // credential - cooling the lane down only stops the work it exists to do. The failed run is
+  // still recorded; what changes is that the lane keeps taking the next question.
+  if (isCredentialFreeSurface(provider)) {
+    return { blocked: false, status: "degraded", failures: null, unmetered: true };
   }
 
   const blocking = ACCOUNT_BLOCKING_CODES[errorCode];

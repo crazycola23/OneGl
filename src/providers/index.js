@@ -70,3 +70,18 @@ export function supportedProviderIds() {
 export function defaultProviderId() {
   return supportedProviderIds()[0] ?? "doubao";
 }
+
+/**
+ * True when a provider collects from a surface that needs no credential.
+ *
+ * Such a lane has no login to protect, so the per-account daily/hourly caps, the inter-run
+ * spacing and the consecutive-failure cooldown would only throttle work that cannot burn an
+ * account. The operator's `enabled` flag stays the way to stop it.
+ */
+export function isCredentialFreeSurface(provider) {
+  try {
+    return getProviderAdapter(provider)?.requiresStoredAuth === false;
+  } catch {
+    return false;
+  }
+}
