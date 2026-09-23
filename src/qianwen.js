@@ -83,9 +83,16 @@ function scanQianwenPage(cfg) {
       }
     });
   const answerSelector = (cfg.answerSelectors ?? []).join(",") || '[class*="message-card"]';
-  const answerCards = [...document.querySelectorAll(answerSelector)]
+  const candidates = [...document.querySelectorAll(answerSelector)]
     .filter((card) => visible(card) && !isUserBubble(card));
-  const lastAnswer = answerCards.at(-1) ?? null;
+  // One answer is rendered as several *sibling* cards on this surface, so taking the last match
+  // reads only the final fragment - measured: a "successful" run stored a 26-character answer
+  // (and another 15 characters) while the page held the whole thing. Keep the outermost cards
+  // (a card nested inside another is already covered) and read them in document order.
+  const answerCards = candidates.filter(
+    (card) => !candidates.some((other) => other !== card && other.contains(card)),
+  );
+  const answerText = answerCards.map((card) => textOf(card)).filter(Boolean).join("\n").trim();
 
   const composer = document.querySelector(cfg.composer);
   const send = document.querySelector(cfg.send);
@@ -104,7 +111,7 @@ function scanQianwenPage(cfg) {
     }
   });
   const anchors = new Map();
-  for (const source of [lastAnswer, ...citationBlocks].filter(Boolean)) {
+  for (const source of [...answerCards, ...citationBlocks]) {
     for (const anchor of source.querySelectorAll("a[href]")) {
       if (anchors.has(anchor.href)) continue;
       anchors.set(anchor.href, textOf(anchor).slice(0, 200) || anchor.getAttribute("title") || null);
@@ -138,8 +145,8 @@ function scanQianwenPage(cfg) {
     // no such control at all, so a profile can instead declare the busy *absence* of the send
     // control - which is only read while an answer card exists, never on the empty home page.
     generating: generatingByPattern || generatingByBusyControl,
-    answerLength: lastAnswer ? textOf(lastAnswer).length : 0,
-    answer: lastAnswer ? textOf(lastAnswer) : null,
+    answerLength: answerText.length,
+    answer: answerText || null,
     links: [...anchors].map(([url, title]) => ({ url, title })),
     countTexts: countPattern
       ? [...document.querySelectorAll("[data-card_name]")]
