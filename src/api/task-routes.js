@@ -220,9 +220,13 @@ export async function checkExecutionAccounts(db, tenantId, externalIds, platform
     [keys, platform],
   );
   const byKey = new Map(rows.map((row) => [row.account_key, row]));
+  // A surface that needs no stored auth cannot be "awaiting login": its lane has no session to
+  // restore, so a login_required status there is a provisioning artifact, not a task for a
+  // human. Enabled-ness and cooldown still apply - those govern load, not credentials.
+  const needsStoredAuth = getProviderAdapter(platform).requiresStoredAuth !== false;
   const blocked = resolved.flatMap((item) => {
     const row = byKey.get(item.accountKey);
-    if (!row || !row.enabled || MANUAL_ACCOUNT_STATES.has(row.status)) {
+    if (!row || !row.enabled || (needsStoredAuth && MANUAL_ACCOUNT_STATES.has(row.status))) {
       return [{ account_id: item.externalId, status: row?.status ?? "unknown", cooldown_until: row?.cooldown_until ?? null }];
     }
     return [];
@@ -262,6 +266,7 @@ async function createExecutionResource(db, tenant, taskId, raw = {}, triggerType
       provider: platform,
       externalId: `anon-${platform}`,
       label: `${platform} anonymous lane`,
+      anonymousSurface: true,
     });
     accountIds = [lane.external_id];
   }

@@ -219,7 +219,7 @@ function internalAccountKey(tenantId, provider, externalId) {
   return `t${tenantId}_${digest}`;
 }
 
-export async function ensureTenantAccount(pool, { tenantId, provider = "doubao", externalId, label = null }) {
+export async function ensureTenantAccount(pool, { tenantId, provider = "doubao", externalId, label = null, anonymousSurface = false }) {
   const external = String(externalId ?? "").trim();
   if (!external) throw new ApiHttpError(422, "invalid_account_id", "account_id is required");
 
@@ -229,13 +229,33 @@ export async function ensureTenantAccount(pool, { tenantId, provider = "doubao",
       WHERE b.tenant_id = $1 AND b.provider = $2 AND b.external_id = $3`,
     [tenantId, provider, external],
   );
-  if (existing.rows[0]) return existing.rows[0];
+  if (existing.rows[0]) {
+    // A lane for a surface with no login cannot be waiting to log in. Repair it on sight:
+    // the row is ours by construction (`anon-<provider>`), and leaving it login_required both
+    // blocks every execution and misreports the surface in the account view.
+    if (anonymousSurface) {
+      await pool.query(
+        `UPDATE accounts
+            SET status = 'healthy', login_state = 'anonymous', updated_at = now()
+          WHERE provider = $1 AND account_key = $2
+            AND (status <> 'healthy' OR login_state <> 'anonymous')`,
+        [provider, existing.rows[0].account_key],
+      );
+    }
+    return existing.rows[0];
+  }
 
   const accountKey = internalAccountKey(tenantId, provider, external);
   await pool.query(
-    `INSERT INTO accounts (account_key, provider, label)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (provider, account_key) DO UPDATE SET label = COALESCE(EXCLUDED.label, accounts.label), updated_at = now()`,
+    anonymousSurface
+      ? `INSERT INTO accounts (account_key, provider, label, status, login_state)
+         VALUES ($1, $2, $3, 'healthy', 'anonymous')
+         ON CONFLICT (provider, account_key) DO UPDATE
+           SET label = COALESCE(EXCLUDED.label, accounts.label),
+               status = 'healthy', login_state = 'anonymous', updated_at = now()`
+      : `INSERT INTO accounts (account_key, provider, label)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (provider, account_key) DO UPDATE SET label = COALESCE(EXCLUDED.label, accounts.label), updated_at = now()`,
     [accountKey, provider, label],
   );
   const { rows } = await pool.query(

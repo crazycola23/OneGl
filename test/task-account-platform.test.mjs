@@ -99,6 +99,27 @@ test("an account-less request is rejected with the platform named", async () => 
   );
 });
 
+test("an anonymous lane marked login_required does not block its own surface", async () => {
+  // The lane is provisioned by the API for a surface that has no login, so a login_required
+  // status there says nothing about a human task - and used to refuse every Qianwen execution.
+  const db = fakeDb({
+    bindings: [{ provider: "qianwen", external_id: "anon-qianwen", account_key: "lane_anon" }],
+    accounts: [{ provider: "qianwen", account_key: "lane_anon", enabled: true, status: "login_required", cooldown_until: null }],
+  });
+  await assert.doesNotReject(() => checkExecutionAccounts(db, 7, ["anon-qianwen"], "qianwen"));
+});
+
+test("a disabled anonymous lane is still refused", async () => {
+  const db = fakeDb({
+    bindings: [{ provider: "qianwen", external_id: "anon-qianwen", account_key: "lane_anon" }],
+    accounts: [{ provider: "qianwen", account_key: "lane_anon", enabled: false, status: "healthy", cooldown_until: null }],
+  });
+  await assert.rejects(
+    () => checkExecutionAccounts(db, 7, ["anon-qianwen"], "qianwen"),
+    (error) => error.code === "account_action_required" && error.details.accounts[0].account_id === "anon-qianwen",
+  );
+});
+
 /**
  * Task creation validates account_ids before any execution exists, and it used to resolve
  * them with the default provider: a Qianwen task holding Qianwen accounts was rejected as
