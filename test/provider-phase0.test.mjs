@@ -193,11 +193,17 @@ test("an anonymous surface is judged on quota, not on a login it will never have
   assert.equal(gaps.some((entry) => entry.includes("login.sessionCookies")), false);
   // Everything the driver reads has been observed, so nothing integrity-critical is missing.
   assert.deepEqual(gaps, []);
-  // The unobserved cap copy is reported, but it costs explanation rather than correctness:
-  // a spent allowance surfaces as a timeout that will not retry, not as a wrong sample.
-  assert.deepEqual(warnings, [
-    "qianwen-web.quota.exhaustedPatterns must be a non-empty array of strings",
-  ]);
+  // The cap copy is no longer unobserved: a real 100-question batch hit the wall at ~37
+  // anonymous prompts and the profile now carries the measured text, so nothing is reported.
+  assert.deepEqual(warnings, []);
+
+  // The declared copy is the wall that was actually on screen (screenshot, 2026-09-23 22:58,
+  // after ~37 anonymous prompts): the surface echoed the prompt but answered nothing for 480s.
+  const wallPatterns = qianwenWebProfile.quota.exhaustedPatterns.map((value) => new RegExp(value));
+  assert.ok(wallPatterns.some((pattern) => pattern.test("登录解锁完整功能")));
+  // It must not fire on the benign login hint that was already on the anonymous page, which the
+  // Phase 0 capture mistook for the wall's absence.
+  assert.equal(wallPatterns.some((pattern) => pattern.test("登录可同步历史对话，解锁更多功能")), false);
 
   const questions = captureOpenQuestions({ requiresStoredAuth: false, answerCandidates: [{ selector: ".x" }] });
   assert.ok(questions.some((entry) => /额度/.test(entry)));
