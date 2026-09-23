@@ -40,6 +40,7 @@ function driverContext(profile) {
     quota: toRegExpList(profile.quota?.exhaustedPatterns),
     captcha: toRegExpList(profile.login.captchaPatterns),
     restricted: toRegExpList(profile.login.restrictedPatterns),
+    loginSurfaceSelectors: profile.login.loginSurfaceSelectors ?? [],
     interstitials: profile.interstitials?.dismissSelectors ?? ['button:has-text("关闭")', '[aria-label="关闭"]'],
   };
 }
@@ -131,9 +132,22 @@ function scanQianwenPage(cfg) {
     && !sendVisible
     && answerCards.length > 0;
 
+  // The wall's own copy lives inside a cross-origin iframe (passport.qianwen.com), so no amount
+  // of body-text scanning can read it - measured on a walled page whose screenshot shows
+  // 「登录解锁完整功能」 while `document.body.innerText` contains none of it. The iframe is
+  // injected when the wall appears and is absent on healthy runs, so its presence is the signal.
+  const loginSurfacePresent = (cfg.loginSurfaceSelectors ?? []).some((selector) => {
+    try {
+      return [...document.querySelectorAll(selector)].some((node) => visible(node));
+    } catch {
+      return false;
+    }
+  });
+
   return {
     url: location.href,
     bodyText: textOf(document.body),
+    loginSurfacePresent,
     composerPresent: Boolean(composer && visible(composer)),
     sendDisabled: send
       ? send.disabled === true
@@ -179,6 +193,9 @@ function scan(page, context) {
  * instead of escalating it.
  */
 function classifyFailure(scan, context) {
+  // Checked before the text patterns: this is the one signal that does not depend on reading
+  // the page's copy, which the wall hides inside a cross-origin iframe.
+  if (scan?.loginSurfacePresent) return ErrorCode.LOGIN_REQUIRED;
   const text = scan?.bodyText ?? "";
   if (context.quota.some((pattern) => pattern.test(text))) return ErrorCode.RATE_LIMITED;
   if (context.captcha.some((pattern) => pattern.test(text))) return ErrorCode.VERIFICATION_REQUIRED;

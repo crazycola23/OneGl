@@ -193,17 +193,17 @@ test("an anonymous surface is judged on quota, not on a login it will never have
   assert.equal(gaps.some((entry) => entry.includes("login.sessionCookies")), false);
   // Everything the driver reads has been observed, so nothing integrity-critical is missing.
   assert.deepEqual(gaps, []);
-  // The cap copy is no longer unobserved: a real 100-question batch hit the wall at ~37
-  // anonymous prompts and the profile now carries the measured text, so nothing is reported.
-  assert.deepEqual(warnings, []);
+  // The cap copy stays unobserved, and that is now the honest state rather than an oversight:
+  // the wall's own text is inside a cross-origin iframe, so no body-text scan can read it.
+  assert.deepEqual(warnings, [
+    "qianwen-web.quota.exhaustedPatterns must be a non-empty array of strings",
+  ]);
 
-  // The declared copy is the wall that was actually on screen (screenshot, 2026-09-23 22:58,
-  // after ~37 anonymous prompts): the surface echoed the prompt but answered nothing for 480s.
-  const wallPatterns = qianwenWebProfile.quota.exhaustedPatterns.map((value) => new RegExp(value));
-  assert.ok(wallPatterns.some((pattern) => pattern.test("登录解锁完整功能")));
-  // It must not fire on the benign login hint that was already on the anonymous page, which the
-  // Phase 0 capture mistook for the wall's absence.
-  assert.equal(wallPatterns.some((pattern) => pattern.test("登录可同步历史对话，解锁更多功能")), false);
+  // The wall is detected by the login surface instead. Measured 2026-09-23: this iframe is
+  // injected only when the wall appears (1 occurrence on the walled run, 0 on the healthy runs
+  // either side of it), so its presence is the signal that survives a copy it cannot read.
+  assert.deepEqual(qianwenWebProfile.login.loginSurfaceSelectors, ['iframe[src*="passport.qianwen.com"]']);
+  assert.deepEqual(qianwenWebProfile.quota.exhaustedPatterns, []);
 
   const questions = captureOpenQuestions({ requiresStoredAuth: false, answerCandidates: [{ selector: ".x" }] });
   assert.ok(questions.some((entry) => /额度/.test(entry)));

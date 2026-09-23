@@ -49,7 +49,11 @@ export const qianwenWebProfile = {
     restrictedPatterns: [],
     qrExpiredPatterns: [],
     qrRefreshCandidates: [],
-    loginSurfaceSelectors: [],
+    // 2026-09-23 实测：匿名额度用尽后平台挂出的登录墙，其标题与表单在**跨域 iframe** 里
+    // （passport.qianwen.com/havanaone/login/login.htm），页面正文文本读不到，所以只能用
+    // DOM 判定。该 iframe 只在墙出现时才注入：墙上的 run 里出现 1 次，健康 run（含紧邻的
+    // 成功样本）里 0 次。命中即 LOGIN_REQUIRED —— 秒级失败，不再白烧 480s 超时。
+    loginSurfaceSelectors: ['iframe[src*="passport.qianwen.com"]'],
   },
 
   chat: {
@@ -105,15 +109,16 @@ export const qianwenWebProfile = {
     // 同时避免高频重启 Camoufox 踩孤儿进程树那个坑。
     promptsPerWindow: 1,
     // 2026-09-22 的 6 次匿名提问没看到任何上限文案，于是这一项当时留空、只记一条告警。
-    // 2026-09-23 跑第 4 条真实批量时墙出现了：当天累计约 37 次匿名提问后，页面弹「登录解锁
-    // 完整功能」（手机号/验证码 + 二维码，二维码本身已「扫描失败」），盖住整页。此时提问仍被
-    // 送进对话（artifact 里 promptEchoCount=1），但平台不再产出任何正文，于是每一次都拖满
-    // 480s 才以 TIMEOUT 收场 —— 连续三次，共 24 分钟，全部记成"超时"而不是"额度用尽"。
-    // 6 次采样太少，把"没看到墙"当成了"没有墙"。现在按实测文案判定：命中即 RATE_LIMITED，
-    // 秒级失败并给出真实原因，不再让每次尝试白烧 8 分钟。
-    // 注意它同时是一条平台自述的上限：匿名额度过期意味着这条通道当天已经用完，继续换窗口
-    // 追问不会恢复额度（同一出口 IP 上的豆包账号也会跟着吃风险），所以撞墙后应当退避。
-    exhaustedPatterns: ["登录解锁完整功能"],
+    // 2026-09-23 跑真实批量时墙出现了：当天累计约 37 次匿名提问后，页面弹「登录解锁完整功能」
+    // （手机号/验证码 + 二维码，二维码本身已「扫描失败」）盖住整页。此时提问仍被送进对话
+    // （artifact 里 promptEchoCount=1），但平台不再产出任何正文，于是每次都拖满 480s 才以
+    // TIMEOUT 收场 —— 连续三次共 24 分钟，全部记成"超时"而不是"额度用尽"。
+    // **这一项仍然留空，而且不是遗漏**：那句文案根本读不到。实测比对 page.html，墙的标题与
+    // 表单在跨域 iframe（passport.qianwen.com/havanaone/login/login.htm）里，`document.body
+    // .innerText` 里一个字都没有 —— 先用文案判定过一版，线上验证时照样记成 TIMEOUT。真正
+    // 可靠的信号是那个 iframe 本身，已按登录面声明在下面 login.loginSurfaceSelectors。
+    // 留空的代价是这条告警继续存在，而它现在说的是实话：本平台没有可读的次数上限文案。
+    exhaustedPatterns: [],
     suspectedIdleMs: 120_000,
     controlPrompt: "你好，请用一句话介绍你自己。",
   },
