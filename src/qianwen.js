@@ -321,23 +321,26 @@ async function submitAndWait(page, prompt, config, context) {
   // later run completed at the first tier (submissionMethod=click). force skips the
   // actionability check, dispatchEvent skips hit-testing; both were verified to land on this
   // surface, and a click that never lands costs a whole run.
+  // Order matters, and it is the measured order: on the shipped Camoufox build a pointer click
+  // never lands (something intercepts it over the send control) while dispatching the button's
+  // own click event and pressing Enter both submit. A *force* click is deliberately last and
+  // never before those two: it reports success without hitting the button, which made a run look
+  // submitted and then burn its whole timeout waiting for an answer nobody asked for.
   const send = page.locator(context.send).first();
   const sentBy = await send
-    .click({ timeout: 4_000 })
-    .then(() => "click")
+    .dispatchEvent("click", undefined, { timeout: 4_000 })
+    .then(() => "dispatch_click")
     .catch(async () => {
       try {
-        await send.click({ force: true, timeout: 4_000 });
-        return "force_click";
+        await page.keyboard.press("Enter");
+        return "enter";
       } catch {
         try {
-          await send.dispatchEvent("click", undefined, { timeout: 4_000 });
-          return "dispatch_click";
+          await send.click({ timeout: 4_000 });
+          return "click";
         } catch {
-          // Last resort, and the path measured to work on Camoufox where the pointer never
-          // reaches the button: send from the editor itself.
-          await page.keyboard.press("Enter");
-          return "enter";
+          await send.click({ force: true, timeout: 4_000 });
+          return "force_click";
         }
       }
     });
