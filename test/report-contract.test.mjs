@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { looksTruncatedAnswer } from "../src/answer-quality.js";
 import {
   buildReportContract,
   contractContentHash,
@@ -537,4 +538,17 @@ test("a report declares which observation surfaces contributed to it", () => {
     ["account", "anonymous"],
     "blending signed-out and account samples must be visible in provenance, not silently averaged",
   );
+});
+
+test("a capture that stopped mid-sentence is labelled, not silently counted", async () => {
+  // Measured on the shipped Camoufox build: the platform can pause for over a minute inside one
+  // generation, so a quiet-window capture can end mid-sentence. Those rows must be visible so a
+  // mention or citation rate can exclude them.
+  assert.equal(looksTruncatedAnswer("绍兴越城区有不少口碑和手法都不错的推拿店，从专业的中"), true);
+  assert.equal(looksTruncatedAnswer("核心专家：李英周副主任医师"), true);
+  assert.equal(looksTruncatedAnswer("你可以根据你今天的心情和身体状态，选择最适合你的那一家！"), false);
+  assert.equal(looksTruncatedAnswer("以上是几家推荐（按口碑排序）。"), false);
+  assert.equal(looksTruncatedAnswer(""), false);
+  assert.equal(looksTruncatedAnswer(null), false);
+  assert.equal(looksTruncatedAnswer("太短"), true);
 });

@@ -296,6 +296,10 @@ const coreSchemas = {
         enum: ["account", "anonymous"],
         description: "Observation surface this run was collected from. Runs that predate the column report 'account'.",
       },
+      answer_truncated: {
+        type: "boolean",
+        description: "The captured answer looks cut off mid-sentence: the platform was probably still writing when the run ended.",
+      },
       project_id: { type: ["integer", "null"] },
       project_name: { type: ["string", "null"] },
       account_id: { type: ["string", "null"] },

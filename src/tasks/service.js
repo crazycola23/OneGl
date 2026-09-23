@@ -571,6 +571,9 @@ export function publicResultFields(row) {
     // condition from an account observation, so a customer mixing the two into one rate would
     // be reporting a number that describes no real user.
     login_state: row.run_login_state ?? null,
+    // A capture that stopped mid-sentence is a defect of the run, not a finding about the
+    // platform: label it so a rate can exclude it instead of averaging it in.
+    answer_truncated: row.run_answer_truncated == null ? null : Boolean(row.run_answer_truncated),
     assignment_status: assignmentStatusFor({ runStatus, batchStatus }),
     terminal_reason: terminalReasonFor({
       runStatus,
@@ -589,7 +592,8 @@ export async function listExecutionResults(pool, tenantId, executionId) {
             sr.external_id, sr.repetition_index, sr.repetition_count,
             r.status AS run_status, r.brand_mentioned, r.mention_count, r.finished_at,
             r.login_state AS run_login_state,
-            r.error_code AS run_error_code, r.error_message AS run_error_message,
+            r.answer_truncated AS run_answer_truncated,
+r.error_code AS run_error_code, r.error_message AS run_error_message,
             b.status AS batch_status,
             t.public_id AS task_public_id,
             e.public_id AS execution_public_id
@@ -620,7 +624,8 @@ export async function getResult(pool, tenantId, resultId) {
     `SELECT sr.*, e.public_id AS execution_public_id, t.public_id AS task_public_id,
             r.id AS run_db_id, r.status AS run_status,
             r.login_state AS run_login_state,
-            r.error_code AS run_error_code, r.error_message AS run_error_message,
+            r.answer_truncated AS run_answer_truncated,
+r.error_code AS run_error_code, r.error_message AS run_error_message,
             b.status AS batch_status
        FROM service_task_results sr
        JOIN service_task_executions e ON e.id = sr.execution_id

@@ -4338,6 +4338,13 @@
               "null"
             ]
           },
+          "answer_truncated": {
+            "description": "The capture looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null when the field predates this check. Exclude or separate these rows when computing mention and citation rates.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "attempt": {
             "minimum": 1,
             "type": [
@@ -6056,6 +6063,13 @@
       },
       "ResultListItem": {
         "properties": {
+          "answer_truncated": {
+            "description": "The captured answer looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null while no run has been recorded. Do not average these rows into a mention or citation rate.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "assignment_status": {
             "enum": [
               "not_started",
@@ -6207,6 +6221,13 @@
               "mention_count"
             ],
             "type": "object"
+          },
+          "answer_truncated": {
+            "description": "The captured answer looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null while no run has been recorded. Do not average these rows into a mention or citation rate.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "assignment_status": {
             "enum": [
@@ -6367,6 +6388,10 @@
               "string",
               "null"
             ]
+          },
+          "answer_truncated": {
+            "description": "The captured answer looks cut off mid-sentence: the platform was probably still writing when the run ended.",
+            "type": "boolean"
           },
           "finished_at": {
             "format": "date-time",

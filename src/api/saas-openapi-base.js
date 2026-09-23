@@ -80,6 +80,10 @@ const nullableLoginState = {
   enum: [...LOGIN_STATES, null],
   description: "Whether the run behind this result was observed from a signed-in account or the anonymous surface. Null while no run has been recorded for the assignment.",
 };
+const nullableAnswerTruncated = {
+  type: ["boolean", "null"],
+  description: "The captured answer looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null while no run has been recorded. Do not average these rows into a mention or citation rate.",
+};
 const nullablePlatform = {
   type: ["string", "null"],
   enum: [...PROVIDERS(), null],
@@ -257,6 +261,8 @@ export function applySaasOpenApi(document) {
         platform: { type: "string", enum: PROVIDERS() },
         status: { type: "string", enum: ["pending", "running", "success", "partial", "failed"] },
         login_state: nullableLoginState,
+
+        answer_truncated: nullableAnswerTruncated,
         brand_mentioned: { type: ["boolean", "null"] },
         mention_count: { type: ["integer", "null"], minimum: 0 },
         finished_at: nullableDateTime,
@@ -292,6 +298,8 @@ export function applySaasOpenApi(document) {
         question: { type: "string" },
         status: { type: "string", enum: ["pending", "running", "success", "partial", "failed"] },
         login_state: nullableLoginState,
+
+        answer_truncated: nullableAnswerTruncated,
         answer: {
           type: "object",
           required: ["text", "brand_mentioned", "mention_count"],

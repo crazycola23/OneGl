@@ -299,6 +299,9 @@ function contractRunRow(row = {}, identity = null) {
     error_code: text(row.error_code),
     attempt: nullableNumber(row.attempt),
     answer_chars: nullableNumber(row.answer_chars),
+    // A label, not a rejection: a capture that stopped mid-sentence (the platform was still
+    // writing when the run ended) must not be counted as a complete observation.
+    answer_truncated: row.answer_truncated == null ? null : Boolean(row.answer_truncated),
   };
 }
 

@@ -2513,6 +2513,8 @@ export interface components {
         };
         ReportContractRun: {
             answer_chars?: number | null;
+            /** @description The capture looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null when the field predates this check. Exclude or separate these rows when computing mention and citation rates. */
+            answer_truncated?: boolean | null;
             attempt?: number | null;
             brand_mentioned?: boolean | null;
             captured_citation_count?: number | null;
@@ -2878,6 +2880,8 @@ export interface components {
             summary: number;
         };
         ResultListItem: {
+            /** @description The captured answer looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null while no run has been recorded. Do not average these rows into a mention or citation rate. */
+            answer_truncated?: boolean | null;
             /** @enum {string} */
             assignment_status: "not_started" | "running" | "collected" | "not_collected" | "cancelled";
             brand_mentioned?: boolean | null;
@@ -2909,6 +2913,8 @@ export interface components {
                 mention_count: number | null;
                 text: string | null;
             };
+            /** @description The captured answer looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null while no run has been recorded. Do not average these rows into a mention or citation rate. */
+            answer_truncated?: boolean | null;
             /** @enum {string} */
             assignment_status: "not_started" | "running" | "collected" | "not_collected" | "cancelled";
             citations: components["schemas"]["CitationResource"][];
@@ -2946,6 +2952,8 @@ export interface components {
         };
         RunResource: {
             account_id?: string | null;
+            /** @description The captured answer looks cut off mid-sentence: the platform was probably still writing when the run ended. */
+            answer_truncated?: boolean;
             /** Format: date-time */
             finished_at?: string | null;
             local_run_id?: string;

@@ -105,7 +105,8 @@ export async function handleSaasPaginationRoute({ req, res, url, db, auth, tenan
               sr.external_id, sr.repetition_index, sr.repetition_count,
               r.status AS run_status, r.brand_mentioned, r.mention_count, r.finished_at,
               r.login_state AS run_login_state,
-              r.error_code AS run_error_code, r.error_message AS run_error_message,
+              r.answer_truncated AS run_answer_truncated,
+r.error_code AS run_error_code, r.error_message AS run_error_message,
               b.status AS batch_status,
               t.public_id AS task_public_id,
               e.public_id AS execution_public_id

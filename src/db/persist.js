@@ -1,3 +1,4 @@
+import { looksTruncatedAnswer } from "../answer-quality.js";
 import { canonicalizeUrl, domainFromUrl } from "../url.js";
 import { normalizeDomain } from "./domain.js";
 import { persistRetrievalEvidence } from "./persist-retrieval.js";
@@ -60,12 +61,12 @@ const RUN_UPSERT = `
     local_run_id, artifact_path,
     sampling_batch_id, account_key, conversation_reset_confirmed,
     brand_mentioned, mention_count, first_mention_position, matched_terms, brand_detection_version,
-    run_token, job_id, attempt, login_state
+    run_token, job_id, attempt, login_state, answer_truncated
   )
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
           $11, $12, $13, $14, $15, $16::jsonb, $17, $18,
           $19, $20, $21, $22, $23, $24, $25::jsonb, $26,
-          $27, $28, $29, $30)
+          $27, $28, $29, $30, $31)
   ON CONFLICT (local_run_id) DO UPDATE
     SET prompt_id = EXCLUDED.prompt_id,
         provider = EXCLUDED.provider,
@@ -95,7 +96,8 @@ const RUN_UPSERT = `
         brand_detection_version = EXCLUDED.brand_detection_version,
         run_token = COALESCE(EXCLUDED.run_token, runs.run_token),
         job_id = COALESCE(EXCLUDED.job_id, runs.job_id),
-        attempt = EXCLUDED.attempt
+        attempt = EXCLUDED.attempt,
+        answer_truncated = EXCLUDED.answer_truncated
   RETURNING id
 `;
 
@@ -317,6 +319,8 @@ export async function persistRun({
       // way OneGl has always worked, and silently labelling it anonymous would invent a
       // partition that was never measured.
       run?.loginState === "anonymous" ? "anonymous" : "account",
+      // A hint, so a half-sentence capture can be excluded from rates instead of counted as one.
+      looksTruncatedAnswer(run?.answer),
     ]);
     const runId = runResult.rows[0].id;
 

@@ -390,6 +390,10 @@ const reportContractSchemas = {
     error_code: nullableString,
     attempt: { type: ["integer", "null"], minimum: 1 },
     answer_chars: { type: ["integer", "null"], minimum: 0 },
+    answer_truncated: {
+      type: ["boolean", "null"],
+      description: "The capture looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null when the field predates this check. Exclude or separate these rows when computing mention and citation rates.",
+    },
   }, { required: ["question", "status"] }),
 
   ReportContractResource: object({
