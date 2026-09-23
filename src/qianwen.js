@@ -347,18 +347,20 @@ async function submitAndWait(page, prompt, config, context) {
   while (Date.now() < deadline) {
     const previous = latest;
     latest = await scan(page, context);
-    // Completion needs the answer to have stopped growing, whatever else the page says. The busy
-    // control alone is not enough: measured on Camoufox it comes back *during* a generation
-    // (between list items), so trusting it captured answers cut mid-sentence ("…体态问"). The
-    // platform also pauses for many seconds mid-generation on deep-search questions, so the quiet
-    // window has to outlast a pause rather than a repaint.
+    // Completion needs the answer to have stopped growing, whatever else the page says. Measured
+    // on the shipped Camoufox build, none of the obvious markers work: the "内容由AI生成" footer is
+    // on the page from the start, the per-message action buttons never render without a hover, and
+    // the send control comes back while the answer is still being written. What the platform does
+    // do is pause: one answer sat at 104 characters for 56 seconds and then continued to 816, so
+    // the quiet window has to be comfortably longer than that pause - a 60s window cut real answers
+    // in half (and a 12s one captured 15 characters).
     stablePolls = previous && previous.answerLength > 0 && previous.answerLength === latest.answerLength
       ? stablePolls + 1
       : 0;
-    if (latest.answerLength > 0 && stablePolls >= 20 && !latest.generating) {
+    if (latest.answerLength > 0 && stablePolls >= 30 && !latest.generating) {
       return { scan: latest, sentBy };
     }
-    if (latest.answerLength > 0 && stablePolls >= 40 && latest.sendDisabled === false) {
+    if (latest.answerLength > 0 && stablePolls >= 45 && latest.sendDisabled === false) {
       return { scan: latest, sentBy };
     }
     const reason = classifyFailure(latest, context);
