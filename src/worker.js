@@ -27,7 +27,7 @@ import {
 import { loadConfig } from "./config.js";
 import { createPool } from "./db/pool.js";
 import { loadBrandRules } from "./project/init.js";
-import { getProviderAdapter } from "./providers/index.js";
+import { getProviderAdapter, providerBurstPacing } from "./providers/index.js";
 import {
   accountIdentity,
   accountQueueName,
@@ -370,7 +370,7 @@ async function handleJob(job, token) {
     };
   }
 
-  const availability = await accountAvailability(pool, accountKey, safety, provider);
+  const availability = await accountAvailability(pool, accountKey, safety, provider, providerBurstPacing(provider));
   if (!availability.available) {
     const plan = planUnavailableJob({
       availability,

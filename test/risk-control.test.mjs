@@ -5,6 +5,7 @@ import {
   AVAILABILITY,
   classifyAccountState,
 } from "../src/accounts/safety.js";
+import { providerBurstPacing } from "../src/providers/index.js";
 import {
   createConservativeDoubaoPage,
   prepareFrontEndForRun,
@@ -171,4 +172,64 @@ test("a credential-free surface is exempt from the caps, the spacing and the coo
     classifyAccountState({ ...wornOut, provider: "doubao" }, { now, config: limits }).kind,
     AVAILABILITY.AVAILABLE,
   );
+});
+
+test("a measured burst allowance stops a credential-free lane before the platform does", () => {
+  const now = at("2026-09-24T00:20:00Z");
+  // Four prompts at ~3.5 min apart: the fifth is where 千问 answered with a login wall, and the
+  // prompt that trips it is already submitted, so the burst has to stop rather than recover.
+  const spent = {
+    enabled: true,
+    status: "healthy",
+    provider: "qianwen",
+    runs_today: 4,
+    runs_today_date: "2026-09-24",
+    last_run_at: at("2026-09-24T00:10:30Z"),
+    runs_last_hour: 4,
+  };
+  const pacing = { prompts: 4, pauseMs: 25 * 60_000 };
+
+  const paused = classifyAccountState(spent, {
+    now,
+    pacing,
+    burst: { runsInWindow: 4, newestRunAt: at("2026-09-24T00:10:30Z") },
+  });
+  assert.equal(paused.kind, AVAILABILITY.TEMPORARY);
+  // Quiet runs from the *last* prompt, not the first, so the platform sees a real gap.
+  assert.equal(paused.retryAt.toISOString(), "2026-09-24T00:35:30.000Z");
+
+  // Room left in the window: the lane keeps working, which is the whole point of pacing it.
+  assert.equal(
+    classifyAccountState(spent, {
+      now,
+      pacing,
+      burst: { runsInWindow: 3, newestRunAt: at("2026-09-24T00:10:30Z") },
+    }).kind,
+    AVAILABILITY.AVAILABLE,
+  );
+
+  // Once the pause has elapsed the allowance is spent again by runs that have aged out.
+  assert.equal(
+    classifyAccountState(spent, {
+      now: at("2026-09-24T00:40:00Z"),
+      pacing,
+      burst: { runsInWindow: 4, newestRunAt: at("2026-09-24T00:10:30Z") },
+    }).kind,
+    AVAILABILITY.AVAILABLE,
+  );
+
+  // No pacing measured means the exemption stands untouched - a provider that never measured a
+  // burst limit must not be slowed down by a mechanism it never opted into.
+  assert.equal(
+    classifyAccountState(spent, { now, pacing: null, burst: null }).kind,
+    AVAILABILITY.AVAILABLE,
+  );
+});
+
+test("only a provider that declared a measured burst allowance gets paced", () => {
+  assert.deepEqual(providerBurstPacing("qianwen"), { prompts: 4, pauseMs: 25 * 60_000 });
+  // Doubao is account-driven and declares none, so nothing changes for it.
+  assert.equal(providerBurstPacing("doubao"), null);
+  // An unknown provider must not throw here: this runs on the worker's hot path.
+  assert.equal(providerBurstPacing("nope"), null);
 });

@@ -114,6 +114,21 @@ export function collectProfileFindings(profile) {
     }
   }
 
+  // Optional, and only meaningful as a pair: how many prompts a surface gives before it stops
+  // answering, and how long it needs quiet afterwards. Absent means "no burst limit has been
+  // measured", which is deliberately not the same as 0 - a profile that never measured this
+  // must not silently pin itself to zero prompts.
+  const burstPrompts = profile?.quota?.burstPrompts;
+  const burstPauseMs = profile?.quota?.burstPauseMs;
+  if (burstPrompts !== undefined || burstPauseMs !== undefined) {
+    if (!Number.isInteger(burstPrompts) || burstPrompts < 1) {
+      errors.push(`${id}.quota.burstPrompts must be a positive integer when declared`);
+    }
+    if (!Number.isInteger(burstPauseMs) || burstPauseMs < 1) {
+      errors.push(`${id}.quota.burstPauseMs must be a positive integer when declared`);
+    }
+  }
+
   if (profile?.citation?.tier === CITATION_TIERS.SELF_REPORTED_COUNT) {
     const pattern = profile.citation.countPattern;
     if (!(pattern instanceof RegExp) && typeof pattern !== "string") {

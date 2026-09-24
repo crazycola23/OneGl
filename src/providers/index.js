@@ -85,3 +85,20 @@ export function isCredentialFreeSurface(provider) {
     return false;
   }
 }
+
+/**
+ * The measured per-window allowance a provider declares, or null when it has measured none.
+ *
+ * Returned as `{ prompts, pauseMs }` so the availability gate can enforce it without knowing
+ * anything about profiles. Both halves have to be present: a half-declared pacing would either
+ * pin the lane to zero prompts or pause it forever.
+ */
+export function providerBurstPacing(provider) {
+  try {
+    const quota = getProviderAdapter(provider)?.profile?.quota;
+    if (!Number.isInteger(quota?.burstPrompts) || !Number.isInteger(quota?.burstPauseMs)) return null;
+    return { prompts: quota.burstPrompts, pauseMs: quota.burstPauseMs };
+  } catch {
+    return null;
+  }
+}

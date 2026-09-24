@@ -206,11 +206,37 @@ export const AVAILABILITY = Object.freeze({
   PERMANENT: "permanent",
 });
 
-export function classifyAccountState(state, { config = safetyConfig(), now = new Date() } = {}) {
+/**
+ * `pacing`/`burst` carry a provider's measured per-window allowance: how many prompts the
+ * surface gives before it stops answering (`pacing.prompts`) and how long it then needs quiet
+ * (`pacing.pauseMs`), together with what the account has already spent in that window
+ * (`burst.runsInWindow` / `burst.newestRunAt`). Null means no burst limit has been measured.
+ */
+export function classifyAccountState(state, { config = safetyConfig(), now = new Date(), pacing = null, burst = null } = {}) {
   if (!state) return { kind: AVAILABILITY.AVAILABLE, reason: null, retryAt: null };
 
   if (!state.enabled) {
     return { kind: AVAILABILITY.PERMANENT, reason: "账号已被禁用", retryAt: null };
+  }
+
+  // A measured per-window allowance is checked before the credential-free exemption below,
+  // because the two answer different questions. That exemption exists because nothing in this
+  // file protects an account that cannot be blocked - and this is not about the account. It is
+  // the platform stating it has stopped answering, and the prompt that trips it is already
+  // submitted and therefore lost. Waiting afterwards is too late; the burst has to stop early.
+  if (pacing && burst) {
+    const used = Number(burst.runsInWindow) || 0;
+    const newest = burst.newestRunAt ? new Date(burst.newestRunAt) : null;
+    if (used >= pacing.prompts && newest) {
+      const retryAt = new Date(newest.getTime() + pacing.pauseMs);
+      if (retryAt > now) {
+        return {
+          kind: AVAILABILITY.TEMPORARY,
+          reason: `平台每轮只给 ${pacing.prompts} 条，本轮已用完，静置到 ${retryAt.toLocaleString("zh-CN")}`,
+          retryAt,
+        };
+      }
+    }
   }
 
   // A surface with no credential behind it cannot be burned, so nothing here protects anything:
@@ -315,9 +341,31 @@ export async function getAccountState(pool, accountKey, provider = "doubao") {
   return rows[0] ?? null;
 }
 
-export async function accountAvailability(pool, accountKey, config = safetyConfig(), provider = "doubao") {
+/**
+ * How much of a measured burst allowance this account has already spent, counted from the run
+ * rows themselves so the limit needs no extra column: every attempt counts, including a failed
+ * one, because a request that reached the platform is what spends the allowance. Counting the
+ * failures too is what makes the quiet period after a wall hold.
+ */
+async function countRunsInWindow(pool, accountKey, provider, windowMs) {
+  const { rows } = await pool.query(
+    `SELECT count(*)::integer AS runs_in_window, max(r.started_at) AS newest_run_at
+       FROM runs r
+      WHERE r.account_key = $1
+        AND r.provider = $2
+        AND r.started_at >= now() - ($3::double precision * interval '1 millisecond')`,
+    [accountKey, provider, windowMs],
+  );
+  return {
+    runsInWindow: Number(rows[0]?.runs_in_window) || 0,
+    newestRunAt: rows[0]?.newest_run_at ?? null,
+  };
+}
+
+export async function accountAvailability(pool, accountKey, config = safetyConfig(), provider = "doubao", pacing = null) {
   const state = await getAccountState(pool, accountKey, provider);
-  const verdict = classifyAccountState(state, { config });
+  const burst = pacing ? await countRunsInWindow(pool, accountKey, provider, pacing.pauseMs) : null;
+  const verdict = classifyAccountState(state, { config, pacing, burst });
   return {
     available: verdict.kind === AVAILABILITY.AVAILABLE,
     kind: verdict.kind,
