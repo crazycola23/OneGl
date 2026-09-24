@@ -44,7 +44,8 @@
 
 ## 4. 账号与限额
 
-- **无登录面不应背账号限额**。豁免要按"面"绑定（`isCredentialFreeSurface(provider)`），只对 `requiresStoredAuth === false` 的平台去掉每日/每小时上限、运行间隔门与失败冷却；`enabled` 开关仍是运营的唯一硬开关。豆包这类真账号**全量保留**限额。
+- **无登录面不应背账号限额，但平台实测限额仍要遵守**。豁免要按"面"绑定（`isCredentialFreeSurface(provider)`），只对 `requiresStoredAuth === false` 的平台去掉账号每日/每小时上限、账号运行间隔门与账号失败冷却；`enabled` 开关仍是运营的唯一硬开关。平台明确给出的限额独立配置，不能因匿名访问而绕过。
+- 千问匿名面在 2026-09-23/24 的批量运行中，连续 4 次后出现跨域登录墙；继续请求数小时也没有解除，静置约 20–30 分钟后才恢复。驱动检测 `passport.qianwen.com` iframe 并快速标记 `LOGIN_REQUIRED`；worker 每 4 条后静置 25 分钟，再继续排队任务。换浏览器上下文不会清除这项平台限额。
 - **解除冷却不止清一个字段**。worker 是按存储的 `pause_reason`/`paused_at` 判定「连续失败 3 次，冷却 60 分钟」的，只清 `cooldown_until` + `consecutive_failures` 会让每条任务都 `job-skipped-permanent`。正确做法：`status`、`cooldown_until`、`consecutive_failures`、`paused_at`、`pause_reason` 一起清，**并重启 worker**（它会缓存账号状态）。
 - worker 启动横幅会打印真实限额与间隔（每日 40 次、30–90 秒随机）。做 ETA 就用它，别猜。
 

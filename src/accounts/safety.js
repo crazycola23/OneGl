@@ -206,12 +206,33 @@ export const AVAILABILITY = Object.freeze({
   PERMANENT: "permanent",
 });
 
-export function classifyAccountState(state, { config = safetyConfig(), now = new Date() } = {}) {
-  if (!state) return { kind: AVAILABILITY.AVAILABLE, reason: null, retryAt: null };
-
-  if (!state.enabled) {
+export function classifyAccountState(
+  state,
+  { config = safetyConfig(), now = new Date(), pacing = null, burst = null } = {},
+) {
+  if (state && !state.enabled) {
     return { kind: AVAILABILITY.PERMANENT, reason: "账号已被禁用", retryAt: null };
   }
+
+  // A measured platform allowance is independent of whether the surface uses stored login.
+  // Count every submitted run, including failures, and wait before sending another prompt.
+  if (pacing && burst) {
+    const used = Number(burst.runsInWindow) || 0;
+    const newest = burst.newestRunAt ? new Date(burst.newestRunAt) : null;
+    if (used >= pacing.prompts && newest && !Number.isNaN(newest.getTime())) {
+      const retryAt = new Date(newest.getTime() + pacing.pauseMs);
+      if (retryAt > now) {
+        return {
+          kind: AVAILABILITY.TEMPORARY,
+          reason: `平台每轮只给 ${pacing.prompts} 条，本轮已用完，静置到 ${retryAt.toLocaleString("zh-CN")}`,
+          retryAt,
+          paced: true,
+        };
+      }
+    }
+  }
+
+  if (!state) return { kind: AVAILABILITY.AVAILABLE, reason: null, retryAt: null };
 
   // A surface with no credential behind it cannot be burned, so nothing here protects anything:
   // the caps, the spacing and the failure cooldown exist to keep a *real* account from being
@@ -315,14 +336,39 @@ export async function getAccountState(pool, accountKey, provider = "doubao") {
   return rows[0] ?? null;
 }
 
-export async function accountAvailability(pool, accountKey, config = safetyConfig(), provider = "doubao") {
+async function countRunsInWindow(pool, accountKey, provider, windowMs) {
+  const { rows } = await pool.query(
+    `SELECT count(*)::integer AS runs_in_window, max(r.started_at) AS newest_run_at
+       FROM runs r
+      WHERE r.account_key = $1
+        AND r.provider = $2
+        AND r.started_at >= now() - ($3::double precision * interval '1 millisecond')`,
+    [accountKey, provider, windowMs],
+  );
+  return {
+    runsInWindow: Number(rows[0]?.runs_in_window) || 0,
+    newestRunAt: rows[0]?.newest_run_at ?? null,
+  };
+}
+
+export async function accountAvailability(
+  pool,
+  accountKey,
+  config = safetyConfig(),
+  provider = "doubao",
+  pacing = null,
+) {
   const state = await getAccountState(pool, accountKey, provider);
-  const verdict = classifyAccountState(state, { config });
+  const burst = pacing
+    ? await countRunsInWindow(pool, accountKey, provider, pacing.pauseMs)
+    : null;
+  const verdict = classifyAccountState(state, { config, pacing, burst });
   return {
     available: verdict.kind === AVAILABILITY.AVAILABLE,
     kind: verdict.kind,
     reason: verdict.reason,
     retryAt: verdict.retryAt,
+    paced: verdict.paced === true,
     state,
   };
 }

@@ -40,6 +40,7 @@ function driverContext(profile) {
     quota: toRegExpList(profile.quota?.exhaustedPatterns),
     captcha: toRegExpList(profile.login.captchaPatterns),
     restricted: toRegExpList(profile.login.restrictedPatterns),
+    loginSurfaceSelectors: profile.login.loginSurfaceSelectors ?? [],
     interstitials: profile.interstitials?.dismissSelectors ?? ['button:has-text("关闭")', '[aria-label="关闭"]'],
   };
 }
@@ -131,9 +132,20 @@ function scanQianwenPage(cfg) {
     && !sendVisible
     && answerCards.length > 0;
 
+  // Qwen's login wall is cross-origin and hides its copy from body-text scans. The measured
+  // passport iframe is therefore the reliable signal; classify it before another prompt is sent.
+  const loginSurfacePresent = (cfg.loginSurfaceSelectors ?? []).some((selector) => {
+    try {
+      return [...document.querySelectorAll(selector)].some((node) => visible(node));
+    } catch {
+      return false;
+    }
+  });
+
   return {
     url: location.href,
     bodyText: textOf(document.body),
+    loginSurfacePresent,
     composerPresent: Boolean(composer && visible(composer)),
     sendDisabled: send
       ? send.disabled === true
@@ -166,6 +178,7 @@ function scanConfig(context) {
     busyWhenSendMissing: context.busyWhenSendMissing === true,
     inProgressSources: context.inProgressPatterns.map((pattern) => pattern.source),
     countPatternSource: context.countPattern?.source ?? null,
+    loginSurfaceSelectors: context.loginSurfaceSelectors ?? [],
   };
 }
 
@@ -179,6 +192,7 @@ function scan(page, context) {
  * instead of escalating it.
  */
 function classifyFailure(scan, context) {
+  if (scan?.loginSurfacePresent) return ErrorCode.LOGIN_REQUIRED;
   const text = scan?.bodyText ?? "";
   if (context.quota.some((pattern) => pattern.test(text))) return ErrorCode.RATE_LIMITED;
   if (context.captcha.some((pattern) => pattern.test(text))) return ErrorCode.VERIFICATION_REQUIRED;

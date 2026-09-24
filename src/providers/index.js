@@ -85,3 +85,19 @@ export function isCredentialFreeSurface(provider) {
     return false;
   }
 }
+
+/** Return a measured per-window platform allowance, or null when none is declared. */
+export function providerBurstPacing(provider) {
+  try {
+    const quota = getProviderAdapter(provider)?.profile?.quota;
+    if (
+      !Number.isInteger(quota?.burstPrompts)
+      || quota.burstPrompts < 1
+      || !Number.isInteger(quota?.burstPauseMs)
+      || quota.burstPauseMs < 1
+    ) return null;
+    return { prompts: quota.burstPrompts, pauseMs: quota.burstPauseMs };
+  } catch {
+    return null;
+  }
+}

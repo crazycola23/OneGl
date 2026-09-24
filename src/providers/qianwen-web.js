@@ -49,7 +49,8 @@ export const qianwenWebProfile = {
     restrictedPatterns: [],
     qrExpiredPatterns: [],
     qrRefreshCandidates: [],
-    loginSurfaceSelectors: [],
+    // The login wall lives in a cross-origin passport iframe, so page body text cannot detect it.
+    loginSurfaceSelectors: ['iframe[src*="passport.qianwen.com"]'],
   },
 
   chat: {
@@ -104,10 +105,12 @@ export const qianwenWebProfile = {
     // 每问换窗口用已有的 rotateContext（保留 cookie、复用浏览器进程）拿到干净会话，
     // 同时避免高频重启 Camoufox 踩孤儿进程树那个坑。
     promptsPerWindow: 1,
-    // 6 次匿名提问全部拿到完整回答，未出现任何次数上限文案；页面上唯一与账号有关的文本是
-    // 「登录可同步历史对话，解锁更多功能」这句提示，它不是墙。所以这一项保持为空，
-    // 并按"只影响可解释性、不影响数据正确性"降级为告警：真撞上墙时该次会以 TIMEOUT
-    // 失败（promptSubmitted 已知，不会重试造成重复提问），连续失败仍会走冷却与告警。
+    // Anonymous runs on 2026-09-23/24 repeatedly received four answers before the next prompt
+    // produced a cross-origin login wall. After continued attempts, the wall cleared only after
+    // 20-30 minutes of quiet. Count failed submissions too and wait before the next prompt;
+    // opening another context does not restore platform allowance.
+    burstPrompts: 4,
+    burstPauseMs: 25 * 60_000,
     exhaustedPatterns: [],
     suspectedIdleMs: 120_000,
     controlPrompt: "你好，请用一句话介绍你自己。",

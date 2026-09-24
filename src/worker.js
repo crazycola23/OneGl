@@ -27,7 +27,7 @@ import {
 import { loadConfig } from "./config.js";
 import { createPool } from "./db/pool.js";
 import { loadBrandRules } from "./project/init.js";
-import { getProviderAdapter } from "./providers/index.js";
+import { getProviderAdapter, providerBurstPacing } from "./providers/index.js";
 import {
   accountIdentity,
   accountQueueName,
@@ -85,6 +85,8 @@ const SOURCE_INTELLIGENCE_SCRIPT = fileURLToPath(
 // 一个临时冷却的任务最多被推迟几次。冷却本身不消耗重试次数，所以需要一个上限，
 // 否则账号长期不可用（例如连续失败一直续冷却）时任务会无限期地挂着。
 const MAX_COOLDOWN_WAITS = 3;
+// Measured platform quiet periods are planned pacing cycles, not a stuck account cooldown.
+const MAX_PACED_WAITS = 120;
 
 // sessions 与 workers 都以 accountIdentity(accountKey, provider) 为键：
 // 同一个 account_key 在两个平台下是两份独立登录态，必须各走各的队列与会话。
@@ -370,12 +372,18 @@ async function handleJob(job, token) {
     };
   }
 
-  const availability = await accountAvailability(pool, accountKey, safety, provider);
+  const availability = await accountAvailability(
+    pool,
+    accountKey,
+    safety,
+    provider,
+    providerBurstPacing(provider),
+  );
   if (!availability.available) {
     const plan = planUnavailableJob({
       availability,
       cooldownWaits: Number(job.data.cooldownWaits ?? 0),
-      maxCooldownWaits: MAX_COOLDOWN_WAITS,
+      maxCooldownWaits: availability.paced ? MAX_PACED_WAITS : MAX_COOLDOWN_WAITS,
     });
 
     // 临时状态（冷却 / 频率限制 / 当日额度用完）不能把采样任务永久丢掉：
