@@ -86,6 +86,11 @@ const SOURCE_INTELLIGENCE_SCRIPT = fileURLToPath(
 // 否则账号长期不可用（例如连续失败一直续冷却）时任务会无限期地挂着。
 const MAX_COOLDOWN_WAITS = 3;
 
+// 分轮静置的等待是**计划内**的，不是账号卡住了：匿名通道每轮只给几条，跑满 100 条要等二十
+// 多个静置周期，用 3 次的上限会在第三轮就把剩下几十条全部按"长期不可用"跳过。所以它单列一个
+// 上限 —— 依然有界（不会无限期挂着），但够跑完一轮完整采集。
+const MAX_PACED_WAITS = 120;
+
 // sessions 与 workers 都以 accountIdentity(accountKey, provider) 为键：
 // 同一个 account_key 在两个平台下是两份独立登录态，必须各走各的队列与会话。
 const sessions = new Map();
@@ -375,7 +380,7 @@ async function handleJob(job, token) {
     const plan = planUnavailableJob({
       availability,
       cooldownWaits: Number(job.data.cooldownWaits ?? 0),
-      maxCooldownWaits: MAX_COOLDOWN_WAITS,
+      maxCooldownWaits: availability.paced ? MAX_PACED_WAITS : MAX_COOLDOWN_WAITS,
     });
 
     // 临时状态（冷却 / 频率限制 / 当日额度用完）不能把采样任务永久丢掉：

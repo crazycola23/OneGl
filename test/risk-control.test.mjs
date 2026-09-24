@@ -197,6 +197,9 @@ test("a measured burst allowance stops a credential-free lane before the platfor
   assert.equal(paused.kind, AVAILABILITY.TEMPORARY);
   // Quiet runs from the *last* prompt, not the first, so the platform sees a real gap.
   assert.equal(paused.retryAt.toISOString(), "2026-09-24T00:35:30.000Z");
+  // Flagged as a planned wait: a full run needs one of these per cycle, so it must not spend
+  // the same budget as an account that is genuinely stuck.
+  assert.equal(paused.paced, true);
 
   // Room left in the window: the lane keeps working, which is the whole point of pacing it.
   assert.equal(

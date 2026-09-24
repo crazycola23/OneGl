@@ -234,6 +234,10 @@ export function classifyAccountState(state, { config = safetyConfig(), now = new
           kind: AVAILABILITY.TEMPORARY,
           reason: `平台每轮只给 ${pacing.prompts} 条，本轮已用完，静置到 ${retryAt.toLocaleString("zh-CN")}`,
           retryAt,
+          // Marks a wait that is expected to resolve on its own, so the worker does not spend
+          // the budget meant for an account that is stuck: a paced run needs one wait per cycle
+          // and would otherwise be skipped as "unavailable too long" partway through.
+          paced: true,
         };
       }
     }
@@ -371,6 +375,7 @@ export async function accountAvailability(pool, accountKey, config = safetyConfi
     kind: verdict.kind,
     reason: verdict.reason,
     retryAt: verdict.retryAt,
+    paced: verdict.paced === true,
     state,
   };
 }
