@@ -1,13 +1,30 @@
 import { executeQianwenPrompt, openQianwen } from "../qianwen.js";
+import { intEnvValue } from "../accounts/safety.js";
 import { normalizeProviderResult, PROVIDER_ACCESS } from "./contract.js";
 import { CITATION_TIERS } from "./profile.js";
+
+/** 千问匿名额度的实测静置时长（2026-09-23/24 四轮批次）。 */
+const QIANWEN_BURST_PAUSE_MS_DEFAULT = 25 * 60_000;
+
+/**
+ * 平台那轮额度用尽后要静置多久，0 = 不静置（取消这条限制）。
+ *
+ * 单独成函数而不是写成模块常量：值是每次判定时现读的，所以改环境变量重启进程即可生效，
+ * 也避免把「默认 25 分钟」这个实测事实埋进一个看不出来源的数字里。
+ */
+function qianwenBurstPauseMs() {
+  return intEnvValue("ONEGL_QIANWEN_BURST_PAUSE_MS", QIANWEN_BURST_PAUSE_MS_DEFAULT, 0);
+}
 
 /**
  * 千问 Web（阿里，原通义千问，入口 www.qianwen.com）。
  *
- * Measured on 2026-09-22 over six anonymous captures with tools/provider-phase0.js; the values
- * in `login`, `chat` and `citation` are observations, not analogy with Doubao. Rolling this
- * back is one flag: set `validated` to false and the adapter leaves the table and the contract.
+ * Measured with tools/provider-phase0.js. The 2026-09-22 baseline of six anonymous captures has
+ * been invalidated since: four of its `success` runs were 7-second captures whose page contained
+ * zero answer nodes, so the values in `login` and `citation` are observations still awaiting a
+ * re-measurement, while `chat` rests on the 2026-09-23 re-measurement on the shipped engine. See
+ * docs/QIANWEN_BASELINE_INVALIDATION.md. Rolling this back is one flag: set `validated` to false
+ * and the adapter leaves the table and the contract.
  *
  * This is the platform's *anonymous* surface: `requiresStoredAuth: false` means no login
  * state, no account row and no session cookie list. That choice is load-bearing in two
@@ -115,7 +132,20 @@ export const qianwenWebProfile = {
     // 只能打一轮、静一轮：额度满了就停，静够再继续。这不是我们加的限额，是平台自己的，
     // 所以它按实测值声明在这里，由可用性判定执行（见 src/accounts/safety.js）。
     burstPrompts: 4,
-    burstPauseMs: 25 * 60_000,
+    /**
+     * 平台那轮额度用尽后要静置多久，0 = 不静置（取消这条限制）。
+     *
+     * 为什么默认保持 25 分钟：2026-09-23/24 的四轮批次（58/60/63/65）形状一致 —— 成功 3~4 条
+     * 后撞登录墙，静置 20–30 分钟才解除；批次 63 连续敲了 6 小时墙一直没退。所以这是平台的
+     * 轮次额度，不是我们自加的礼貌，取消它是一种明确取舍而非清理死代码：第 5 条起大概率撞墙，
+     * 而那一条提问已经送进对话、救不回来，只能按 TIMEOUT 收场。
+     *
+     * 用 getter 而不是普通字段：值来自环境变量，若在模块加载时固化，测试和「改配置后想看
+     * 效果」都会读到过期值 —— 校验器和运行时读的必须是同一个当下值。
+     */
+    get burstPauseMs() {
+      return qianwenBurstPauseMs();
+    },
     // 2026-09-22 的 6 次匿名提问没看到任何上限文案，于是这一项当时留空、只记一条告警。
     // 2026-09-23 跑真实批量时墙出现了：当天累计约 37 次匿名提问后，页面弹「登录解锁完整功能」
     // （手机号/验证码 + 二维码，二维码本身已「扫描失败」）盖住整页。此时提问仍被送进对话

@@ -47,14 +47,26 @@ if screen_size:
 # InvalidAddonPath). The image build bundles a pinned, verified uBlock build;
 # load that extracted directory explicitly and keep the default auto-download
 # disabled.
+#
+# Two shapes have to work with the same code. In the image the bundle is the only
+# permitted source, so a missing manifest is a hard failure - that check is what stops a
+# broken build from reaching production. On a local Windows checkout the bundle path does
+# not exist at all, and failing there would mean the browser cannot be launched for any
+# local verification. So: an explicitly configured path stays strict on every platform;
+# the image default fails closed on Linux; Windows falls back to "no add-ons" instead.
 payload["exclude_addons"] = list(DefaultAddons)
 ublock_path = os.environ.get("ONEGL_CAMOUFOX_UBLOCK_PATH", "/opt/onegl-addons/ublock").strip()
 manifest_path = os.path.join(ublock_path, "manifest.json")
-if not os.path.isdir(ublock_path) or not os.path.isfile(manifest_path):
+ublock_explicit = "ONEGL_CAMOUFOX_UBLOCK_PATH" in os.environ
+ublock_bundled = os.path.isdir(ublock_path) and os.path.isfile(manifest_path)
+if ublock_bundled:
+    payload["addons"] = [ublock_path]
+elif ublock_explicit or sys.platform.startswith("linux"):
     raise RuntimeError(
         f"Bundled uBlock add-on is missing or invalid: {ublock_path} (manifest.json required)"
     )
-payload["addons"] = [ublock_path]
+else:
+    print(f"CAMOUFOX_UBLOCK_UNAVAILABLE::{ublock_path}", file=sys.stderr)
 
 options = launch_options(**payload)
 print(json.dumps(options))
@@ -140,16 +152,28 @@ async function stopVirtualDisplay(child) {
 // ---------------------------------------------------------------------------
 
 const PROFILE_DIR_PREFIX = "playwright_firefoxdev_profile-";
-const PROFILE_TMP_DIR = process.env.TMPDIR || "/tmp";
-
+// Playwright puts its per-launch profile in the platform temp dir, which is TMPDIR on Linux
+// containers and TEMP/TMP on Windows. Hardcoding /tmp meant the Windows path never resolved,
+// so every launch leaked a full browser profile into %TEMP% - invisible while one browser
+// served a whole session, gigabytes once the session is rebuilt on a rotation counter.
+//
+// 用 `process.env.TMPDIR` 而不是 `os.tmpdir()`、用字符串拼接而不是 `path.join()`：这个模块
+// 的孤儿进程回收逻辑是被 test/browser-orphan-reaping.test.mjs 用 extractFunction 逐个函数
+// 抽出来、放进 vm 沙箱里跑的（见该测试的 buildHarness）。沙箱只注入 readdir/readFile/rm
+// 这几个绑定和一份 `process` 替身，没有注入 os/path —— 依赖 `os` 或 `path` 会让那些用例
+// 在沙箱里直接 ReferenceError。同理，取临时目录的表达式必须内联在函数体里：抽函数是按
+// 单个 function 声明做的，额外定义一个模块级 helper 不会被一起带进沙箱。
+//
+// 语义上是等价的：Node 的 os.tmpdir() 在 Linux 上读的就是 TMPDIR，Windows 上读 TEMP/TMP。
+// 拼接统一用 POSIX 分隔符，因为真正读这个路径的 /proc 反查只在 Linux 上跑。
 async function listProfileDirs() {
-  if (process.platform !== "linux") return new Set();
+  const root = process.env.TMPDIR || "/tmp";
   try {
-    const entries = await readdir(PROFILE_TMP_DIR, { withFileTypes: true });
+    const entries = await readdir(root, { withFileTypes: true });
     return new Set(
       entries
         .filter((entry) => entry.isDirectory() && entry.name.startsWith(PROFILE_DIR_PREFIX))
-        .map((entry) => `${PROFILE_TMP_DIR}/${entry.name}`),
+        .map((entry) => `${root}/${entry.name}`),
     );
   } catch {
     return new Set();
@@ -437,6 +461,14 @@ export async function launchBrowserSession(
       },
       /** Prompts served by the current context; the worker rotates the window on this count. */
       contextPrompts: 0,
+      /**
+       * The Playwright temp profile this launch owns, or null when it could not be identified.
+       *
+       * Exposed rather than kept local because it is the only handle on the browser's process
+       * tree: if it is null the tree cannot be reaped and the profile cannot be removed, and
+       * that failure is otherwise invisible until /tmp or %TEMP% is full.
+       */
+      profilePath,
       hasStoredAuth: storedAuth.present,
       storageStateEncrypted: storedAuth.encrypted,
       storageStateMigrated: storedAuth.migrated,
