@@ -1,4 +1,4 @@
-import { inspectSession } from "./doubao.js";
+import { doubaoAnonymousEnabled, inspectSession } from "./doubao.js";
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
 
 // 等待 composer（输入框）出现后再做判定。
@@ -163,10 +163,20 @@ function throwForSessionState(state) {
 export async function prepareFrontEndForRun(page, config, options = {}) {
   const guard = { ...frontEndGuardConfig(), ...options };
   const initialUrl = page.url();
+  // 匿名面必须显式告诉 inspectSession，否则它按登录面判定。
+  //
+  // 这里是豆包匿名模式一直跑不通的最后一环：`inspectSession(page, { anonymous = false })`
+  // 的默认值是 false，而本文件三处调用都没传这个参数 —— 于是匿名首页（composer 可用、
+  // 但右上角常驻一个「登录」按钮）被判成 `login_required`，preflight 直接 fail-closed，
+  // 每条采集 2 秒就结束，批次表现为全量 PAGE_CHANGED。
+  //
+  // 判定依据取自平台适配器自己（`doubao-web.requiresStoredAuth` 就是
+  // `!doubaoAnonymousEnabled()`），不再由调用方各写一份。
+  const anonymous = doubaoAnonymousEnabled();
   // 先确保页面已渲染出 composer，再做状态判定（见文件顶部注释）。
   // 超时只是让下面的 fail-closed 分支去报错，语义不变。
   await waitForComposer(page);
-  let session = await inspectSession(page);
+  let session = await inspectSession(page, { anonymous });
   throwForSessionState(session);
 
   let snapshot = await frontEndSnapshot(page);
@@ -175,7 +185,7 @@ export async function prepareFrontEndForRun(page, config, options = {}) {
   let idleStreak = snapshot.busy ? 0 : 1;
   while (idleStreak < guard.stableIdlePolls && Date.now() < deadline) {
     await page.waitForTimeout(guard.pollMs);
-    session = await inspectSession(page);
+    session = await inspectSession(page, { anonymous });
     throwForSessionState(session);
     snapshot = await frontEndSnapshot(page);
     idleStreak = snapshot.busy ? 0 : idleStreak + 1;
@@ -202,7 +212,7 @@ export async function prepareFrontEndForRun(page, config, options = {}) {
     navigatedToChatRoot = true;
     await page.waitForTimeout(1_000);
     await waitForComposer(page);
-    session = await inspectSession(page);
+    session = await inspectSession(page, { anonymous });
     throwForSessionState(session);
     snapshot = await frontEndSnapshot(page);
   }
