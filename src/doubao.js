@@ -125,8 +125,35 @@ export async function openDoubao(page, config) {
   }
 }
 
-export async function inspectSession(page) {
-  return page.evaluate(() => {
+/**
+ * 豆包匿名面开关。
+ *
+ * 平台本身允许匿名访问：2026-09-20 实测（见 inspectSession 里的 cookie 清单）用全新 context
+ * 打开 www.doubao.com 时页面正常加载、下发了 CSRF 令牌、`flow_cur_user_sec_id` 是空串占位 ——
+ * 也就是说「没登录」但「能用」。此前 OneGl 把它判成 login_required 是**我们的要求**，不是平台
+ * 的要求：判定写死了 `textbox && loggedIn` 才算 healthy。
+ *
+ * 打开后行为与千问那条匿名通道一致：不吃账号额度（`isCredentialFreeSurface` 会返回 true），
+ * 可以并发开多个浏览器槽位，登录态不再必需。
+ *
+ * 默认关。开启前必须实测确认匿名首页确实能把问题问出去 —— 若平台在提交时才拦（登录墙出现在
+ * 生成阶段），失败会落在 LOGIN_REQUIRED 上，而豆包的失败同样是 no-retry。
+ */
+const DOUBAO_ANONYMOUS_ENV = "ONEGL_DOUBAO_ANONYMOUS";
+
+export function doubaoAnonymousEnabled() {
+  const raw = String(process.env[DOUBAO_ANONYMOUS_ENV] ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+/**
+ * 这个会话算不算可用。
+ *
+ * @param {object} options
+ * @param {boolean} options.anonymous 匿名面：允许在没有登录态的情况下使用 composer
+ */
+export async function inspectSession(page, { anonymous = false } = {}) {
+  return page.evaluate((anonymousSurface) => {
     const visible = (element) => {
       if (!(element instanceof HTMLElement)) return false;
       const style = getComputedStyle(element);
@@ -222,12 +249,28 @@ export async function inspectSession(page) {
     const textbox = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')].some(visible);
 
     if (captcha) return { state: "verification_required", routerLogin, loggedIn, loginButton, textbox };
+
+    // ── 匿名面 ────────────────────────────────────────────────────────────────
+    // 实测（2026-09-24）：匿名打开 www.doubao.com/chat 时，页面**右上角常驻一个「登录」按钮**，
+    // 而 composer 完全可用 —— 提问后拿到了 952 字的正常答案，全程没有登录墙。所以那个按钮是
+    // 「平台提供一个登录入口」，不是「不登录就不让你用」。若沿用登录态的判定顺序（有登录按钮
+    // 且未登录 ⇒ login_required），匿名面会在**功能完全正常**的情况下被判成需要登录，
+    // 改造就等于没做 —— 第一次探测正是这个结果。
+    //
+    // 真正的 login 墙特征不是那个按钮，而是「既有登录按钮、又给不出可输入的 composer」。
+    // captcha / access_restricted 在匿名面照旧拦：那是平台明确拒绝，与登录与否无关。
+    if (anonymousSurface) {
+      if (accessRestricted) return { state: "access_restricted", routerLogin, loggedIn, loginButton, textbox };
+      if (textbox) return { state: "healthy", routerLogin, loggedIn, loginButton, textbox };
+      return { state: "unknown", routerLogin, loggedIn, loginButton, textbox };
+    }
+
     if (explicitLogin && !loggedIn) return { state: "login_required", routerLogin, loggedIn, loginButton, textbox };
     if (loginButton && !loggedIn) return { state: "login_required", routerLogin, loggedIn, loginButton, textbox };
     if (accessRestricted) return { state: "access_restricted", routerLogin, loggedIn, loginButton, textbox };
     if (textbox && loggedIn) return { state: "healthy", routerLogin, loggedIn, loginButton, textbox };
     return { state: "unknown", routerLogin, loggedIn, loginButton, textbox };
-  });
+  }, anonymous);
 }
 
 export async function waitForManualLogin(page, config) {
@@ -268,16 +311,19 @@ export async function waitForManualLogin(page, config) {
 }
 
 export async function requireHealthySession(page, config) {
+  // 匿名面允许在没有登录态的情况下使用 composer。开关来自环境而非 config：config 由
+  // loadConfig 生成，那里没有平台专属概念，而这是豆包独有的运行模式。
+  const anonymous = doubaoAnonymousEnabled();
   const settleMs = Math.min(config.timeoutMs, 30_000);
   const deadline = Date.now() + settleMs;
-  let state = await inspectSession(page);
+  let state = await inspectSession(page, { anonymous });
   while (state.state === "unknown" && Date.now() < deadline) {
     await page.waitForTimeout(config.pollMs);
-    state = await inspectSession(page);
+    state = await inspectSession(page, { anonymous });
   }
   if (state.state === "healthy") return state;
 
-  const hadStoredAuth = await hasStoredStorageState(config);
+  const hadStoredAuth = anonymous ? false : await hasStoredStorageState(config);
   if (state.state === "verification_required") {
     throw new DoubaoMvpError(
       ErrorCode.VERIFICATION_REQUIRED,
@@ -295,9 +341,11 @@ export async function requireHealthySession(page, config) {
   if (state.state === "login_required") {
     throw new DoubaoMvpError(
       hadStoredAuth ? ErrorCode.SESSION_EXPIRED : ErrorCode.LOGIN_REQUIRED,
-      hadStoredAuth
-        ? "The saved Doubao session is no longer authenticated. Run the auth command again."
-        : "Doubao login is required. Run the auth command first.",
+      anonymous
+        ? "匿名面的豆包挂出了登录要求（通常是匿名额度用尽）。需要人工确认是继续匿名还是改用登录态。"
+        : hadStoredAuth
+          ? "The saved Doubao session is no longer authenticated. Run the auth command again."
+          : "Doubao login is required. Run the auth command first.",
       state,
     );
   }

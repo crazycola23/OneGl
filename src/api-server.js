@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 
 import { accountInflightState } from "./accounts/inflight.js";
+import { safetyConfig } from "./accounts/safety.js";
 import { parseBatchCreate, parseKeywordsCreate, parseLimit, parseProjectCreate } from "./api/contracts.js";
 import { handleGeoIntelligenceRoute } from "./api/geo-intelligence-routes.js";
 import { ApiHttpError, errorPayload, readJsonBody, sendBuffer, sendJson } from "./api/http.js";
@@ -50,6 +51,7 @@ import {
   startRemoteAuthSession,
 } from "./api/remote-auth.js";
 import { loadConfig } from "./config.js";
+import { doubaoAnonymousEnabled } from "./doubao.js";
 import { createPool, isDatabaseConfigured } from "./db/pool.js";
 import {
   batchDetail,
@@ -60,7 +62,7 @@ import {
   listRuns,
 } from "./db/dashboard.js";
 import { addKeywords, countActiveKeywords, listProjectKeywords } from "./project/keywords.js";
-import { defaultProviderId, getProviderAdapter, supportedProviderIds } from "./providers/index.js";
+import { defaultProviderId, getProviderAdapter, listProviderAdapters } from "./providers/index.js";
 import { batchProgress, enqueueBatch, stopBatch } from "./queue/batches.js";
 import { isQueueConfigured } from "./queue/connection.js";
 import { createSamplingBatch } from "./sampling/batch.js";
@@ -396,6 +398,70 @@ async function routeApi(req, res, url) {
     }
   }
 
+  // ── 能力探测 ───────────────────────────────────────────────────────────────
+  // 对接方（scrm/GEO 侧）靠这两个接口决定「界面该给哪些选项」，而不是靠试错：
+  // providers 说「有哪些采集通道」，capabilities 说「这台实例现在开通了哪些」。
+  //
+  // providers 之前只在 OpenAPI 文档里存在、没有实现 —— 文档承诺了、路由不响应，
+  // 对接方只能读到 404 再猜。这里补上实现，让它与文档一致。
+  if (req.method === "GET" && pathname === `${API_PREFIX}/providers`) {
+    return sendJson(res, 200, {
+      data: listProviderAdapters().map((entry) => {
+        const adapter = getProviderAdapter(entry.id);
+        return {
+          id: entry.id,
+          provider: entry.provider,
+          model: entry.model,
+          access: entry.access,
+          // 这一位是界面的分水岭：true 表示必须先扫码登录才能用；
+          // false 表示这是一条匿名通道，不需要绑定登录态。
+          requires_stored_auth: adapter.requiresStoredAuth !== false,
+        };
+      }),
+    });
+  }
+
+  if (req.method === "GET" && pathname === `${API_PREFIX}/capabilities`) {
+    const slots = safetyConfig().accountSlots;
+    const adapters = listProviderAdapters();
+    // 匿名通道有一个运行期开关（豆包匿名面靠 ONEGL_DOUBAO_ANONYMOUS 开启）。接口必须报
+    // 「现在开没开」而不是「代码支持不支持」—— 前者决定界面要不要置灰，后者永远是 true。
+    const anonymousEnabledFor = (provider) =>
+      provider !== "doubao" ? true : doubaoAnonymousEnabled();
+    return sendJson(res, 200, {
+      data: {
+        providers: adapters
+          .filter((entry) => getProviderAdapter(entry.id).requiresStoredAuth !== false)
+          .map((entry) => ({
+            id: entry.id,
+            provider: entry.provider,
+            requires_stored_auth: true,
+            max_slots: Math.max(1, slots),
+            enabled: true,
+          }))
+          .concat(
+            adapters
+              .filter((entry) => getProviderAdapter(entry.id).requiresStoredAuth === false)
+              .map((entry) => ({
+                id: entry.id,
+                provider: entry.provider,
+                requires_stored_auth: false,
+                max_slots: Math.max(1, slots),
+                enabled: anonymousEnabledFor(entry.provider),
+              })),
+          ),
+        worker: {
+          account_slots_default: slots,
+          account_parallelism: safetyConfig().accountParallelism,
+        },
+        notes: [
+          "匿名通道（requires_stored_auth=false）不需要绑定登录态，也不吃账号级额度；enabled=false 表示该实例尚未开启这条通道。",
+          "观测面不同的样本不可合并统计：匿名样本与登录态样本要分开算提及率。",
+        ],
+      },
+    });
+  }
+
   if (req.method === "GET" && pathname === `${API_PREFIX}/accounts`) {
     requireScope(auth, "accounts:read");
     const accounts = await listTenantAccounts(db, tenant.id);
@@ -407,21 +473,55 @@ async function routeApi(req, res, url) {
     requireScope(auth, "accounts:write");
     const body = await readJsonBody(req);
     const provider = String(body.provider ?? defaultProviderId()).trim().toLowerCase();
-    if (!supportedProviderIds().includes(provider)) {
+    // 校验用 adapter id 而不是 provider id：匿名面注册为独立 adapter（doubao-anonymous），
+    // 它的 provider 仍是 doubao。先前这里查 supportedProviderIds()，那是一份 **provider** 列表，
+    // 于是 doubao-anonymous 会被当成「不支持的平台」拒掉 —— 功能实现了却调不进来。
+    const adapterIds = listProviderAdapters().map((entry) => entry.id);
+    if (!adapterIds.includes(provider)) {
       throw new ApiHttpError(
         422,
         "unsupported_provider",
-        `only a platform with a registered adapter can be bound: ${supportedProviderIds().join(", ")}`,
+        `only a platform with a registered adapter can be bound: ${adapterIds.join(", ")}`,
       );
     }
+    const adapter = getProviderAdapter(provider);
+    const needsStoredAuth = adapter.requiresStoredAuth !== false;
+
+    // 并发槽位：账号级，决定这个账号同时跑几个浏览器。
+    const rawSlots = body.account_slots ?? body.accountSlots;
+    const accountSlots = rawSlots == null ? safetyConfig().accountSlots : Number(rawSlots);
+    if (!Number.isInteger(accountSlots) || accountSlots < 1 || accountSlots > 4) {
+      throw new ApiHttpError(422, "invalid_account_slots", "account_slots 必须是 1..4 的整数");
+    }
+
+    // 有凭证的账号多开是有代价的：账号级串行锁按槽位放行之后，平台会看到同一账号多设备
+    // 同时提问。这个代价要被显式确认，而不是靠默认值默默承担。
+    if (needsStoredAuth && accountSlots > 1 && body.acknowledge_concurrency_risk !== true) {
+      throw new ApiHttpError(
+        422,
+        "concurrency_risk_not_acknowledged",
+        "该平台需要登录态：account_slots>1 会放弃账号级串行保护，需显式 acknowledge_concurrency_risk=true",
+      );
+    }
+
     const account = await ensureTenantAccount(db, {
       tenantId: tenant.id,
       provider,
       externalId: body.account_id,
       label: body.label == null ? null : String(body.label).trim() || null,
+      // 匿名通道：这一位决定账号行记 account 还是 anonymous，进而决定报表分区。
+      anonymousSurface: !needsStoredAuth,
     });
     return sendJson(res, 201, {
-      data: { account_id: account.external_id, provider: account.provider ?? provider, label: account.label ?? null },
+      data: {
+        account_id: account.external_id,
+        provider: account.provider ?? provider,
+        adapter_id: provider,
+        label: account.label ?? null,
+        surface: needsStoredAuth ? "account" : "anonymous",
+        requires_stored_auth: needsStoredAuth,
+        account_slots: accountSlots,
+      },
     });
   }
 

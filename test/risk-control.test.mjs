@@ -6,6 +6,8 @@ import {
   classifyAccountState,
 } from "../src/accounts/safety.js";
 import { providerBurstPacing } from "../src/providers/index.js";
+import { collectProfileErrors } from "../src/providers/profile.js";
+import { qianwenWebProfile } from "../src/providers/qianwen-web.js";
 import {
   createConservativeDoubaoPage,
   prepareFrontEndForRun,
@@ -230,7 +232,37 @@ test("a measured burst allowance stops a credential-free lane before the platfor
 });
 
 test("only a provider that declared a measured burst allowance gets paced", () => {
-  assert.deepEqual(providerBurstPacing("qianwen"), { prompts: 4, pauseMs: 25 * 60_000 });
+  const previous = process.env.ONEGL_QIANWEN_BURST_PAUSE_MS;
+  try {
+    // 默认 = 2026-09-23/24 实测的 25 分钟；运维把它设成 0 就是取消这条限制。
+    delete process.env.ONEGL_QIANWEN_BURST_PAUSE_MS;
+    assert.deepEqual(providerBurstPacing("qianwen"), { prompts: 4, pauseMs: 25 * 60_000 });
+
+    process.env.ONEGL_QIANWEN_BURST_PAUSE_MS = "0";
+    assert.equal(
+      providerBurstPacing("qianwen"),
+      null,
+      "0 must read as «no measured burst limit», not as a zero-length window",
+    );
+
+    process.env.ONEGL_QIANWEN_BURST_PAUSE_MS = "60000";
+    assert.deepEqual(providerBurstPacing("qianwen"), { prompts: 4, pauseMs: 60_000 });
+
+    // 负数不是在这里抛：这条路径在 worker 热路径上，throw 会被吞成「没有 pacing」。
+    // 真正的把关在 profile 校验 —— 非法值让 collectProfileErrors 直接抛出带变量名的错误，
+    // 注册阶段就停住，而不是悄悄丢掉 pacing 继续跑。
+    process.env.ONEGL_QIANWEN_BURST_PAUSE_MS = "-1";
+    assert.equal(providerBurstPacing("qianwen"), null);
+    assert.throws(
+      () => collectProfileErrors(qianwenWebProfile),
+      /ONEGL_QIANWEN_BURST_PAUSE_MS/,
+      "a negative pause must fail the profile loudly, not silently drop the pacing",
+    );
+  } finally {
+    if (previous == null) delete process.env.ONEGL_QIANWEN_BURST_PAUSE_MS;
+    else process.env.ONEGL_QIANWEN_BURST_PAUSE_MS = previous;
+  }
+
   // Doubao is account-driven and declares none, so nothing changes for it.
   assert.equal(providerBurstPacing("doubao"), null);
   // An unknown provider must not throw here: this runs on the worker's hot path.

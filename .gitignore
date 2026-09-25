@@ -15,3 +15,6 @@ npm-debug.log*
 pnpm-debug.log*
 # 提交信息临时文件（勿提交）
 .commit-msg.tmp
+
+# 本地运维脚本（含 SSH/Redis 凭据，只留在本机）
+.ops/

@@ -97,6 +97,10 @@ export function providerBurstPacing(provider) {
   try {
     const quota = getProviderAdapter(provider)?.profile?.quota;
     if (!Number.isInteger(quota?.burstPrompts) || !Number.isInteger(quota?.burstPauseMs)) return null;
+    // 静置时长为 0 是运维把这条限制关掉，而不是「半声明的 pacing」：这里返回 null 就让
+    // 「没有额度限制」和「从未测出额度限制」走同一条路，而不是把 lane 钉死在一个永远
+    // 清不掉的窗口里。
+    if (quota.burstPauseMs < 1) return null;
     return { prompts: quota.burstPrompts, pauseMs: quota.burstPauseMs };
   } catch {
     return null;

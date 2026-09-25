@@ -304,6 +304,17 @@
             "minLength": 1,
             "type": "string"
           },
+          "account_slots": {
+            "description": "How many browsers this account may run at the same time. Defaults to the server's ONEGL_ACCOUNT_SLOTS. Each slot holds its own browser process, page and fingerprint, so the platform sees N independent visitors rather than one session issuing parallel prompts.",
+            "maximum": 4,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "acknowledge_concurrency_risk": {
+            "default": false,
+            "description": "Required to be true when the adapter needs a stored login (requires_stored_auth=true) and account_slots>1. Raising the slot count gives up the account-level serialization that keeps one login state from being hammered concurrently, so the caller has to say it knows. Anonymous lanes need no such acknowledgement: they have no login state to protect. Missing this answers 422 concurrency_risk_not_acknowledged.",
+            "type": "boolean"
+          },
           "label": {
             "type": [
               "string",
@@ -312,6 +323,7 @@
           },
           "provider": {
             "default": "doubao",
+            "description": "Adapter id, not just the platform. An anonymous lane is a separate adapter sharing the platform (`doubao-anonymous` collects from `doubao`), so this field decides the observation surface the account will produce.",
             "enum": [
               "doubao",
               "qianwen"
@@ -1153,6 +1165,81 @@
         "required": [
           "id",
           "status"
+        ],
+        "type": "object"
+      },
+      "CapabilityResource": {
+        "additionalProperties": true,
+        "properties": {
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "providers": {
+            "items": {
+              "additionalProperties": true,
+              "properties": {
+                "enabled": {
+                  "description": "运行期事实：false 表示这条通道在当前实例上尚未开启，调用方应置灰而不是试错。",
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "max_slots": {
+                  "description": "同一账号可同时运行的浏览器数。",
+                  "maximum": 4,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "provider": {
+                  "enum": [
+                    "doubao",
+                    "qianwen"
+                  ],
+                  "type": "string"
+                },
+                "requires_stored_auth": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "provider",
+                "requires_stored_auth",
+                "max_slots",
+                "enabled"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "worker": {
+            "additionalProperties": true,
+            "properties": {
+              "account_parallelism": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "account_slots_default": {
+                "maximum": 4,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "account_slots_default",
+              "account_parallelism"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "providers",
+          "worker",
+          "notes"
         ],
         "type": "object"
       },
@@ -3261,6 +3348,45 @@
         "required": [
           "id",
           "name"
+        ],
+        "type": "object"
+      },
+      "ProviderAdapterResource": {
+        "additionalProperties": true,
+        "properties": {
+          "access": {
+            "enum": [
+              "scraped",
+              "official_api"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "description": "Adapter id, e.g. doubao-web.",
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "description": "Platform the adapter collects from.",
+            "enum": [
+              "doubao",
+              "qianwen"
+            ],
+            "type": "string"
+          },
+          "requires_stored_auth": {
+            "description": "false 表示匿名通道：不需要绑定登录态，也不吃账号级每日/每小时额度。",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "model",
+          "access",
+          "requires_stored_auth"
         ],
         "type": "object"
       },
@@ -9886,6 +10012,91 @@
         ]
       }
     },
+    "/v1/capabilities": {
+      "get": {
+        "description": "Probe for integration: `providers` says which lanes exist and whether each is switched on *right now*, `worker` reports the concurrency defaults. `enabled` is a runtime fact rather than a capability declaration — an anonymous lane whose feature flag is off answers `enabled=false` here, so a caller can grey the option out instead of discovering the refusal by creating an account and failing. Concurrency is reported as `max_slots`, the number of browsers one account may run at the same time. A lane with `requires_stored_auth=true` using more than one slot gives up the account-level serialization that keeps a login state from being hammered concurrently, which is why account creation demands an explicit acknowledgement in that case.",
+        "operationId": "getCapabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CapabilityResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Instance capabilities",
+            "headers": {
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Read what this instance currently supports",
+        "tags": [
+          "Observability"
+        ]
+      }
+    },
     "/v1/executions/{executionId}": {
       "get": {
         "description": "Poll execution status and progress",
@@ -12235,7 +12446,7 @@
     },
     "/v1/providers": {
       "get": {
-        "description": "Lists the collection adapters this instance has registered, which is exactly the set of platforms a Task can execute on. Provider identity stays explicit so every measurement remains attributable to the surface that produced it.",
+        "description": "Lists the collection adapters this instance has registered, which is exactly the set of platforms a Task can execute on. Provider identity stays explicit so every measurement remains attributable to the surface that produced it. Note that `id` and `provider` differ for an anonymous surface: `doubao-anonymous` is a separate adapter that shares the `doubao` platform, so a client may run both a signed-in lane and an anonymous lane against the same platform without them being confused for one observation surface. `requires_stored_auth=false` marks the anonymous lanes.",
         "operationId": "getProviders",
         "responses": {
           "200": {
@@ -15971,6 +16182,10 @@
     {
       "description": "Recurring lower-level monitoring plans.",
       "name": "Monitoring"
+    },
+    {
+      "description": "Operational API controls and response metadata.",
+      "name": "Observability"
     },
     {
       "description": "Tenant projects and their configuration.",

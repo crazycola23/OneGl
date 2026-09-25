@@ -1,4 +1,15 @@
-import { defaultProviderId as DEFAULT_PROVIDER, supportedProviderIds as PROVIDERS } from "../providers/index.js";
+// 两个口径不能混用：
+//   PROVIDERS()   = 平台码（doubao / qianwen），调用方在 provider / platform 字段里传的值。
+//   ADAPTER_IDS() = 适配器 id（doubao-web / qianwen-web），GET /v1/providers 里报的 id。
+// 之前只用前者描述「有哪些通道」，而 provider 是全局状态、adapter 才是可选择项，两者混用会让
+// 文档里的枚举和调用方实际要传的值对不上 —— 那种分叉在联调时表现为「照文档传了却被拒」。
+import {
+  defaultProviderId as DEFAULT_PROVIDER,
+  listProviderAdapters,
+  supportedProviderIds as PROVIDERS,
+} from "../providers/index.js";
+
+const ADAPTER_IDS = () => listProviderAdapters().map((entry) => entry.id);
 const jsonResponse = (description, schema = { type: "object" }) => ({
   description,
   content: { "application/json": { schema } },
@@ -84,8 +95,27 @@ export const openApiDocument = {
         required: ["account_id"],
         properties: {
           account_id: { type: "string", minLength: 1 },
-          provider: { type: "string", enum: PROVIDERS(), default: DEFAULT_PROVIDER() },
+          provider: {
+            type: "string",
+            enum: PROVIDERS(),
+            default: DEFAULT_PROVIDER(),
+            description:
+              "Adapter id, not just the platform. An anonymous lane is a separate adapter sharing the platform (`doubao-anonymous` collects from `doubao`), so this field decides the observation surface the account will produce.",
+          },
           label: { type: ["string", "null"] },
+          account_slots: {
+            type: "integer",
+            minimum: 1,
+            maximum: 4,
+            description:
+              "How many browsers this account may run at the same time. Defaults to the server's ONEGL_ACCOUNT_SLOTS. Each slot holds its own browser process, page and fingerprint, so the platform sees N independent visitors rather than one session issuing parallel prompts.",
+          },
+          acknowledge_concurrency_risk: {
+            type: "boolean",
+            default: false,
+            description:
+              "Required to be true when the adapter needs a stored login (requires_stored_auth=true) and account_slots>1. Raising the slot count gives up the account-level serialization that keeps one login state from being hammered concurrently, so the caller has to say it knows. Anonymous lanes need no such acknowledgement: they have no login state to protect. Missing this answers 422 concurrency_risk_not_acknowledged.",
+          },
         },
       },
       BatchCreate: {
@@ -131,6 +161,63 @@ export const openApiDocument = {
           description: { type: ["string", "null"] },
         },
       },
+      // 契约测试要求成功响应给具体 schema，不接受裸 object —— 这条约束的价值就在这里：
+      // 泛型 schema 会让调用方无法从文档判断字段是否存在，只能靠试。
+      ProviderAdapterResource: {
+        type: "object",
+        required: ["id", "provider", "model", "access", "requires_stored_auth"],
+        properties: {
+          id: { type: "string", description: "Adapter id, e.g. doubao-web." },
+          provider: { type: "string", enum: PROVIDERS(), description: "Platform the adapter collects from." },
+          model: { type: "string" },
+          access: { type: "string", enum: ["scraped", "official_api"] },
+          requires_stored_auth: {
+            type: "boolean",
+            description: "false 表示匿名通道：不需要绑定登录态，也不吃账号级每日/每小时额度。",
+          },
+        },
+        additionalProperties: true,
+      },
+      CapabilityResource: {
+        type: "object",
+        required: ["providers", "worker", "notes"],
+        properties: {
+          providers: {
+            type: "array",
+            items: {
+              type: "object",
+              required: ["id", "provider", "requires_stored_auth", "max_slots", "enabled"],
+              properties: {
+                id: { type: "string" },
+                provider: { type: "string", enum: PROVIDERS() },
+                requires_stored_auth: { type: "boolean" },
+                max_slots: {
+                  type: "integer",
+                  minimum: 1,
+                  maximum: 4,
+                  description: "同一账号可同时运行的浏览器数。",
+                },
+                enabled: {
+                  type: "boolean",
+                  description: "运行期事实：false 表示这条通道在当前实例上尚未开启，调用方应置灰而不是试错。",
+                },
+              },
+              additionalProperties: true,
+            },
+          },
+          worker: {
+            type: "object",
+            required: ["account_slots_default", "account_parallelism"],
+            properties: {
+              account_slots_default: { type: "integer", minimum: 1, maximum: 4 },
+              account_parallelism: { type: "integer", minimum: 1 },
+            },
+            additionalProperties: true,
+          },
+          notes: { type: "array", items: { type: "string" } },
+        },
+        additionalProperties: true,
+      },
     },
     responses: {
       BadRequest: jsonResponse("Invalid request", { $ref: "#/components/schemas/Error" }),
@@ -170,8 +257,31 @@ export const openApiDocument = {
     "/v1/providers": {
       get: {
         summary: "List configured provider adapter types",
-        description: "Lists the collection adapters this instance has registered, which is exactly the set of platforms a Task can execute on. Provider identity stays explicit so every measurement remains attributable to the surface that produced it.",
-        responses: { 200: jsonResponse("Provider adapters") },
+        description:
+          "Lists the collection adapters this instance has registered, which is exactly the set of platforms a Task can execute on. Provider identity stays explicit so every measurement remains attributable to the surface that produced it. Note that `id` and `provider` differ for an anonymous surface: `doubao-anonymous` is a separate adapter that shares the `doubao` platform, so a client may run both a signed-in lane and an anonymous lane against the same platform without them being confused for one observation surface. `requires_stored_auth=false` marks the anonymous lanes.",
+        responses: {
+          200: jsonResponse("Provider adapters", {
+            type: "object",
+            required: ["data"],
+            properties: { data: { type: "array", items: { $ref: "#/components/schemas/ProviderAdapterResource" } } },
+            additionalProperties: true,
+          }),
+        },
+      },
+    },
+    "/v1/capabilities": {
+      get: {
+        summary: "Read what this instance currently supports",
+        description:
+          "Probe for integration: `providers` says which lanes exist and whether each is switched on *right now*, `worker` reports the concurrency defaults. `enabled` is a runtime fact rather than a capability declaration — an anonymous lane whose feature flag is off answers `enabled=false` here, so a caller can grey the option out instead of discovering the refusal by creating an account and failing. Concurrency is reported as `max_slots`, the number of browsers one account may run at the same time. A lane with `requires_stored_auth=true` using more than one slot gives up the account-level serialization that keeps a login state from being hammered concurrently, which is why account creation demands an explicit acknowledgement in that case.",
+        responses: {
+          200: jsonResponse("Instance capabilities", {
+            type: "object",
+            required: ["data"],
+            properties: { data: { $ref: "#/components/schemas/CapabilityResource" } },
+            additionalProperties: true,
+          }),
+        },
       },
     },
 

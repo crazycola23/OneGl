@@ -1,4 +1,4 @@
-import { executeDoubaoPrompt, openDoubao } from "../doubao.js";
+import { doubaoAnonymousEnabled, executeDoubaoPrompt, openDoubao } from "../doubao.js";
 import { normalizeProviderResult, PROVIDER_ACCESS } from "./contract.js";
 
 export function hardenDoubaoCitationFallback(raw) {
@@ -29,7 +29,17 @@ export const doubaoWebProvider = {
   access: PROVIDER_ACCESS.SCRAPED,
   // Declared explicitly so every caller reasons about one shape instead of about whether a
   // missing field means "account" or "nobody thought about it".
-  requiresStoredAuth: true,
+  //
+  // 用 getter 而不是字面量：匿名面是**运行时可切**的（ONEGL_DOUBAO_ANONYMOUS），而这一位
+  // 决定了五处逻辑的分支 —— worker 要不要写登录态、runner 记 account 还是 anonymous、
+  // task-routes 要不要强制绑定账号、cli 的 auth 子命令、以及额度豁免与并发槽位。
+  // 写成字面量就只能改代码重发版本来切，而它本来就是个开关。
+  //
+  // 打开后豆包与千问那条匿名通道同形：不吃账号额度、可并发开多个浏览器、不需要登录态。
+  // 平台是否允许匿名提问必须先实测确认，见 src/doubao.js 的 doubaoAnonymousEnabled 注释。
+  get requiresStoredAuth() {
+    return !doubaoAnonymousEnabled();
+  },
   frontEndGuard: true,
 
   openPage(page, config) {

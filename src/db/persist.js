@@ -61,12 +61,12 @@ const RUN_UPSERT = `
     local_run_id, artifact_path,
     sampling_batch_id, account_key, conversation_reset_confirmed,
     brand_mentioned, mention_count, first_mention_position, matched_terms, brand_detection_version,
-    run_token, job_id, attempt, login_state, answer_truncated
+    run_token, job_id, attempt, login_state, answer_truncated, request_slot
   )
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
           $11, $12, $13, $14, $15, $16::jsonb, $17, $18,
           $19, $20, $21, $22, $23, $24, $25::jsonb, $26,
-          $27, $28, $29, $30, $31)
+          $27, $28, $29, $30, $31, $32)
   ON CONFLICT (local_run_id) DO UPDATE
     SET prompt_id = EXCLUDED.prompt_id,
         provider = EXCLUDED.provider,
@@ -252,6 +252,7 @@ export async function persistRun({
   runToken = null,
   jobId = null,
   attempt = null,
+  requestSlot = null,
 }) {
   if (!pool) throw new DatabasePersistError("persistRun requires a connection pool");
 
@@ -321,6 +322,8 @@ export async function persistRun({
       run?.loginState === "anonymous" ? "anonymous" : "account",
       // A hint, so a half-sentence capture can be excluded from rates instead of counted as one.
       looksTruncatedAnswer(run?.answer),
+      // 这一次采集实际跑在哪个并发槽位。指纹轮换的计数按槽位分开，见 migrations/0028。
+      Number.isInteger(requestSlot) && requestSlot >= 0 ? requestSlot : 0,
     ]);
     const runId = runResult.rows[0].id;
 
