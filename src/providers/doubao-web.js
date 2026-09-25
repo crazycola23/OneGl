@@ -22,48 +22,23 @@ export function hardenDoubaoCitationFallback(raw) {
   };
 }
 
-const DOUBAO_BURST_PAUSE_MS_DEFAULT = 25 * 60_000;
-
 /**
- * 平台那轮额度用尽后要静置多久，0 = 不静置（取消这条限制）。
+ * 豆包匿名面的设定。
  *
- * 与千问同形：每次判定时现读环境变量，所以改完重启进程即生效，也避免把「默认 25 分钟」
- * 这个数字埋成看不出源头的常量。
+ * **不声明任何爆量额度（burst）**：豆包匿名面现在只有一条限制 —— 每 2 条提问切换一次
+ * 指纹（`ONEGL_WINDOW_RESET_EVERY=2`，且 `ONEGL_WINDOW_RESET_PROVIDERS` 已含 doubao）。
+ * 切了身份之后平台不再拦截，所以没有「每 N 条要静置 M 分钟」这种规则可配。
  *
- * **内联读环境变量而不是复用 `accounts/safety.js` 的 `intEnvValue`**：那条导入会形成
- * `providers/doubao-web.js → accounts/safety.js → providers/index.js → providers/doubao-web.js`
- * 的环，实测直接报 `Cannot access 'doubaoWebProvider' before initialization`。
- * 千问走同样的导入之所以没事，只是因为它恰好先被求值 —— 依赖加载顺序是脆弱的，
- * 这里不值得赌。
+ * 我一度在这里配过 `burstPrompts: 5` + `burstPauseMs: 25min`，依据是一轮连续测量
+ * （前 5 条成功、第 6 条起失败）。**那个结论是错的，错在测量方法**：测量脚本直接连续调
+ * `executeDoubaoPrompt`，绕过了 worker 的 `prepareWindow` —— 也就是在一个**从不切换指纹**
+ * 的会话里连续提问。测出来的自然是「不换身份时会被拦」，而不是平台的额度边界。
  *
- * 这个默认值目前是**暂借千问的**：豆包静置多久恢复尚未实测（见下方 profile 注释）。
- */
-function doubaoBurstPauseMs() {
-  const raw = process.env.ONEGL_DOUBAO_BURST_PAUSE_MS;
-  if (raw == null || raw === "") return DOUBAO_BURST_PAUSE_MS_DEFAULT;
-  const parsed = Number(raw);
-  // 非整数（含空串、NaN）退回默认值；负数原样返回，由 providerBurstPacing 判成「无额度」
-  // —— 与千问一致：真正的把关在 profile 校验，这里不吞掉非法值。
-  return Number.isInteger(parsed) ? parsed : DOUBAO_BURST_PAUSE_MS_DEFAULT;
-}
-
-/**
- * 豆包匿名面的节奏设定。
+ * 教训：测额度必须在**真实采集路径**上测（含指纹轮换），否则测到的是测量环境的假象。
  *
- * 与千问对齐的是**机制**，不是数字 —— 两边的额度形态实测下来不一样，照抄数字只会配错：
- *
- * - `promptsPerWindow: 1`：同千问，每问换窗口。一个窗口里的第二个问题会落在同一段对话
- *   上下文里，那测的就不是「独立提问下的可见性」而是「追问一句之后的可见性」，
- *   引用与品牌提及率会被人为抬高。
- * - `burstPrompts: 5`：**实测值**。2026-09-25 连续测量（measure-doubao-quota.mjs）：
- *   修掉推广弹窗之后前 5 条连续成功，第 6 条起连续 `DOUBAO_SUBMISSION_FAILED`。
- *   千问是 4，豆包是 5，不要互相套用。
- * - `burstPauseMs`：用 getter 读 `ONEGL_DOUBAO_BURST_PAUSE_MS`，形状与千问完全一致
- *   （0 = 关闭静置）。**默认值暂借千问的 25 分钟，尚未实测** —— 豆包静置多久恢复没有测过。
- *   这一条要写明，否则以后会有人把它当成实测值来推理。
- *
- * 为什么需要这一段：`providerBurstPacing()` 读的是 `provider.profile.quota`，
- * 豆包此前**根本没有 `profile` 字段**，所以拿到的永远是 null —— 额度节奏对它完全不生效。
+ * `promptsPerWindow: 1` 留着，因为它不是额度限制而是样本质量要求：一个窗口里的第二个问题
+ * 会落在同一段对话上下文里，那测的就不再是「独立提问下的可见性」而是「追问后的可见性」，
+ * 引用与品牌提及率会被人为抬高。千问同理。
  */
 const doubaoWebProfile = {
   // 注册闸门：`providers/index.js` 只放行 `validated === true` 的 profile，
@@ -72,10 +47,6 @@ const doubaoWebProfile = {
   validated: true,
   quota: {
     promptsPerWindow: 1,
-    burstPrompts: 5,
-    get burstPauseMs() {
-      return doubaoBurstPauseMs();
-    },
   },
 };
 
