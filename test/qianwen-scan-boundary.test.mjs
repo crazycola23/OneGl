@@ -22,7 +22,7 @@ test("every field the page scan reads crosses the evaluate boundary", () => {
   // the check that reads it silently does nothing - which is exactly how the login-surface check
   // looked correct on both sides of the boundary while never firing on a real wall.
   const scan = region("function scanQianwenPage(", "function scanConfig(");
-  const boundary = region("function scanConfig(", "function scan(");
+  const boundary = region("function scanConfig(", "function scanPage(");
 
   const read = new Set([...scan.matchAll(/cfg\.([A-Za-z0-9_]+)/g)].map((match) => match[1]));
   const passed = new Set([...boundary.matchAll(/^\s{4}([A-Za-z0-9_]+):/gm)].map((match) => match[1]));
