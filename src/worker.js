@@ -417,11 +417,26 @@ function createSemaphore(permits) {
 const CONCURRENCY_DEGRADE_WINDOW_MS = 10 * 60_000;
 const CONCURRENCY_DEGRADE_THRESHOLD = 2;
 const ANSWER_NEVER_RENDERED_CHARS = 50;
+/**
+ * 降级兜底的开关。
+ *
+ * 这是个**取舍**，不是纯粹的保护。并发提交被平台惩罚时，降级能立刻止损（不再继续成对超时），
+ * 代价是把槽位退回 1、吞吐减半。
+ *
+ * 实测批次 68：开 2 槽位后 i33–i38 连续六条并发成功，随后 i39/i40 成对超时触发降级，
+ * 之后三十多条全部退回单槽位 —— 保护确实生效了，但速度也被它吃掉了，表现为
+ * 「配置写的是 2、`take-slot` 却全是 slots=1」，光看配置查不出原因。
+ *
+ * 所以留一个开关，让运维按当下更在意哪一头来选：
+ *   `ONEGL_CONCURRENCY_DEGRADE=0` 关闭 —— 并发不被收回，代价是平台惩罚可能持续。
+ */
+const CONCURRENCY_DEGRADE_ENABLED = process.env.ONEGL_CONCURRENCY_DEGRADE !== "0";
 const degradedAccounts = new Map();
 /** 已降级到单槽位的账号身份（accountIdentity 串）。进程内有效。 */
 const concurrencyDegraded = new Set();
 
 function noteConcurrencyTimeout(accountKey, provider, slot, errorDetails) {
+  if (!CONCURRENCY_DEGRADE_ENABLED) return false;
   if (slotsFor(provider) <= 1) return false;
   const seen = Number(errorDetails?.answerSeen);
   if (!Number.isFinite(seen) || seen > ANSWER_NEVER_RENDERED_CHARS) return false;
