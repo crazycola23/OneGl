@@ -261,11 +261,27 @@ export const RETRYABLE_CODES = new Set([
   "DOUBAO_TIMEOUT",
   "NETWORK_ERROR",
   "DOUBAO_CONVERSATION_RESET_FAILED",
+  // 「发送被主动拦下」与「preflight 就没过」这两类，提问根本没到达平台，
+  // 再给一次机会是安全的 —— 而在此之前它们不在这个集合里，于是**永远不会有第二次机会**：
+  // 实测批次 69 的 50 条里有 22 条属于这两类（15 条输入校验失败 + 7 条 preflight 失败），
+  // 全部被直接判死。
+  "DOUBAO_SUBMISSION_FAILED",
+  "PAGE_CHANGED",
 ]);
 
+/**
+ * 同一个错误码下**可能存在两种截然不同的情况**，这类必须要求显式证据才能重试。
+ *
+ * `DOUBAO_SUBMISSION_FAILED` 就是例子：它既覆盖「输入校验没过、发送被拦下」（没提交），
+ * 也覆盖「send 动作已触发但页面没确认提交」（**可能已提交**，重试就是重复提问）。
+ * 所以不能按错误码一刀切，只能看抛出方有没有写 `promptSubmitted: false` ——
+ * doubao.js 里前者带这一位，后者不带。
+ */
 export const RESUBMIT_UNSAFE_CODES = new Set([
   "DOUBAO_TIMEOUT",
   "NETWORK_ERROR",
+  "DOUBAO_SUBMISSION_FAILED",
+  "PAGE_CHANGED",
 ]);
 
 export function isRetryable(code) {

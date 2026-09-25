@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   AVAILABILITY,
+  canRetryOutcome,
   classifyAccountState,
 } from "../src/accounts/safety.js";
 import { providerBurstPacing } from "../src/providers/index.js";
@@ -269,4 +270,35 @@ test("only a provider that declared a measured burst allowance gets paced", () =
   assert.equal(providerBurstPacing("doubao"), null);
   // An unknown provider must not throw here: this runs on the worker's hot path.
   assert.equal(providerBurstPacing("nope"), null);
+});
+
+/**
+ * 「再给一次机会」的判据：**只有明确没提交过的失败**才能重进队列。
+ *
+ * 这组断言保护的是一处很容易被简化掉的细节：`DOUBAO_SUBMISSION_FAILED` 一个错误码
+ * 底下有两种情况 —— 「输入校验没过、发送被拦下」（没提交）和「send 动作已触发但页面
+ * 没确认」（**可能已提交**）。按错误码一刀切，要么永远不给第二次机会（实测批次 69
+ * 有 22 条因此被判死），要么把重复提问放进来。所以判据落在 promptSubmitted 上。
+ */
+test("only failures that provably never submitted may be retried", () => {
+  const neverSubmitted = { promptSubmitted: false };
+
+  // 确定没提交 → 可以再给一次机会
+  assert.equal(canRetryOutcome("DOUBAO_SUBMISSION_FAILED", neverSubmitted), true);
+  assert.equal(canRetryOutcome("PAGE_CHANGED", neverSubmitted), true);
+
+  // 同一错误码、但发送可能已触发（不带 promptSubmitted）→ 不能重试
+  assert.equal(
+    canRetryOutcome("DOUBAO_SUBMISSION_FAILED", { sentByButton: true }),
+    false,
+    "send 已触发却再发一次，就是重复提问",
+  );
+
+  // 超时同理：已提交的不重试，明确没提交的才重试
+  assert.equal(canRetryOutcome("DOUBAO_TIMEOUT", { promptSubmitted: true }), false);
+  assert.equal(canRetryOutcome("DOUBAO_TIMEOUT", { promptSubmitted: undefined }), false);
+  assert.equal(canRetryOutcome("DOUBAO_TIMEOUT", neverSubmitted), true);
+
+  // 完全未知的错误码仍然不重试 —— 保持 fail-closed。
+  assert.equal(canRetryOutcome("SOMETHING_NEW", neverSubmitted), false);
 });

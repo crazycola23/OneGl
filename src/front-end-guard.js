@@ -225,7 +225,8 @@ export async function prepareFrontEndForRun(page, config, options = {}) {
     throw new DoubaoMvpError(
       ErrorCode.PAGE_CHANGED,
       `Front-end preflight could not confirm a healthy chat page (state=${session?.state ?? "unknown"}).`,
-      { stage: "frontend-preflight", initialUrl, currentUrl: page.url(), snapshot, session },
+      // preflight 阶段还没碰过输入框，提问不可能已提交 —— 这是可安全重试的依据。
+      { stage: "frontend-preflight", initialUrl, currentUrl: page.url(), snapshot, session, promptSubmitted: false },
     );
   }
 
@@ -233,7 +234,7 @@ export async function prepareFrontEndForRun(page, config, options = {}) {
     throw new DoubaoMvpError(
       ErrorCode.PAGE_CHANGED,
       "The page looked logged in but no normal chat composer was visible.",
-      { stage: "frontend-preflight", initialUrl, currentUrl: page.url(), snapshot },
+      { stage: "frontend-preflight", initialUrl, currentUrl: page.url(), snapshot, promptSubmitted: false },
     );
   }
 

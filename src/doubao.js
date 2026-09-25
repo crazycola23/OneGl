@@ -602,13 +602,25 @@ async function fillVerifiedPrompt(page, prompt, attempts = 3) {
   }
 
   if (lastFailure?.reason === "chat-input-unavailable") {
-    throw new DoubaoMvpError(ErrorCode.PAGE_CHANGED, "Doubao chat input is not available.");
+    throw new DoubaoMvpError(ErrorCode.PAGE_CHANGED, "Doubao chat input is not available.", {
+      ...lastFailure,
+      // 输入框都没出现，提问显然没有送出去 —— 这是「可以安全再给一次机会」的依据。
+      // 判据落在这一位上而不是错误码上，见 safety.js 的 canRetryOutcome。
+      promptSubmitted: false,
+    });
   }
 
   throw new DoubaoMvpError(
     ErrorCode.SUBMISSION_FAILED,
     "Prompt input verification failed; submission was stopped to avoid sending corrupted text.",
-    lastFailure,
+    // 同上：这条路径是**发送被主动拦下**（填进去的内容校验不过，根本没点发送），
+    // 提问从未到达平台，所以重试是安全的。
+    //
+    // 注意 `SUBMISSION_FAILED` 还覆盖另一种情况 —— submitPrompt 里
+    // 「send action fired but the page did not confirm submission」，那条**可能已经提交**，
+    // 所以它**不带**这一位。两者靠 promptSubmitted 区分，而不是靠错误码：
+    // canRetryOutcome 对 RESUBMIT_UNSAFE_CODES 要求这一位恰好为 false 才放行。
+    { ...(lastFailure ?? {}), promptSubmitted: false },
   );
 }
 

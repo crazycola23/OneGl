@@ -159,5 +159,8 @@ test("unknown errors and account blocks are never auto-retried", () => {
   assert.equal(canRetryOutcome("UNKNOWN_ERROR", { promptSubmitted: false }), false);
   assert.equal(canRetryOutcome("DOUBAO_VERIFICATION_REQUIRED", { promptSubmitted: false }), false);
   assert.equal(canRetryOutcome("RATE_LIMITED", { promptSubmitted: false }), false);
-  assert.equal(canRetryOutcome("PAGE_CHANGED", { promptSubmitted: false }), false);
+  // PAGE_CHANGED 曾经被列在这里，但它其实不属于「未知错误」：它是 preflight 就没过、
+  // 提问从未送出，所以现在归入可重试（判据仍是 promptSubmitted === false）。
+  // 这里换一个真正未知的错误码来守住「fail-closed」这条底线。
+  assert.equal(canRetryOutcome("SOMETHING_UNEXPECTED", { promptSubmitted: false }), false);
 });
