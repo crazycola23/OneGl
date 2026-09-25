@@ -287,6 +287,8 @@ async function createExecutionResource(db, tenant, taskId, raw = {}, triggerType
     accounts: resolved.map((row) => row.accountKey),
     repeats,
     provider: platform,
+    // 「这批数据属于哪个原始任务」写成外键，而不是让下游去解析批次名里的 `exe_xxxx`。
+    taskId: internal.id,
   }, { log: () => undefined });
 
   const parent = parentExecutionId

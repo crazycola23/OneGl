@@ -61,17 +61,27 @@ const RUN_UPSERT = `
     local_run_id, artifact_path,
     sampling_batch_id, account_key, conversation_reset_confirmed,
     brand_mentioned, mention_count, first_mention_position, matched_terms, brand_detection_version,
-    run_token, job_id, attempt, login_state, answer_truncated, request_slot
+    run_token, job_id, attempt, login_state, answer_truncated, request_slot,
+    last_attempt_started_at
   )
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
           $11, $12, $13, $14, $15, $16::jsonb, $17, $18,
           $19, $20, $21, $22, $23, $24, $25::jsonb, $26,
-          $27, $28, $29, $30, $31, $32)
+          $27, $28, $29, $30, $31, $32,
+          $4)
   ON CONFLICT (local_run_id) DO UPDATE
     SET prompt_id = EXCLUDED.prompt_id,
         provider = EXCLUDED.provider,
         status = EXCLUDED.status,
-        started_at = EXCLUDED.started_at,
+        -- started_at 保留**首次**被处理的时间，不再被重试覆盖。原先写成
+        -- started_at = EXCLUDED.started_at，于是每重试一次这个字段就被推后一次，
+        -- 而 finished_at 是最后一次的结束 —— 两者一减得到的根本不是任何一次的真实耗时。
+        -- 实测出现过 19:10:20 ~ 23:11:48 这种 4 小时的"耗时"，那条实际只跑了几分钟。
+        -- 用 LEAST 保留最早的那个：它回答「这条任务第一次是什么时候被碰的」。
+        started_at = LEAST(runs.started_at, EXCLUDED.started_at),
+        -- 最后一次尝试的时刻单独记。「这条跑了多久」应当用
+        -- finished_at - last_attempt_started_at，而不是减 started_at。
+        last_attempt_started_at = EXCLUDED.started_at,
         finished_at = EXCLUDED.finished_at,
         answer = EXCLUDED.answer,
         expected_citation_count = EXCLUDED.expected_citation_count,
@@ -114,12 +124,18 @@ const ARTICLE_UPSERT = `
   RETURNING id, (xmax = 0) AS inserted
 `;
 
+// `provider` 用子查询从 runs 取，而不是让调用方多传一个参数：本语句在 `RUN_UPSERT` 之后
+// 执行（见 persistRun 里 289 行先写 run、352 行再写 citations），所以同一个事务里一定能读到。
+// 补这一列是为了让 citations **自带平台维度** —— 它是单独交给运营分析的那张表，
+// 只靠 run_id 关联意味着一旦单独导出就丢了「这条引用来自哪个平台」。
 const CITATION_UPSERT = `
   INSERT INTO citations (
     run_id, article_id, source_position, citation_marker, answer_text,
-    relation_status, captured_from, visible_to_user, tracked_article_id, source_type
+    relation_status, captured_from, visible_to_user, tracked_article_id, source_type,
+    provider
   )
-  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+          (SELECT provider FROM runs WHERE id = $1))
   ON CONFLICT (run_id, source_position) DO UPDATE
     SET article_id = EXCLUDED.article_id,
         citation_marker = EXCLUDED.citation_marker,
@@ -128,7 +144,8 @@ const CITATION_UPSERT = `
         captured_from = EXCLUDED.captured_from,
         visible_to_user = EXCLUDED.visible_to_user,
         tracked_article_id = EXCLUDED.tracked_article_id,
-        source_type = EXCLUDED.source_type
+        source_type = EXCLUDED.source_type,
+        provider = EXCLUDED.provider
 `;
 
 const ALLOWED_RELATION_STATUS = new Set(["matched", "unresolved"]);

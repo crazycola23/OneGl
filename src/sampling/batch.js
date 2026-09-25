@@ -41,6 +41,7 @@ export async function createSamplingBatch(
     repeats = 1,
     monitorExecutionId = null,
     provider = defaultProviderId(),
+    taskId = null,
   },
   { log = console.log } = {},
 ) {
@@ -92,9 +93,10 @@ export async function createSamplingBatch(
     const batchResult = await client.query(
       `INSERT INTO sampling_batches (
          project_id, name, provider, pool_version, pool_size, sample_size,
-         sampling_method, sampling_seed, account_keys, repeats, status, monitor_execution_id
+         sampling_method, sampling_seed, account_keys, repeats, status, monitor_execution_id,
+         task_id
        )
-       VALUES ($1, $2, $11, $3, $4, $5, $6, $7, $8::jsonb, $9, 'pending', $10)
+       VALUES ($1, $2, $11, $3, $4, $5, $6, $7, $8::jsonb, $9, 'pending', $10, $12)
        RETURNING id`,
       [
         project.id,
@@ -108,6 +110,9 @@ export async function createSamplingBatch(
         repeats,
         monitorExecutionId,
         provider,
+        // 「这批数据属于哪个原始任务」—— 用外键而不是让下游去解析 name 里的 `exe_xxxx`。
+        // 历史批次回填不了，所以可空；新批次一律带上（调用方在 task-routes 里传 internal.id）。
+        taskId,
       ],
     );
     const batchId = Number(batchResult.rows[0].id);
