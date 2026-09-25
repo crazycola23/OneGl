@@ -59,7 +59,17 @@ export async function acquireAccountExecutionLease(
     accountLockKeyHeld = accountLockKey;
 
     for (let candidateSlot = 0; candidateSlot < slotCeiling; candidateSlot += 1) {
-      const candidate = advisoryKey("onegl-global-slot", candidateSlot);
+      // 全局槽位按**平台**分命名空间：`onegl-global-slot:qianwen:0` 与
+      // `onegl-global-slot:doubao:0` 是两把不同的锁。
+      //
+      // 之前两个平台共用 `onegl-global-slot:<n>`，而槽位总数只由 accountSlots 决定 ——
+      // 于是千问和豆包在同一个小池子里互相挤占：为了让豆包不被饿死把槽位加到 4，
+      // 代价就是千问不再独占，实测出现过 6.5 分钟一条都没完成的空转段。
+      //
+      // 分开之后每个平台各自拿到 accountSlots 个槽位，互不干扰。
+      // 代价是失去了「跨平台总并发上限」这层保护 —— 这是明确的取舍：
+      // 需要限总并发时应当由各平台的 accountSlots 各自约束，而不是让它们互相排队。
+      const candidate = advisoryKey("onegl-global-slot", `${provider}:${candidateSlot}`);
       if (await tryLock(client, candidate)) {
         slotLockKey = candidate;
         break;
