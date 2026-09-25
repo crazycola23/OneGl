@@ -612,7 +612,49 @@ async function fillVerifiedPrompt(page, prompt, attempts = 3) {
   );
 }
 
+/**
+ * 关掉豆包的推广弹窗。
+ *
+ * 实测依据（失败样本 run_b69_i8 的 page.html + dom-observation.json，2026-09-25）：
+ * 匿名面跑几条之后会弹出「下载豆包电脑版 免费领取 30 天订阅」的**全屏** dialog，
+ * `role="dialog"` 且带 `aria-label="关闭"` 的关闭按钮，覆盖整个视口。
+ *
+ * 它造成的症状是 `send action fired but the page did not confirm submission` ——
+ * 输入与发送被弹窗遮住，点击落到了遮罩上。而同一份观测里
+ * `sessionSignals.login=false`、`accessRestricted=false`、`captcha=false`、
+ * `visibleTextboxCount=1`，说明**匿名面本身完全正常**。
+ *
+ * 所以「豆包匿名面有额度限制/会话不稳」这个结论是错的：挡住我们的一直是这个推广弹窗。
+ * 采集器其实早就观测到了它（dom-observation 的 `modalTexts` 里记着全文），只是没人关掉。
+ *
+ * 只关推广弹窗，不误伤功能性弹窗（引用面板、确认框）—— 判据取弹窗自身文案。
+ */
+async function dismissPromoDialog(page) {
+  return page
+    .evaluate(() => {
+      const norm = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      let closed = 0;
+      for (const dialog of document.querySelectorAll('[role="dialog"]')) {
+        const text = norm(dialog.innerText).slice(0, 200);
+        if (!/下载豆包电脑版|免费领取\s*30\s*天|立即下载/.test(text)) continue;
+        const button =
+          dialog.querySelector('button[aria-label="关闭"]')
+          ?? dialog.querySelector('button[aria-label="close"]')
+          ?? dialog.querySelector('[class*="closeButton"]');
+        if (!button) continue;
+        button.click();
+        closed += 1;
+      }
+      return closed;
+    })
+    .catch(() => 0);
+}
+
 async function submitPrompt(page, prompt) {
+  // 推广弹窗是全屏的，会挡住输入与发送；它会在采集过程中随时弹出，所以每次发送前都清一次。
+  const dismissed = await dismissPromoDialog(page);
+  if (dismissed > 0) await page.waitForTimeout(600);
+
   await fillVerifiedPrompt(page, prompt);
 
   const baselineAnswers = await answerTexts(page);

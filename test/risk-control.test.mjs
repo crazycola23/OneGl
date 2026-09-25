@@ -263,8 +263,10 @@ test("only a provider that declared a measured burst allowance gets paced", () =
     else process.env.ONEGL_QIANWEN_BURST_PAUSE_MS = previous;
   }
 
-  // Doubao is account-driven and declares none, so nothing changes for it.
-  assert.equal(providerBurstPacing("doubao"), null);
+  // 豆包 2026-09-25 也声明了实测额度，所以它和千问一样被 pacing —— 但数字不同：
+  // 连续测量显示修掉推广弹窗后前 5 条成功、第 6 条起失败（千问是 4）。
+  // 这里断言的是「两边都拿得到 pacing，且各用各的数字」，而不是「豆包没有」。
+  assert.deepEqual(providerBurstPacing("doubao"), { prompts: 5, pauseMs: 25 * 60_000 });
   // An unknown provider must not throw here: this runs on the worker's hot path.
   assert.equal(providerBurstPacing("nope"), null);
 });
