@@ -849,12 +849,12 @@ advisory lock，必须独占一条池连接整整一个 attempt**（最长 900 �
 
 ---
 
-## 十三、手工执行 SQL 的代价：账本与库会漂移（2026-09-26）
+## 十三、换行符让同一份 SQL 有两个 hash：账本漂移与 migrate 停摆（2026-09-26）
 
-### 13.1 worker 容器一直是 unhealthy，原因不在 worker
+### 13.1 表象：worker 容器长期 unhealthy
 
 `docker inspect` 显示 `health=unhealthy`，健康检查命令是 `tools/runtime-check.js --role worker`。
-逐项看下来，只有一项不 ready：
+逐项看下来只有一项不 ready：
 
 ```
 "migrations": { "ready": false, "local_count": 29, "applied_count": 28,
@@ -863,37 +863,101 @@ advisory lock，必须独占一条池连接整整一个 attempt**（最长 900 �
 
 而 0029 的三项 schema 变更**实际都在库里**（`sampling_batches.task_id`、`citations.provider`、
 `runs.last_attempt_started_at` 各存在一列）—— 它是上一轮排查时**手工执行 SQL** 应用的，
-走的是 psql 而不是 `migrate.js`，于是 `schema_migrations` 里没有它的登记。
+走的是 psql 而不是 `migrate.js`，于是账本里没有它的登记。健康检查只比对「本地文件数 vs
+已登记数」与 pending 列表，不看 checksum，所以库是对的、账本是缺的，容器就永远不健康。
 
-**健康检查只看「本地文件数 vs 已登记数」和 pending 列表，不看 checksum** —— 所以库是对的、
-账本是缺的，容器就永远不健康。这类「库对账本错」不会自己恢复。
-
-### 13.2 修法与它暴露出的第二个问题
-
-补登记 0029 本身没有争议：变更已在库里，checksum 按容器内文件实算现写即可（可回滚：
-`DELETE FROM schema_migrations WHERE version='0029_traceability_links'`）。
-
-但**不能直接 `migrate.js up`** —— 它被另一件事挡住了：
+补登记它没有争议（变更已在库里，可回滚）。**但补完之后 `migrate up` 仍然不可用**：
 
 ```
 Migration 0023_saas_batch_result_identity changed after it was applied.
 ```
 
-`migrate.js` 会在执行前校验「已应用迁移的文件内容是否被改过」，而 0023 的当前文件与登记
-checksum 不一致。这是一个**独立**的不一致，且方向不明（是文件被改了，还是当初登记的就是另一版），
-不该在跑批期间顺手改 —— 它需要先判断库与文件谁漂移了。**目前 `migrate up` 处于完全不可用状态**。
+### 13.2 往下挖：不是有人改了 SQL，是同一份 SQL 有两个字节版本
 
-### 13.3 可推广的两条
+按 git 历史看，0023 从提交那天起就**没有被改过**。于是把 29 个迁移逐个算 hash 与账本比对：
 
+```
+0001–0022 一致（但两边都是 CRLF 版）
+0023–0027 **不匹配**（账本记的是 LF 版，磁盘上是 CRLF 版）
+0028–0029 一致（都是 LF 版）
+```
+
+再对一次字节数：0023 的 LF 版 4793 字节、CRLF 版 4880 字节，**差的 87 正是文件里换行符的个数**。
+`git cat-file -s HEAD:migrations/0023_*.sql` 给出 4793 —— **git 库里的就是 LF 版，也就是账本
+登记的那一份**。所以账本的锚点本来是对的，漂的是磁盘：某次全量部署把 0023–0027 覆盖成了 CRLF 版。
+
+规律的分界线很说明问题：**0001–0022 连账本记的都是 CRLF 版**（所以「两边一起错」反而不报错，
+更隐蔽），0023–0027 是「库 LF / 磁盘 CRLF」，0028–0029 是本轮陆续用 `put` 单独放上去的 LF 版。
+
+### 13.3 修法：把锚点统一到 git 的字节上
+
+1. 加 `.gitattributes`：`migrations/*.sql text eol=lf` —— 迁移脚本一律锁定 LF，与平台无关。
+2. 把工作区里 23 个被污染的文件**用字节级替换**规范化回 LF（不动编码与 BOM），
+   验证到「本地文件与 `git cat-file` 的 blob 逐字节一致」。
+3. 打包下发、重建镜像，然后在容器里算实际 hash **与本地生成的期望值逐个比对**，
+   **全部一致才动账本**。反过来（先读容器里的值再写进账本）会把「文件真的被改过」这种漂移
+   一并掩盖掉，对不上就是信不过。
+4. 全部对上之后重新锚定 `schema_migrations`，`migrate up` 恢复可用、
+   `runtime-check` 的 migrations 项转 ready、容器回到 healthy。
+
+### 13.4 可推广的三条
+
+- **换行符是 hash 的隐形变量。** 任何「对文件算 checksum 并存进数据库」的设计，都要先固定
+  换行符 —— 否则同一份内容在 Windows 检出、Linux 检出、部署通道之间就是三个不同的值。
+  症状还很偏：这里表现为一个「永远 unhealthy 的容器」和「一个不能用的迁移工具」。
 - **绕过工具改 schema，一定要同时补账本。** 手工 `psql -f` 之后 `schema_migrations` 不会自己更新，
   而依赖它的东西（健康检查、CI、下一个迁移）都只读账本。0029 那次省下的是几秒钟，
   付出的是一个永远 unhealthy 的容器。
 - **账本不一致会连带堵住所有后续迁移。** 0023 的 checksum 一漂，`migrate up` 连 0029 都跑不了。
-  一致性检查是对的，但它的代价是「一处漂移 = 全部停摆」，所以更要保证每次应用都被登记。
+  一致性检查是对的，但它的代价是「一处漂移 = 全部停摆」，所以更要保证每个字节都稳定。
 
 ---
 
-## 十四、相关文件
+## 十四、两处「看起来在工作、其实永远走不到」的代码（2026-09-26）
+
+同一天在这套代码里撞到两个同构的问题：一段逻辑写得完全正确，但被前面的一道门挡住，
+从来没执行过。它们的共同特征是**不报错**，只是安静地什么都不做。
+
+### 14.1 批次卡在 running 而队列早就空了
+
+batch 66 / 67 的所有队列 `wait=0 active=0 delayed=0`，任务早就终结，批次状态却停在 `running`，
+`finished_at` 一直是空。原因和第十节同源 —— **账本（计数器）与事实（队列）不同步**：
+
+```
+batch 66 收口前: requested=100 completed=84 failed=11
+batch 66 收口后: requested=100 completed=84 failed=16     ← failed 是重新对账出来的
+```
+
+那 5 条差额就是「job 已终结、但 runs 表没有对应行」的任务，它们一直躺在队列的 failed 集合里
+没被算进批次失败数，于是 `completed + failed ≠ requested`，终态判定永远为假。
+`recover-batch --settle` 会重新对账并把 `finished_at` 补上，两个批次随即转为 `partial`。
+
+**注意这次连 failed 集合本身也得一起看** —— 清理它之前必须先确认它下面没有属于未终结批次的 job，
+否则会把唯一还能把任务推回队列的凭据删掉（见 `.ops/clean-failed.mjs` 的两条硬约束）。
+
+### 14.2 历史枚举值的兼容层一直是死代码
+
+`persist.js` 的 `prepareCitations` 里本来就有兜底：
+
+```js
+relationStatus: citation.relationStatus === "matched" ? "matched" : "unresolved",
+sourceType: ALLOWED_SOURCE_TYPES.has(citation.sourceType) ? citation.sourceType : "visible",
+```
+
+但它前面二十行是一道**校验**：遇到不在白名单里的值直接抛 `DatabasePersistError`。
+顺序反了，于是那两行兜底永远走不到 —— 一道先抛错的门挡在一段永远不执行的代码前面。
+
+代价落在重放路径上：旧 artifact 里写着 2026-09-23 之前的自创值
+（`relationStatus=resolved`、`sourceType=icon`，语义见 8.1 节），重放时被校验拦下，
+**batch 67 有 5 条 `run.json=success` 一直补不进库**（答案 725–1528 字就躺在 answer.md 里）。
+把映射挪到校验之前并只认这两个有据可查的历史值之后，5 条全部写库，batch 67 的 completed 由 81 涨到 86。
+
+**两条都要防**：兼容层不能变成「什么都收」（那会把 fail-closed 的方向反转），
+但也不能被自己的校验挡在门外（那就是现在这样，安静地什么都不做）。
+
+---
+
+## 十五、相关文件
 
 - `src/worker.js` —— `prepareWindow`：两个轮换判定的分工与文档块
 - `src/accounts/safety.js` —— `identityPromptsAfterRelaunch`（组边界）、`promptCountForBatch`（可推导计数）、`isCredentialFreeSurface` 豁免
@@ -917,5 +981,10 @@ checksum 不一致。这是一个**独立**的不一致，且方向不明（是�
 - `.ops/pg-locks.sh` / `.ops/pg-health.sh` —— 从 pg 侧确认连接与 advisory 锁的归属
 - `.ops/repro-redis.sh` —— 把 worker 的各种 Redis 用法逐个单独复现（用来排除 Redis 嫌疑）
 - `.ops/register-0029.sh` / `.ops/check-0029.sh` —— 补登记手工应用的迁移、核对账本与库（见第十三节）
+- `.gitattributes` —— `migrations/*.sql text eol=lf`：把 checksum 的锚点钉死在字节上
+- `.ops/gen-migration-hashes.mjs` / `.ops/compare-hashes.sh` / `.ops/deploy-28-lf-migrations.sh` —— 迁移 hash 的期望值生成、全量比对、LF 化重部署与重新锚定
+- `src/no-first-token.js` —— 零输出判据（千问与豆包共用）
+- `.ops/clean-failed.mjs` —— 清理队列 failed 集合，未终结批次下面的 job 一律保留
+- `src/db/persist.js` 的 `normalizeLegacyCitationEnums` —— 历史枚举值兼容层（见 14.2）
 - `.ops/verify-pool.sh` / `.ops/final-check.sh` —— 池上限修复的验证与一次性总览
 - `.ops/resume-only.sh` —— 单独恢复队列消费（后台脚本里的 resume 输出会被缓冲，排障时要单独跑）
