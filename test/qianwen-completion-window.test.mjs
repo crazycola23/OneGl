@@ -128,8 +128,8 @@ test("a request the platform silently drops is abandoned instead of waited out",
   );
   assert.match(
     source,
-    /return intEnvValue\("ONEGL_ANSWER_FIRST_TOKEN_MS", ANSWER_FIRST_TOKEN_MS_DEFAULT, 30_000\);/,
-    "零字容忍窗要可配置，并且带 30s 下限 —— 低于它会把「平台正在排队/预热」误判成吞请求",
+    /noFirstTokenWindowMs\("ONEGL_ANSWER_FIRST_TOKEN_MS", ANSWER_FIRST_TOKEN_MS_DEFAULT\)/,
+    "零字容忍窗要可配置；30s 下限由共享模块 no-first-token.js 统一保证（见该文件自己的测试）",
   );
   // 判据只认「从未出现过答案」：出过一个字就永久关闭这条路径。这是整个改动里唯一可能造成
   // 不可逆损失的地方 —— 一次页面重渲染导致的 0 采样不该把一条慢任务判死。

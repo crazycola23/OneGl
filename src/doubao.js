@@ -1,4 +1,5 @@
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
+import { isSilentlyDropped, noFirstTokenWindowMs } from "./no-first-token.js";
 import { hasStoredStorageState } from "./security/storage-state.js";
 import { canonicalizeUrl, domainFromUrl, isExternalSourceUrl } from "./url.js";
 
@@ -689,12 +690,33 @@ async function submitPrompt(page, prompt) {
   return { baselineAnswers, sentByButton };
 }
 
+/**
+ * 提交后「一个字符都没出现」的容忍窗 —— 越过就判定这次请求被平台静默丢弃，提前退出。
+ *
+ * 180s 沿用千问的实测值（7 条样本的首字延迟 8/8/8/8/6/50/97 秒，取尾部 97s 的约 1.85 倍）。
+ * 豆包自己还没有这份分布 —— **不要**按「豆包是流式、应该更快」这类直觉把它调小，
+ * 等 `[doubao] first-token` 日志攒够样本再校准。判错的代价不可逆：被判死的那条提问已经提交，
+ * 重跑就是重复提问。
+ *
+ * 判据本身与千问共用（`no-first-token.js`），只认「从未出现过答案」。
+ */
+const DOUBAO_FIRST_TOKEN_MS_DEFAULT = 180_000;
+
 async function waitForAnswer(page, baselineAnswers, config) {
   const baseline = new Set(baselineAnswers.map(normalizeText));
-  const deadline = Date.now() + config.timeoutMs;
+  // 计时起点是 submitPrompt 刚返回的时刻：提交动作已经完成，前面的页面准备与随机延迟都不占这条预算。
+  const submittedAt = Date.now();
+  const deadline = submittedAt + config.timeoutMs;
+  // 窗口不能超过预算本身，否则「提前退出」反而会晚于超时到达。
+  const firstTokenWindowMs = Math.min(
+    noFirstTokenWindowMs("ONEGL_DOUBAO_FIRST_TOKEN_MS", DOUBAO_FIRST_TOKEN_MS_DEFAULT),
+    config.timeoutMs,
+  );
   let best = "";
   let last = "";
   let stable = 0;
+  // 第一个字符出现的时刻（相对 submittedAt）。null = 到现在一个字符都没出现过。
+  let firstTokenMs = null;
 
   while (Date.now() < deadline) {
     if (!allowedDoubaoUrl(page.url())) {
@@ -722,12 +744,47 @@ async function waitForAnswer(page, baselineAnswers, config) {
     const running = usable.some((item) => item.streaming) || (await isGenerating(page));
 
     if (answer.length > best.length) best = answer;
+    // 零输出判据。best 是「见过的最长答案」，一旦非空就永久关闭这条路径（语义见 no-first-token.js）——
+    // 页面重渲染让某次采样读到 0 不算「没答」。
+    if (best.length > 0 && firstTokenMs === null) firstTokenMs = Date.now() - submittedAt;
+    if (
+      isSilentlyDropped({
+        answerLength: best.length,
+        firstTokenSeen: firstTokenMs !== null,
+        waitedMs: Date.now() - submittedAt,
+        windowMs: firstTokenWindowMs,
+      })
+    ) {
+      // 与超时分开报：两者都是「没拿到答案」，但一个等多久都没用，一个是预算不够。
+      // 混在一起就会重演 2026-09-26 那次误判（把零输出读成额度问题，然后去改配额而不是改判据）。
+      throw new DoubaoMvpError(
+        ErrorCode.ANSWER_NOT_FOUND,
+        `豆包提交后 ${Math.round((Date.now() - submittedAt) / 1000)}s 内没有产出任何字符，`
+          + `判定这次请求被平台静默丢弃，提前退出（不再空耗 ${Math.round(config.timeoutMs / 1000)}s 预算）。`,
+        {
+          stage: "generating",
+          url: page.url(),
+          promptSubmitted: true,
+          answerSeen: 0,
+          generating: running,
+          waitedMs: Date.now() - submittedAt,
+          firstTokenWindowMs,
+          budgetMs: config.timeoutMs,
+        },
+      );
+    }
     if (answer && answer === last) stable += 1;
     else stable = answer ? 1 : 0;
     last = answer;
 
     if (answer && !running && stable >= config.stablePolls) {
       await page.waitForTimeout(800);
+      // 结构化的首字延迟日志：DOUBAO_FIRST_TOKEN_MS_DEFAULT 沿用千问的值，靠这条日志校准。
+      console.log(
+        `[doubao] first-token ${Math.round((firstTokenMs ?? 0) / 1000)}s`
+          + ` | answer ${best.length} chars`
+          + ` | total ${Math.round((Date.now() - submittedAt) / 1000)}s / budget ${Math.round(config.timeoutMs / 1000)}s`,
+      );
       return answer;
     }
 
@@ -744,7 +801,16 @@ async function waitForAnswer(page, baselineAnswers, config) {
 
   throw new DoubaoMvpError(
     ErrorCode.ANSWER_NOT_FOUND,
-    "No Doubao answer text was found before timeout.",
+    `豆包在 ${Math.round(config.timeoutMs / 1000)}s 预算内没有产出任何字符。`,
+    {
+      stage: "generating",
+      url: page.url(),
+      promptSubmitted: true,
+      answerSeen: 0,
+      waitedMs: Date.now() - submittedAt,
+      firstTokenWindowMs,
+      budgetMs: config.timeoutMs,
+    },
   );
 }
 

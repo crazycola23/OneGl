@@ -1,5 +1,6 @@
 import { intEnvValue } from "./accounts/safety.js";
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
+import { isSilentlyDropped, noFirstTokenWindowMs } from "./no-first-token.js";
 import { parseAnswerSources } from "./qianwen-answer-sources.js";
 import { decodeProxyImageSources, sourceLabel } from "./qianwen-source-icons.js";
 import { canonicalizeUrl, domainFromUrl, isExternalSourceUrl } from "./url.js";
@@ -394,20 +395,11 @@ function answerQuietSettledMs() {
 const ANSWER_FIRST_TOKEN_MS_DEFAULT = 180_000;
 
 function answerFirstTokenMs() {
-  return intEnvValue("ONEGL_ANSWER_FIRST_TOKEN_MS", ANSWER_FIRST_TOKEN_MS_DEFAULT, 30_000);
+  return noFirstTokenWindowMs("ONEGL_ANSWER_FIRST_TOKEN_MS", ANSWER_FIRST_TOKEN_MS_DEFAULT);
 }
 
-/**
- * 「提交后一直零字」是否已经越过容忍窗。
- *
- * 导出是为了能被单独测试 —— 这个判定直接决定要不要主动放弃一条**已经提交**的样本，
- * 和 `looksSettled` 一样，判错的代价不可逆（重跑就是重复提问）。
- */
-export function isSilentlyDropped({ answerLength, firstTokenSeen, waitedMs, windowMs }) {
-  if (firstTokenSeen) return false;
-  if (answerLength > 0) return false;
-  return waitedMs >= windowMs;
-}
+// 判据本身在 no-first-token.js（与豆包共用同一份）。这里重新导出，保持既有测试的入口不变。
+export { isSilentlyDropped };
 
 /**
  * 答案末尾是否呈现收尾特征。
