@@ -922,6 +922,29 @@ async function handleJob(job, token) {
   }
 }
 
+/**
+ * 基础设施类失败：与平台无关，提问也从未送出，所以**可以安全再给一次机会**。
+ *
+ * 为什么单独处理这一类：`timeout exceeded when trying to connect` 是 ioredis 抛的，
+ * 说明任务连 Redis 都没连上、采集根本没开始。它不走 `handleJob` 的
+ * `canRetryOutcome` 那条路（那时处理器都没被调用），而是直接落到 BullMQ 的
+ * `failed` 事件上；于是它既拿不到「未提交」的证据，也无法通过错误码判可重试 ——
+ * 只会一路耗到 attempts 用尽，被永久判死在 failed 集合里。
+ *
+ * 实测代价：批次 68 有 15 条卡在这上面，批次因此停在 84/100 再也跑不动，
+ * 而从 runs 表看只是「没有记录」，非常容易误判成平台问题。
+ *
+ * 只给一次额外机会：基础设施持续故障时无限重试会把队列变成忙循环，
+ * 而重试本身也救不了已经宕掉的 Redis。
+ */
+const INFRA_FAILURE_PATTERN = /timeout exceeded when trying to connect|ECONNRESET|Connection is closed|EPIPE/i;
+const INFRA_RETRY_LIMIT = 1;
+const infraRetried = new Map();
+
+function isInfrastructureFailure(error) {
+  return INFRA_FAILURE_PATTERN.test(String(error?.message ?? ""));
+}
+
 async function startWorkerFor(accountKey, provider = "doubao") {
   const identity = accountIdentity(accountKey, provider);
   if (workers.has(identity) || shuttingDown) return;
@@ -948,6 +971,37 @@ async function startWorkerFor(accountKey, provider = "doubao") {
       attempts: job?.attemptsMade,
       error: error?.message,
     });
+
+    // 基础设施失败先给一次额外机会再算失败：它和平台无关、提问也从未送出。
+    // 放在 refreshBatchProgress 之前 return —— 这一轮并没有真正产生结果，
+    // 不该按「一条跑完了」去推进批次进度。
+    if (job && isInfrastructureFailure(error)) {
+      const already = infraRetried.get(job.id) ?? 0;
+      if (already < INFRA_RETRY_LIMIT) {
+        infraRetried.set(job.id, already + 1);
+        log({
+          event: "job-infra-retry",
+          queue: name,
+          job_id: job?.id,
+          batch_id: job?.data?.batchId,
+          run_id: job?.data?.runId,
+          retry_no: already + 1,
+          error: error?.message,
+        });
+        await job.retry().catch((retryError) => {
+          console.error(`[worker] 基础设施失败补跑未成功 ${job?.id}：${retryError?.message}`);
+        });
+        return;
+      }
+      log({
+        event: "job-infra-retry-exhausted",
+        queue: name,
+        job_id: job?.id,
+        batch_id: job?.data?.batchId,
+        retry_no: already,
+      });
+    }
+
     if (job?.data?.batchId) {
       await refreshBatchProgress(pool, job.data.batchId).catch(() => undefined);
     }
