@@ -134,18 +134,20 @@ let listeningAccounts = [];
 /**
  * worker 运行时长上限：跑满这么久就主动退出，让容器编排拉起一个全新的进程。
  *
- * 为什么需要（2026-09-26 实测）：同一次长跑（12+ 小时）里反复出现
- * `timeout exceeded when trying to connect`（ioredis 连接超时），而 Redis 侧完全健康 ——
- * rejected_connections=0、内存 4.73M/256M、慢查询最长 11ms。失效发生在 **worker 侧的连接**，
- * 重启就恢复。
+ * **归因更正（2026-09-26）**：这个机制当初是为
+ * `timeout exceeded when trying to connect` 加的，理由是「同一次长跑里反复出现，而 Redis 侧
+ * 完全健康，重启就恢复」。前半段是事实，后半段是误判 —— 那句文案是 node-postgres 连接池抛的，
+ * 病根是 `db/pool.js` 的 `max: 4` 与并发槽位相等（证据见该文件）。「重启就恢复」之所以成立，
+ * 是因为重启把被租约攥住的连接一次性全断开了，池暂时空出来；并发一恢复它就会再满。
  *
- * 但带着失效连接继续跑是有代价的：队列里的任务会一条条耗到 attempts 用尽、被永久判死。
- * 批次 68 因此反复卡在 76/100，而且从 runs 表看只表现为「若干条没有记录」，
- * 极容易被误判成平台问题。
+ * 所以现在保留它，是因为进程长跑本身值得定期换一次（浏览器与连接都会老化），
+ * **不是**因为它能治池耗尽 —— 治池耗尽的是池上限。别把「重启后好了一阵」当成池没问题的证据。
  *
- * 选「按时退出」而不是「检测到异常再退」：前者不依赖探测逻辑恰好命中，
- * 而这类失效本来就是间歇的。退出是安全的 —— compose 里 RestartPolicy=unless-stopped，
- * 容器会被自动拉起。
+ * 带失效连接继续跑的代价是真实的：队列里的任务会一条条耗到 attempts 用尽、被永久判死。
+ * 批次 68 因此反复卡住，而且从 runs 表看只表现为「若干条没有记录」，极容易被误判成平台问题。
+ *
+ * 选「按时退出」而不是「检测到异常再退」：前者不依赖探测逻辑恰好命中，而这类失效本来就是间歇的。
+ * 退出是安全的 —— compose 里 RestartPolicy=unless-stopped，容器会被自动拉起。
  */
 const MAX_WORKER_UPTIME_MS = (() => {
   const raw = Number(process.env.ONEGL_WORKER_MAX_UPTIME_MS);
@@ -961,17 +963,21 @@ async function handleJob(job, token) {
 /**
  * 基础设施类失败：与平台无关，提问也从未送出，所以**可以安全再给一次机会**。
  *
- * 为什么单独处理这一类：`timeout exceeded when trying to connect` 是 ioredis 抛的，
- * 说明任务连 Redis 都没连上、采集根本没开始。它不走 `handleJob` 的
- * `canRetryOutcome` 那条路（那时处理器都没被调用），而是直接落到 BullMQ 的
- * `failed` 事件上；于是它既拿不到「未提交」的证据，也无法通过错误码判可重试 ——
- * 只会一路耗到 attempts 用尽，被永久判死在 failed 集合里。
+ * 为什么单独处理这一类：这类错误在 `handleJob` 里可能从任意一处抛出（池排队、写库、
+ * 拿锁），既拿不到「未提交」的证据，也无法通过错误码判可重试 —— 只会一路耗到 attempts
+ * 用尽，被永久判死在 failed 集合里。它不走 `canRetryOutcome` 那条路。
  *
  * 实测代价：批次 68 有 15 条卡在这上面，批次因此停在 84/100 再也跑不动，
  * 而从 runs 表看只是「没有记录」，非常容易误判成平台问题。
  *
+ * 归因更正（2026-09-26）：`timeout exceeded when trying to connect` 这句文案**不是 ioredis 的**，
+ * 是 node-postgres 连接池在 `connectionTimeoutMillis` 到期时抛的；ioredis 在同类情况下说的是
+ * "Reached the max retries per request" / "Connection is closed"。真正的病根是
+ * `db/pool.js` 的 `max: 4` 与并发槽位 4 相等，被会话级租约占满后池零余量
+ * （详细证据写在那里）。所以这个 pattern 要继续留着，但别再把它的出现读成「Redis 挂了」。
+ *
  * 只给一次额外机会：基础设施持续故障时无限重试会把队列变成忙循环，
- * 而重试本身也救不了已经宕掉的 Redis。
+ * 而重试本身也救不了已经宕掉的依赖。
  */
 const INFRA_FAILURE_PATTERN = /timeout exceeded when trying to connect|ECONNRESET|Connection is closed|EPIPE/i;
 const INFRA_RETRY_LIMIT = 1;
