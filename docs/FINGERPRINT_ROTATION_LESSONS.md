@@ -642,7 +642,29 @@ failed    = count(status = 'failed')
   提问确实提交了、答案节点 0 个，是平台没答。若提问只出现在 `textarea` / `contenteditable` 里，
   那才是「填了没发」，两者处置完全相反。
 
-### 10.6 一个被证伪的诊断信号
+### 10.6 恢复必须自带次数上限
+
+恢复工具是可以反复运行的，而它每跑一次就会把队列里的 `failed` 重新推回去。没有上限，
+一条平台侧注定跑不出来的任务（匿名额度用尽、持续被静默拒绝）会被反复重问：每一轮都消耗
+一次额度、拉长批次，而失败原因一模一样。**一次足够把「暂时性故障」和「这条就是跑不出来」
+区分开**；后者需要的不是再试，是人工判断。
+
+上限落在 `job.data.recoveryCount`，而不是本地产物：
+
+- `RunStore.createRun` 会重建 `run.json`，字段要额外维护才能活过一次重跑；
+- **死在 `createRun` 之前的任务根本没有 `run.json`** —— 而它们恰恰是最需要重跑的那一档。
+  只有队列这条路径对两类任务都成立。
+
+两个必须守住的顺序：
+
+- **先记账，再 `retry()`。** `retry()` 返回后 worker 可能立刻把任务取走，那时再写 `job.data` 就晚了。
+- **回填时要覆盖「排队中 / 运行中」的任务，不能只看 `failed`。** 它们正是上一次恢复推回去的，
+  跳过它们等于让每一条都白拿一次额外机会。实测回填时只有 1 条处于非 `failed` 状态，而正是它漏掉了。
+
+实测拦截效果：批次 68 修好后再次运行恢复，`实际回到队列 0/15`，14 条被上限挡住、1 条仍在执行 ——
+上限按预期生效，批次稳定停在 `partial`（`completed=85 failed=15`）。
+
+### 10.7 一个被证伪的诊断信号
 
 `dom-observer.js:214` 的 `promptEchoCount` 抓错了元素：它匹配到了输入框的 placeholder
 （`userMessages[0].text === "向千问提问"`，className 里带 `placeholder:text-disabled`），
@@ -651,7 +673,7 @@ failed    = count(status = 'failed')
 它目前只被 `validate.js` 记录、不参与判定，所以没造成误判，但作为诊断信号是失真的 ——
 用它来判断「提问有没有送进对话」会得出相反结论。已知未修：改选择器会动到校验口径。
 
-### 10.7 三个工具链坑（这次各花掉一轮）
+### 10.8 三个工具链坑（这次各花掉一轮）
 
 1. **`bash -s` 传入的脚本里不能用 `docker exec -i`。** ssh 把脚本通过 stdin 交给 `bash -s`，
    而 `docker exec -i` 会读 stdin，抢走尚未被 bash 读取的剩余脚本 —— 表现为输出在某个点之后
@@ -677,4 +699,4 @@ failed    = count(status = 'failed')
 - `docs/QIANWEN_BASELINE_INVALIDATION.md` —— 千问匿名基线的作废记录（完成判据缺陷的来龙去脉）
 - `src/queue/batch-reconcile.js` —— 队列侧对账：找出「job 已终结但 runs 表无记录」的任务
 - `src/queue/batch-status.js` —— `resolveFailedCount`：runs 表缺行时的失败数解析（纯逻辑，可离线验证）
-- `.ops/recover-batch.mjs` —— 批次恢复工具：四档分类、`--allow-resubmit`、`--force-uncertain`、`--settle`
+- `.ops/recover-batch.mjs` —— 批次恢复工具：四档分类、`--allow-resubmit`、`--force-uncertain`、`--settle`、`--mark-recovered`；每条任务最多人工恢复 1 次（计数在 `job.data.recoveryCount`）
