@@ -713,7 +713,80 @@ failed    = count(status = 'failed')
 
 ---
 
-## 十一、相关文件
+## 十一、「不吐字」既不是慢、也不是额度：平台静默吞掉请求（2026-09-26）
+
+### 11.1 现象与现场
+
+批次 68 有 6 条任务把 900 秒预算拖满，错误码全是 `DOUBAO_TIMEOUT`。把
+`attempts/1/` 的产物逐条挖开后，六条的形态完全一致：
+
+```
+class="answer-common-card answer-receiving-card"   ← 「正在接收答案」的卡片已经挂上
+class="size-4 origin-center animate-spin"          ← spinner 在转
+message-card-wrap question = 1                     提问卡片出现了（提问确实送出去了）
+message-card-wrap answer   = 0                     答案卡片从未出现
+错误/重试文案 = 0                                   页面上没有任何拒绝信号
+```
+
+也就是**前端已经建立流式接收状态，服务端一个 token 都不推**，UI 会一直转下去直到
+我们自己的预算到期。`login` / `captcha` / `accessRestricted` 全是 `false`：
+没有任何可见的拒绝，平台是**静默挂起**。
+
+### 11.2 和「慢」是两件相反的事
+
+同批次 `b68_i32` 用 938 秒真的吐了 1556 字 —— 那才叫慢，加预算对它有用。
+这 6 条是 903 秒 0 字，加预算一条都救不回来，只是让 6 × 15 分钟的槽位继续白占。
+区分它们只需要一位：**`answerSeen` 有没有涨过**。涨过 = 平台在写；全程为 0 = 没在写。
+
+顺带量到的一个数：`last_attempt_started_at` 由 `createRun` 写入（`runner.js:319`，
+在 `provider.run` 之前），6 条的 `finished_at - last_attempt_started_at` 都是
+903~904 秒 —— **页面准备只占约 3 秒，其余全在等答案**。
+
+### 11.3 两个被证伪的解释，都是从一个真实的观察外推出来的
+
+1. **「匿名额度用尽」**（错）。它来自 2026-09-23 那次登录墙：页面弹「登录解锁完整功能」，
+   提问仍送进对话但不再产出正文，于是拖满超时。这次六条的 artifact 里
+   `login=false`、`captcha=false`、`generating=true`，和登录墙毫无关系 ——
+   原文把「没有正文」和「额度用尽」焊成了一条因果链，任何后来者读到都会重犯。
+   已改：`qianwen-web.js` 现在只写「墙靠登录面判定，绝不能靠有没有正文」。
+2. **「计时起点不对」**（错）。两处 `deadline` 本来就在提交动作之后起算
+   （`qianwen.js` 的提交在 473-489、`deadline` 在 491；`doubao.js:694` 同理），
+   实测数据也吻合（903s vs 900s 预算）。改成「从提问后计时」不会带来任何变化，它就是现状。
+
+### 11.4 修法：把「等多久都没用」变成一条主动退出的路径
+
+`qianwen.js` 新增 `isSilentlyDropped` 与 `ANSWER_FIRST_TOKEN_MS_DEFAULT`（默认 120s，
+环境变量 `ONEGL_ANSWER_FIRST_TOKEN_MS` 可覆盖，下限 30s）：提交后一直零字越过容忍窗，
+就抛 `ANSWER_NOT_FOUND` 提前退出，details 带 `waitedMs` / `generating` / `budgetMs`。
+
+三个刻意的设计：
+
+- **只认「从未出现过答案」**。出过一个字就永久关闭这条路径 —— 页面重渲染会让某次采样读到
+  0，那不是「没答」，把它当判据就会误杀慢任务。这是整个改动里唯一可能造成不可逆损失的地方。
+- **与超时分开报码**。两者都是「没拿到答案」，但一个等多久都没用、一个是预算不够，
+  混在一起就会重复本次的误判（把零输出读成额度问题，然后去改配额而不是改判据）。
+- **计时起点显式写成提交时刻**（`submittedAt`），并打一条
+  `[qianwen] first-token Ns | answer M chars | total Xs / budget Ys` 日志。
+
+**120s 是推理值，不是实测值**，写在注释里待校准：同批次最快的一条 129s 就完成了 744 字，
+若首字延迟接近 120s，剩下 9 秒要写出 744 字（≈83 字/秒），而全部成功任务的整段平均速率
+只在 1.7–5.8 字/秒之间 —— 差一个数量级。所以正常任务的首字延迟必然远小于 120s。
+上面那条 `first-token` 日志就是用来把这个推理换成实测分布的。
+
+误杀的代价是可控的：这类失败提问已提交、样本为空，落在 `.ops/recover-batch.mjs` 的
+empty-answer 档，带 `--allow-resubmit` 就能重跑；而白等的代价是固定的 900 秒槽位。
+
+### 11.5 可推广的两条
+
+- **注释里写观测，不要写因果结论。** 「没有正文 → 额度用尽」这条因果链当初是从一次真实
+  观测里外推出来的，它比错误更耐用，也更误导。要写「那次看到了 X 和 Y 同时出现」，
+  而不是「看到 X 就是 Y」。
+- **给「等多久都没用」的失败单独一个码。** 一个只会拖满预算的失败，和一个时间不够的失败，
+  在账本上长得一模一样时，排查方向必然被带偏。
+
+---
+
+## 十二、相关文件
 
 - `src/worker.js` —— `prepareWindow`：两个轮换判定的分工与文档块
 - `src/accounts/safety.js` —— `identityPromptsAfterRelaunch`（组边界）、`promptCountForBatch`（可推导计数）、`isCredentialFreeSurface` 豁免
@@ -727,3 +800,7 @@ failed    = count(status = 'failed')
 - `src/queue/batch-status.js` —— `resolveFailedCount`：runs 表缺行时的失败数解析（纯逻辑，可离线验证）
 - `.ops/recover-batch.mjs` —— 批次恢复工具：四档分类、`--allow-resubmit`、`--force-uncertain`、`--settle`、`--mark-recovered`；每条任务最多人工恢复 1 次（计数在 `job.data.recoveryCount`）
 - `.ops/replay-local-success.mjs` —— 本地已跑完但未落库的结果补写持久化（不重问、不碰平台）
+- `src/qianwen.js` —— `isSilentlyDropped` + `ANSWER_FIRST_TOKEN_MS_DEFAULT`：提交后一直零字即提前退出（见第十一节）
+- `test/qianwen-completion-window.test.mjs` —— 完成门的静默窗要求（只对 `return` 断言，throw 路径不该有）+ 零字判据的正反两面
+- `.ops/deploy-25-first-token.sh` —— 部署零输出早退（含队列为空才重启的保护）
+- `.ops/diagnose68.sh` / `.ops/recover68.sh` / `.ops/watch68-final.sh` —— 批次 68 的只读诊断、恢复与收尾监控
