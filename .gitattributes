@@ -1,0 +1,14 @@
+# 迁移脚本一律锁定 LF。
+#
+# 理由：每个迁移文件的 sha256 会被写进 schema_migrations，而这个 checksum 是对**文件字节**
+# 算的。换行符一旦随平台变化，migrate.js 的「已应用迁移是否被改动过」校验就会把同一份 SQL
+# 判成两个版本。
+#
+# 2026-09-26 实测：同一份 0023，LF 版 4793 字节、CRLF 版 4880 字节（差的 87 正是换行符个数）。
+# 账本里记的是 LF 版，磁盘上却是 CRLF 版 —— 于是 `migrate up` 直接抛
+# 「Migration 0023 changed after it was applied」并拒绝执行**任何**迁移，
+# worker 容器的 healthcheck 也一直卡在 unhealthy。同一批文件里 0001–0022 连账本记的都是
+# CRLF 版，那种「两边一起错」的情况反而不会报错，更隐蔽。
+#
+# 锁 LF 之后，任何平台检出、任何部署通道得到的都是同一串字节，checksum 才是一个稳定的锚点。
+migrations/*.sql text eol=lf
