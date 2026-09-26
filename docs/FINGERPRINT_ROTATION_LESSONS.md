@@ -636,11 +636,18 @@ failed    = count(status = 'failed')
   （`run.json.abandoned-<时间戳>`），`attempts` 与 `attemptHistory` 一律不动 ——
   事后判断某条数据是不是第二次问出来的，靠的就是这份现场。
 - **`job.retry()` 不抛错不等于任务回到了队列**，必须复核 `getState()`。
-- **判断「平台没答」还是「采集器没抓到」，去看 `page.html` 里提问的位置。**
+- **判断「提问有没有送出去」，去看 `page.html` 里提问的位置。**
   本批次 10 条 `answerSeen=0`，grep 到提问以
   `<div class="message-card-wrap question">…<div class="question-text-card">` 渲染在对话区 ——
-  提问确实提交了、答案节点 0 个，是平台没答。若提问只出现在 `textarea` / `contenteditable` 里，
-  那才是「填了没发」，两者处置完全相反。
+  提问确实提交了。若提问只出现在 `textarea` / `contenteditable` 里，那才是「填了没发」，
+  两者处置完全相反。
+- **但「提交了」不等于「平台拒绝了」—— 这一步我推快了，必须写下来。**
+  真正的信号是 `dom-observation.json` 的 `sessionSignals.generating`。这 10 条全是
+  `generating: true`，即页面上有「停止生成」按钮：平台**正在生成**，只是没在预算内写完。
+  而 `answer.visibleNodeCount` 恒为 0 是答案选择器不匹配造成的假阴性，**不能拿它当「没有答案」的证据**
+  （反例：同一条重跑后 `visibleNodeCount` 仍是 0，`answer.md` 却写出了 3722 字节）。
+  当时把 TIMEOUT 归因成「匿名额度用尽」，是套用了 `qianwen-web.js` 里登录墙的历史形态 ——
+  那种情况 `promptEchoCount=1`，而这批是 0，形态本来就不同。**归因要读当前现场，不要读注释。**
 
 ### 10.6 恢复必须自带次数上限
 
@@ -685,6 +692,25 @@ failed    = count(status = 'failed')
 3. **`runs.id` 是 bigint，不是 `run_<时间戳>`。** 确定性 runId 走 `local_run_id`
    （`run_b<批次>_i<序号>`），别把 `id` 当目录名去拼路径。
 
+### 10.9 还有一类「失败」根本不是失败：结果跑完了，只是没落库
+
+拿本地 `run.json` 和数据库状态对账，发现 8 条 DB `failed` 里有 2 条的本地记录是 `success` ——
+答案 1331 字 / 843 字、引用各 9 条，全都躺在磁盘上，只是写库那一步被打断
+（进程死在 `provider.run` 返回之后、`persistRun` 之前）。
+
+**这类任务重跑是错的**，重跑等于把已经拿到的答案再问一遍。正确做法是补写持久化：
+`replayPendingPersistence` 本来就是为这件事存在的 —— 它在 `worker.js:705` 被调用，
+位置在账户可用性、分布式租约、随机延迟、每日额度、浏览器启动**之前**，注释写明
+它永远进不了 provider collection。所以重放既不碰平台，也没有任何重复提问风险。
+
+`.ops/replay-local-success.mjs` 把这条路径做成可手动执行的：扫本地 `status in (success, partial)`
+且 `dbStatus !== "success"` 的记录，与库比对后逐个重放。实测捞回 2 条，`completed` 由 85 变 87。
+
+**推广开来：任何「任务失败了」的结论，下之前都该先和本地产物对一次账。**
+`runs` 表是结果，不是真相；`run.json` 加 `attempts/` 才是现场。本次两个坑
+（11 条无 run 行的任务从进度里消失、2 条有 run 文件的结果没进库）本质是同一件事：
+**把投影当成了事实来源。**
+
 ---
 
 ## 十一、相关文件
@@ -700,3 +726,4 @@ failed    = count(status = 'failed')
 - `src/queue/batch-reconcile.js` —— 队列侧对账：找出「job 已终结但 runs 表无记录」的任务
 - `src/queue/batch-status.js` —— `resolveFailedCount`：runs 表缺行时的失败数解析（纯逻辑，可离线验证）
 - `.ops/recover-batch.mjs` —— 批次恢复工具：四档分类、`--allow-resubmit`、`--force-uncertain`、`--settle`、`--mark-recovered`；每条任务最多人工恢复 1 次（计数在 `job.data.recoveryCount`）
+- `.ops/replay-local-success.mjs` —— 本地已跑完但未落库的结果补写持久化（不重问、不碰平台）
