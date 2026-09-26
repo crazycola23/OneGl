@@ -363,6 +363,50 @@ function answerQuietSettledMs() {
 }
 
 /**
+ * 提交后「一个字符都没出现」的容忍窗 —— 越过就判定这次请求被平台静默丢弃，提前退出。
+ *
+ * 判决依据来自 2026-09-26 批次 68 的现场（6 条拖满 900s 预算的任务，artifact 逐条比对）：
+ *
+ *   generating: true          页面停在 `answer-common-card answer-receiving-card` + spinner
+ *   answer card 数 = 0        答案卡片从未出现（question card = 1，提问确实送出去了）
+ *   login / captcha / accessRestricted 全 false，页面上没有任何拒绝文案
+ *
+ * 也就是**前端已建立流式接收状态，服务端一个 token 都不推**。它和历史记录的「慢响应」
+ * （40–99 分钟才写完，但 answerSeen 一路上涨）是两件不同的事：这批到最后一秒都是 0 字。
+ * 加预算救不了零输出的会话 —— 按 6 条算只是白占约 78 分钟槽位，那些时间本可以给
+ * `b68_i32` 那种「真的慢但能出结果」的任务（938s 仍然吐了 1556 字）。
+ *
+ * 120s 是**推理值，不是实测值**，标注在此以便校准：同批次最快的一条 129s 就完成了 744 字，
+ * 若首字延迟接近 120s，剩下 9 秒要写出 744 字（≈83 字/秒），而全部成功任务的整段平均速率
+ * 只落在 1.7–5.8 字/秒之间 —— 差一个数量级。所以正常任务的首字延迟必然远小于 120s。
+ * 每次成功采集都会打一条 `[qianwen] first-token` 日志记录真实首字延迟，用它校准这个数。
+ *
+ * 误杀的代价是可控的：这类失败的提问已提交、样本为空，落在 `.ops/recover-batch.mjs` 的
+ * empty-answer 档，带 `--allow-resubmit` 就能重跑；而白等的代价是固定的 900 秒槽位。
+ * 所以判据只认「**从未**出现过答案」（firstTokenSeen），一旦出过一个字就永久关闭 ——
+ * 页面重渲染让某次采样读到 0 不能当成「没答」，那会把慢任务误杀。
+ *
+ * 下限 30s：低于它的窗口会把「平台正在排队/预热」误判成吞请求。
+ */
+const ANSWER_FIRST_TOKEN_MS_DEFAULT = 120_000;
+
+function answerFirstTokenMs() {
+  return intEnvValue("ONEGL_ANSWER_FIRST_TOKEN_MS", ANSWER_FIRST_TOKEN_MS_DEFAULT, 30_000);
+}
+
+/**
+ * 「提交后一直零字」是否已经越过容忍窗。
+ *
+ * 导出是为了能被单独测试 —— 这个判定直接决定要不要主动放弃一条**已经提交**的样本，
+ * 和 `looksSettled` 一样，判错的代价不可逆（重跑就是重复提问）。
+ */
+export function isSilentlyDropped({ answerLength, firstTokenSeen, waitedMs, windowMs }) {
+  if (firstTokenSeen) return false;
+  if (answerLength > 0) return false;
+  return waitedMs >= windowMs;
+}
+
+/**
  * 答案末尾是否呈现收尾特征。
  *
  * 只看**末尾几个字符**：问号在答案中间大量出现（列表、小标题），拿全文判断会把「还在写」
@@ -422,6 +466,8 @@ async function submitAndWait(page, prompt, config, context) {
     );
   }
   const quietWindowMs = Math.min(ANSWER_QUIET_MS, affordableMs);
+  // 零字容忍窗同样受预算约束：预算撑不满它时按付得起的来，否则「提前」退出反而会晚于预算到期。
+  const firstTokenWindowMs = Math.min(answerFirstTokenMs(), affordableMs);
   const composer = page.locator(context.composer).first();
   // Authoritative here, inside the run: if an overlay still owns the page, this throws after
   // the run record exists so the failure carries an error code instead of vanishing.
@@ -488,12 +534,17 @@ async function submitAndWait(page, prompt, config, context) {
       }
     });
 
-  const deadline = Date.now() + budgetMs;
+  // 计时起点是**提交动作之后**，不含开页面、清浮层、敲字这些准备时间 —— 实测那部分只占约 3 秒
+  // （批次 68 六条超时任务的 finished_at - last_attempt_started_at 都是 903~904s，预算 900s）。
+  const submittedAt = Date.now();
+  const deadline = submittedAt + budgetMs;
   // Grace period first: immediately after the click the generation control has not appeared
   // yet, and checking it then reads as "already finished".
   await page.waitForTimeout(6_000);
   let latest = null;
   let sampledAt = 0;
+  // 首个字符出现的时刻（相对 submittedAt）。null = 到现在一个字符都没出现过。
+  let firstTokenMs = null;
   // When the answer last changed length. A run of equal-length samples inherits the first one's
   // timestamp, so the quiet window is measured from the last real growth, not from the last poll.
   let quietSince = null;
@@ -515,10 +566,46 @@ async function submitAndWait(page, prompt, config, context) {
       && previous.answerLength === latest.answerLength;
     quietSince = unchanged ? (quietSince ?? previousAt) : null;
     const quietMs = quietSince == null ? 0 : now - quietSince;
+    // 首字延迟的观测点。一旦出现过答案，`isSilentlyDropped` 就永久关闭 —— 后面的采样再读到 0
+    // （页面重渲染、卡片重挂）也不是「没答」。
+    if (latest.answerLength > 0 && firstTokenMs === null) firstTokenMs = now - submittedAt;
+    if (
+      isSilentlyDropped({
+        answerLength: latest.answerLength,
+        firstTokenSeen: firstTokenMs !== null,
+        waitedMs: now - submittedAt,
+        windowMs: firstTokenWindowMs,
+      })
+    ) {
+      // 与超时分开报：两者都是「没拿到答案」，但一个是平台吞了请求（等多久都没用），
+      // 一个是预算不够（加预算有用）。结论混在一起就会重复 2026-09-26 那次误判 ——
+      // 把「零输出」读成「匿名额度用尽」，进而去改配额而不是改判据。
+      throw new DoubaoMvpError(
+        ErrorCode.ANSWER_NOT_FOUND,
+        `千问提交后 ${Math.round((now - submittedAt) / 1000)}s 内没有产出任何字符，`
+          + `判定这次请求被平台静默丢弃，提前退出（不再空耗 ${Math.round(budgetMs / 1000)}s 预算）。`,
+        {
+          stage: "generating",
+          url: latest.url,
+          promptSubmitted: true,
+          answerSeen: 0,
+          generating: latest.generating ?? null,
+          waitedMs: now - submittedAt,
+          firstTokenWindowMs,
+          budgetMs,
+        },
+      );
+    }
     // 已收尾的答案用更短的确认窗：收尾特征（反问/句末标点）说明这一轮写完了，而通用窗口的
     // 长度是为「平台中途长停顿」准备的。两者混用会让每条白等约 100 秒。
     const effectiveQuietMs = looksSettled(latest.answer) ? answerQuietSettledMs() : quietWindowMs;
     if (latest.answerLength > 0 && quietMs >= effectiveQuietMs && !latest.generating) {
+      // 结构化的首字延迟日志：`ANSWER_FIRST_TOKEN_MS_DEFAULT` 是推理值，靠这条日志校准。
+      console.log(
+        `[qianwen] first-token ${Math.round((firstTokenMs ?? 0) / 1000)}s`
+          + ` | answer ${latest.answerLength} chars`
+          + ` | total ${Math.round((now - submittedAt) / 1000)}s / budget ${Math.round(budgetMs / 1000)}s`,
+      );
       return { scan: latest, sentBy };
     }
     // The fallback needs a longer window precisely because its signal is weaker: it only asks that
@@ -548,7 +635,10 @@ async function submitAndWait(page, prompt, config, context) {
       partialAnswer: latest && latest.answerLength > 200 ? latest.answer : null,
       // 这次超时时到底有没有见过答案。区分两种截然不同的超时：
       //   answerSeen 有值  -> 平台在慢慢生成（历史上见过 40–99 分钟的慢响应），是平台慢；
-      //   answerSeen 为 0  -> 整个预算内一个字符都没渲染出来，不是"慢"，是平台没答。
+      //   answerSeen 为 0  -> 整个预算内一个字符都没渲染出来。
+      // answerSeen 为 0 **不等于**平台拒绝回答：同一个 details 里的 generating=true 说明
+      // 「停止生成」按钮还在页面上，平台是在生成、只是没在预算内写出东西。判断登录墙/风控要看
+      // sessionSignals.login 与 loginSurfaceSelectors，不要拿这一位去推断额度。
       // 上层靠这一位判断要不要撤并发：并发的代价恰恰表现为后者，而前者撤并发没有帮助。
       answerSeen: latest?.answerLength ?? 0,
       budgetMs,

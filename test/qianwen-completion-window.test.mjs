@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { looksSettled } from "../src/qianwen.js";
+import { isSilentlyDropped, looksSettled } from "../src/qianwen.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.join(root, "..", "src", "qianwen.js"), "utf8");
@@ -88,11 +88,49 @@ test("an answer that never rendered cannot satisfy either gate", () => {
   // Search from the computation onward: an earlier `classifyFailure` call sits in the pre-submit
   // check, and anchoring the slice on that would have cut an empty region and passed silently.
   const loop = source.slice(quietAt, source.indexOf("const reason = classifyFailure", quietAt));
-  const gated = loop.match(/latest\.answerLength > 0[^\n]*/g) ?? [];
-  assert.ok(gated.length > 0, "neither completion gate requires a non-empty answer");
-  for (const line of gated) {
-    assert.match(line, /quietMs >=/, `gate without a quiet-window requirement: ${line.trim()}`);
+
+  // 只看「判成功」的门（`return { scan: latest, sentBy }`）。循环里还有两条以 throw 结束的路径
+  // —— classifyFailure 和零字提前退出 —— 它们本来就不该带静默窗条件，混进来会让断言失去意义。
+  const gates = [];
+  const returns = /return \{ scan: latest, sentBy \};/g;
+  let hit = returns.exec(loop);
+  while (hit) {
+    const before = loop.slice(0, hit.index);
+    const condStart = before.lastIndexOf("if (");
+    const cond = before.slice(condStart, before.indexOf(")", condStart) + 1);
+    gates.push(cond);
+    hit = returns.exec(loop);
   }
+  assert.ok(gates.length >= 2, "expected the primary completion gate and its weaker fallback");
+  for (const condition of gates) {
+    assert.match(condition, /latest\.answerLength > 0/, `success gate without an answer requirement: ${condition}`);
+    assert.match(condition, /quietMs >=/, `success gate without a quiet-window requirement: ${condition}`);
+  }
+});
+
+test("a request the platform silently drops is abandoned instead of waited out", () => {
+  // 2026-09-26 批次 68 的现场：6 条拖满 900s 预算，artifact 里 generating=true（「停止生成」
+  // 在页面上）、answer card 数=0（答案卡片从未出现，而 question card=1 说明提问确实送出去了）、
+  // login/captcha/accessRestricted 全 false。即前端已进入流式接收态，服务端一个 token 都不推。
+  // 这种会话等多久都不会出内容，硬等只是白占槽位（6 条 ≈ 78 分钟）。
+  const window = constantValue("ANSWER_FIRST_TOKEN_MS_DEFAULT");
+  assert.ok(window > 0, "零字容忍窗必须是正的");
+  assert.ok(
+    window < 900_000,
+    "零字容忍窗必须显著小于 900s 预算，否则「提前退出」不可能先于超时到达，等于没做",
+  );
+  assert.match(
+    source,
+    /return intEnvValue\("ONEGL_ANSWER_FIRST_TOKEN_MS", ANSWER_FIRST_TOKEN_MS_DEFAULT, 30_000\);/,
+    "零字容忍窗要可配置，并且带 30s 下限 —— 低于它会把「平台正在排队/预热」误判成吞请求",
+  );
+  // 判据只认「从未出现过答案」：出过一个字就永久关闭这条路径。这是整个改动里唯一可能造成
+  // 不可逆损失的地方 —— 一次页面重渲染导致的 0 采样不该把一条慢任务判死。
+  const windowMs = 120_000;
+  assert.equal(isSilentlyDropped({ answerLength: 0, firstTokenSeen: false, waitedMs: windowMs, windowMs }), true);
+  assert.equal(isSilentlyDropped({ answerLength: 0, firstTokenSeen: false, waitedMs: windowMs - 1, windowMs }), false);
+  assert.equal(isSilentlyDropped({ answerLength: 12, firstTokenSeen: false, waitedMs: 900_000, windowMs }), false);
+  assert.equal(isSilentlyDropped({ answerLength: 0, firstTokenSeen: true, waitedMs: 900_000, windowMs }), false);
 });
 
 test("only an answer that has actually been written counts as settled", () => {
