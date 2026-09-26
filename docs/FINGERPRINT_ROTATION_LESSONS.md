@@ -559,7 +559,113 @@ job-db-replay-error error=Unsupported relationStatus value(s): resolved.
 
 ---
 
-## 十、相关文件
+## 十、批次卡死在 running：runs 表是队列的投影，投影会缺行（2026-09-26）
+
+### 10.1 现象
+
+批次 68 停在 100 条里的 89 条：`completed=79 failed=10`，界面 `running` 不再前进，
+而 Redis 侧 `wait=0 active=0` —— 队列里早就没有活任务了。
+
+最关键的一处不对称：**队列的 failed 集合里有 21 条，进度只认了 10 条。**
+
+### 10.2 根因
+
+任务的失败点可以落在 `RunStore.createRun` 之前（提交节流、Redis 连接、执行锁），
+此时 `runs` 表里连一行都没有 —— 它只存在于队列的 `failed` 集合里。
+
+而 `refreshBatchProgress` 只数 `runs` 表：
+
+```sql
+completed = count(status in ('success', 'partial'))
+failed    = count(status = 'failed')
+```
+
+这 11 条既不算完成也不算失败，`resolveBatchOutcome` 的 `settled` 永远为 false，
+批次停在 running 不再前进。
+
+**队列的 failed 集合才是唯一事实来源，`runs` 表只是它的投影。** 投影缺行时，
+以投影为准的任何判定都会得出「还没跑完」。
+
+### 10.3 排查路径
+
+顺序本身值得记，它避开了两条弯路：
+
+1. **先看队列计数，再看数据库计数。** `wait=0 active=0` 而状态仍是 running，
+   这一对矛盾直接指出「任务不是慢，是没了」——不要再去调超时参数。
+2. **用 job id 集合做差集，不要靠计数器推理。** 把队列 `failed + completed` 里的
+   `b68_i*` 全收上来（21 + 79 = 100），再与 `runs.run_token` 求差，缺的 11 条立刻现形。
+   计数器只会告诉你有 11 条不见了，差集告诉你**具体是哪 11 条**，而"哪几条"才决定怎么救。
+3. **不要从「平台问题」查起。** `timeout exceeded when trying to connect` 看着像网络，
+   实测 Redis 本身健康（`rejected_connections=0`、内存 4.73M/256M、慢查询最长 11ms），
+   是 worker 侧连接池失效。
+
+### 10.4 修法
+
+`src/queue/batch-reconcile.js` 做队列侧对账，`refreshBatchProgress` 只在
+`completed + failed < requested` 时才查队列 —— 正常路径整段跳过，不付代价。
+
+两个必须坚持的细节：
+
+- **Redis 读不到时返回 0，不要抛错。** 宁可这一轮少算（下一次事件会再算），
+  也不能把还在跑的任务误判成失败从而提前收口批次。
+- **不要把差额算成 skipped。** 这些任务确实失败了（job 状态是 failed），记成 failed 才是实话；
+  skipped 的语义是「没有产出 Run 的分配」，与它们不符。
+
+### 10.5 恢复分档：按「能否证明提问没发出」，不按「看起来失没失败」
+
+这是本节最该带走的一条。恢复工具 `.ops/recover-batch.mjs` 分四档：
+
+| 分档 | 判据 | 处置 |
+| --- | --- | --- |
+| never-started | 无 `run.json`（`createRun` 从未调用） | 无条件重跑 |
+| empty-answer | 提问已提交、`answerSeen=0` | 需 `--allow-resubmit` |
+| state-uncertain | `run.json=running` | 需 `--force-uncertain`，先摘状态 |
+| answered | 已拿到答案 | 拒绝执行，只能人工判断 |
+
+判据的锚点是 **`run.json` 在不在**，而不是 `attempts/` 目录在不在。因为
+`createRun`（`src/collect/runner.js:319`）发生在 `provider.run`（同文件 `:381`）之前：
+「有 run.json」只说明进了流程，**「没有 run.json」才等价于提问绝无可能发出**。
+
+反过来，`attempts/` 目录为空**不能**证明没提交 —— 产物是在 `provider.run` 返回之后写的，
+进程在等待回答时被杀，目录一样是空的。这条差点让 `state-uncertain` 被误并进「无条件安全」。
+
+三处值得记住的手法：
+
+- **`state-uncertain` 必须先摘状态再入队，且必须在入队之前全部摘完。**
+  `job.retry()` 之后 worker 立刻接手，那时再改 `run.json` 就来不及了。原件改名保留
+  （`run.json.abandoned-<时间戳>`），`attempts` 与 `attemptHistory` 一律不动 ——
+  事后判断某条数据是不是第二次问出来的，靠的就是这份现场。
+- **`job.retry()` 不抛错不等于任务回到了队列**，必须复核 `getState()`。
+- **判断「平台没答」还是「采集器没抓到」，去看 `page.html` 里提问的位置。**
+  本批次 10 条 `answerSeen=0`，grep 到提问以
+  `<div class="message-card-wrap question">…<div class="question-text-card">` 渲染在对话区 ——
+  提问确实提交了、答案节点 0 个，是平台没答。若提问只出现在 `textarea` / `contenteditable` 里，
+  那才是「填了没发」，两者处置完全相反。
+
+### 10.6 一个被证伪的诊断信号
+
+`dom-observer.js:214` 的 `promptEchoCount` 抓错了元素：它匹配到了输入框的 placeholder
+（`userMessages[0].text === "向千问提问"`，className 里带 `placeholder:text-disabled`），
+却漏掉了真正的 `.message-card-wrap.question`，于是对**已提交**的提问报出 `promptEchoCount=0`。
+
+它目前只被 `validate.js` 记录、不参与判定，所以没造成误判，但作为诊断信号是失真的 ——
+用它来判断「提问有没有送进对话」会得出相反结论。已知未修：改选择器会动到校验口径。
+
+### 10.7 三个工具链坑（这次各花掉一轮）
+
+1. **`bash -s` 传入的脚本里不能用 `docker exec -i`。** ssh 把脚本通过 stdin 交给 `bash -s`，
+   而 `docker exec -i` 会读 stdin，抢走尚未被 bash 读取的剩余脚本 —— 表现为输出在某个点之后
+   凭空消失、`exit code 0`、看不出任何错误。脚本内一律用不带 `-i` 的 `docker exec`；
+   需要 SQL 就内联进 `-c`，不要用 `-f -`。
+2. **产物目录在容器里，不在宿主。** `/var/lib/onegl` 是 docker volume
+   （宿主侧为 `/var/lib/docker/volumes/onegl-app_onegl-data/_data`），
+   在宿主上 `ls /var/lib/onegl/runs` 只会得到一个空目录，很容易误判成「产物没了」。
+3. **`runs.id` 是 bigint，不是 `run_<时间戳>`。** 确定性 runId 走 `local_run_id`
+   （`run_b<批次>_i<序号>`），别把 `id` 当目录名去拼路径。
+
+---
+
+## 十一、相关文件
 
 - `src/worker.js` —— `prepareWindow`：两个轮换判定的分工与文档块
 - `src/accounts/safety.js` —— `identityPromptsAfterRelaunch`（组边界）、`promptCountForBatch`（可推导计数）、`isCredentialFreeSurface` 豁免
@@ -569,3 +675,6 @@ job-db-replay-error error=Unsupported relationStatus value(s): resolved.
 - `test/risk-control.test.mjs` —— 突发节奏的可配置性与失效路径
 - `.ops/remote.mjs` + `.ops/deploy-*.sh` —— 远程通道与分阶段部署（`script` 动作、逐文件备份、回滚标签）
 - `docs/QIANWEN_BASELINE_INVALIDATION.md` —— 千问匿名基线的作废记录（完成判据缺陷的来龙去脉）
+- `src/queue/batch-reconcile.js` —— 队列侧对账：找出「job 已终结但 runs 表无记录」的任务
+- `src/queue/batch-status.js` —— `resolveFailedCount`：runs 表缺行时的失败数解析（纯逻辑，可离线验证）
+- `.ops/recover-batch.mjs` —— 批次恢复工具：四档分类、`--allow-resubmit`、`--force-uncertain`、`--settle`
