@@ -786,7 +786,70 @@ empty-answer 档，带 `--allow-resubmit` 就能重跑；而白等的代价是�
 
 ---
 
-## 十二、相关文件
+## 十二、任务成片失败的真因：pg 池上限与并发槽位相等（2026-09-26）
+
+### 12.1 一个被读错了一整轮的报错
+
+`timeout exceeded when trying to connect` 被当成 ioredis 的连接超时，写进了两处注释
+（`INFRA_FAILURE_PATTERN`、`MAX_WORKER_UPTIME_MS`），还据此加了「跑满 6 小时主动退出」的
+自重启。方向整个是错的 —— **它是 node-postgres 连接池在 `connectionTimeoutMillis` 到期时
+抛的**。ioredis 在同类情况下说的是 "Reached the max retries per request" / "Connection is closed"。
+
+归属搞错，后面每一步都会跟着错：查 Redis（健康）、怀疑长跑失效（重启能缓解一阵，
+于是看起来像被验证了）、加自重启（把症状挪走，病根不动）。
+
+### 12.2 把归属查清楚用了哪几个证据
+
+- **Redis 侧怎么查都健康**：`rejected_connections=0`、10 个客户端 / 上限 10000、
+  `ping` p50 0.20ms / max 0.72ms、内存 4.88M / 256M。
+- **在 worker 容器里逐个复现 Redis 用法**：共享连接 ping 28ms、`duplicate()` ping 5ms、
+  `new Queue(...).getJobCounts()` 10ms —— 全部正常。既然三种用法都好，病灶就不在 Redis。
+- **翻到依赖侧**：`pg_stat_activity` 里 worker（172.22.0.7）侧持锁的两条连接
+  **idle 117s / 83s**，最后一条语句正是 `SELECT pg_try_advisory_lock($1::bigint)`，
+  而池的 `idleTimeoutMillis` 只有 10 秒 —— 它们本该被回收却没有。因为它们根本不是「空闲」，
+  是被账号租约攥着。
+- **任务失败的位置**：每条都在 `job-start` 之后 20~86 秒失败，**多数根本没走到 `take-slot`**。
+  也就是说它死在开头的几个 `pool.query` 上，采集压根没开始。
+
+### 12.3 病根：池上限 4 与并发槽位 4 相等
+
+`db/pool.js` 写死 `max: 4`，而千问匿名面的并发槽位也是 4。要命的是账号租约是**会话级
+advisory lock，必须独占一条池连接整整一个 attempt**（最长 900 秒，见
+`accounts/distributed-lock.js`）。于是 4 个槽位一开满：
+
+```
+4 个任务 → 4 条池连接被租约攥住整个 attempt → 池零余量
+→ accountAvailability / refreshBatchProgress / discoverAccounts / 引用页分析对账 全部排队
+→ 等满 connectionTimeoutMillis(10s) → 抛 timeout exceeded when trying to connect
+```
+
+这也解释了 `[worker] 引用页分析对账失败：timeout exceeded when trying to connect`
+为什么**每 15 秒稳定出现一次**：它不是偶发抖动，是池一直没空位。
+
+「重启就好一阵」同样被解释了：重启把被攥住的连接一次性全断开，池暂时空出来；
+并发一恢复它就会再满。所以**「重启后好了」不能当成「池没问题」的证据**。
+
+### 12.4 修法
+
+- `db/pool.js`：`max` 改为 `poolMax()`，默认 16，`ONEGL_DB_POOL_MAX` 可覆盖，下限 4
+  （不低于改造前的值）。余量按「并发槽位 × 平台数 + 后台短查询」给 ——
+  上限与并发度相等，等于把「池」和「并发」绑死，是没有余量的写法。
+- `worker.js`：两处归因改成事实。自重启机制保留（进程长跑确实值得定期换一次），
+  但理由不再写「Redis 连接失效」，并写明它的作用边界。
+- `test/db-pool.test.mjs`：池上限必须留余量、覆盖值不得低于 4、上限必须走 `poolMax()`。
+
+### 12.5 可推广的两条
+
+- **报错的归属要验证，不要凭印象。** ioredis 与 pg 的超时文案长得像，但归属决定整条排查链。
+  验证办法很便宜：去**依赖侧**看连接状态（`pg_stat_activity` / `CLIENT LIST`），
+  而不是在应用侧猜。
+- **会话级锁 + 连接池 = 上限必须单独算。** 一条连接被锁攥住的时长等于整个任务的时长，
+  它不参与「同时有多少查询在跑」这个直觉算式。凡是「池上限 = 并发数」的地方，
+  都要问一句：有没有什么东西是**独占**连接的。
+
+---
+
+## 十三、相关文件
 
 - `src/worker.js` —— `prepareWindow`：两个轮换判定的分工与文档块
 - `src/accounts/safety.js` —— `identityPromptsAfterRelaunch`（组边界）、`promptCountForBatch`（可推导计数）、`isCredentialFreeSurface` 豁免
@@ -804,3 +867,8 @@ empty-answer 档，带 `--allow-resubmit` 就能重跑；而白等的代价是�
 - `test/qianwen-completion-window.test.mjs` —— 完成门的静默窗要求（只对 `return` 断言，throw 路径不该有）+ 零字判据的正反两面
 - `.ops/deploy-25-first-token.sh` —— 部署零输出早退（含队列为空才重启的保护）
 - `.ops/diagnose68.sh` / `.ops/recover68.sh` / `.ops/watch68-final.sh` —— 批次 68 的只读诊断、恢复与收尾监控
+- `src/db/pool.js` —— `poolMax()`：池上限与并发槽位的关系（见第十二节）
+- `.ops/deploy-26-pool.sh` —— 部署池上限修复（前置检查队列必须空闲）
+- `.ops/reset-recovery.mjs` —— 清零某批次的恢复计数；会自行挡掉「runs 表已 success」的任务
+- `.ops/pg-locks.sh` / `.ops/pg-health.sh` —— 从 pg 侧确认连接与 advisory 锁的归属
+- `.ops/repro-redis.sh` —— 把 worker 的各种 Redis 用法逐个单独复现（用来排除 Redis 嫌疑）
