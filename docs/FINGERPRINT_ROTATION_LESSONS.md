@@ -849,7 +849,51 @@ advisory lock，必须独占一条池连接整整一个 attempt**（最长 900 �
 
 ---
 
-## 十三、相关文件
+## 十三、手工执行 SQL 的代价：账本与库会漂移（2026-09-26）
+
+### 13.1 worker 容器一直是 unhealthy，原因不在 worker
+
+`docker inspect` 显示 `health=unhealthy`，健康检查命令是 `tools/runtime-check.js --role worker`。
+逐项看下来，只有一项不 ready：
+
+```
+"migrations": { "ready": false, "local_count": 29, "applied_count": 28,
+                "pending": ["0029_traceability_links"] }
+```
+
+而 0029 的三项 schema 变更**实际都在库里**（`sampling_batches.task_id`、`citations.provider`、
+`runs.last_attempt_started_at` 各存在一列）—— 它是上一轮排查时**手工执行 SQL** 应用的，
+走的是 psql 而不是 `migrate.js`，于是 `schema_migrations` 里没有它的登记。
+
+**健康检查只看「本地文件数 vs 已登记数」和 pending 列表，不看 checksum** —— 所以库是对的、
+账本是缺的，容器就永远不健康。这类「库对账本错」不会自己恢复。
+
+### 13.2 修法与它暴露出的第二个问题
+
+补登记 0029 本身没有争议：变更已在库里，checksum 按容器内文件实算现写即可（可回滚：
+`DELETE FROM schema_migrations WHERE version='0029_traceability_links'`）。
+
+但**不能直接 `migrate.js up`** —— 它被另一件事挡住了：
+
+```
+Migration 0023_saas_batch_result_identity changed after it was applied.
+```
+
+`migrate.js` 会在执行前校验「已应用迁移的文件内容是否被改过」，而 0023 的当前文件与登记
+checksum 不一致。这是一个**独立**的不一致，且方向不明（是文件被改了，还是当初登记的就是另一版），
+不该在跑批期间顺手改 —— 它需要先判断库与文件谁漂移了。**目前 `migrate up` 处于完全不可用状态**。
+
+### 13.3 可推广的两条
+
+- **绕过工具改 schema，一定要同时补账本。** 手工 `psql -f` 之后 `schema_migrations` 不会自己更新，
+  而依赖它的东西（健康检查、CI、下一个迁移）都只读账本。0029 那次省下的是几秒钟，
+  付出的是一个永远 unhealthy 的容器。
+- **账本不一致会连带堵住所有后续迁移。** 0023 的 checksum 一漂，`migrate up` 连 0029 都跑不了。
+  一致性检查是对的，但它的代价是「一处漂移 = 全部停摆」，所以更要保证每次应用都被登记。
+
+---
+
+## 十四、相关文件
 
 - `src/worker.js` —— `prepareWindow`：两个轮换判定的分工与文档块
 - `src/accounts/safety.js` —— `identityPromptsAfterRelaunch`（组边界）、`promptCountForBatch`（可推导计数）、`isCredentialFreeSurface` 豁免
@@ -872,3 +916,6 @@ advisory lock，必须独占一条池连接整整一个 attempt**（最长 900 �
 - `.ops/reset-recovery.mjs` —— 清零某批次的恢复计数；会自行挡掉「runs 表已 success」的任务
 - `.ops/pg-locks.sh` / `.ops/pg-health.sh` —— 从 pg 侧确认连接与 advisory 锁的归属
 - `.ops/repro-redis.sh` —— 把 worker 的各种 Redis 用法逐个单独复现（用来排除 Redis 嫌疑）
+- `.ops/register-0029.sh` / `.ops/check-0029.sh` —— 补登记手工应用的迁移、核对账本与库（见第十三节）
+- `.ops/verify-pool.sh` / `.ops/final-check.sh` —— 池上限修复的验证与一次性总览
+- `.ops/resume-only.sh` —— 单独恢复队列消费（后台脚本里的 resume 输出会被缓冲，排障时要单独跑）
