@@ -154,10 +154,65 @@ const ALLOWED_RELATION_STATUS = new Set(["matched", "unresolved"]);
 // 默认永远是 'visible'——绝不把 retrieved 自动升级成可见引用。
 const ALLOWED_SOURCE_TYPES = new Set(["visible", "retrieved"]);
 
+/**
+ * 历史 artifact 的枚举值兼容表。
+ *
+ * 2026-09-23 之前的采集器写过两个自创值（那时库里还没有枚举约束），文档 8.1 记录了它们：
+ *
+ *   relationStatus: "resolved"  想表达「匹配成功」，语义就是后来的 matched
+ *   sourceType: "icon"          千问的 favicon 引用路径 —— 图标是页面上真实渲染出来的引用入口，
+ *                               语义就是后来的 visible（不是 retrieved：retrieved 的语义是
+ *                               「拿到了但无法确认 UI 可见」，用在这里会把方向弄反）
+ *
+ * 采集侧早已改成合法值，但**旧 artifact 还留在磁盘上**，走 replayPendingPersistence /
+ * `.ops/replay-local-success.mjs` 重放时会被下面的校验拦下 —— 于是那批「采集成功却没落库」
+ * 的数据永远补不回来（实测 batch 67 有 5 条 run.json=success 卡在这里，答案就在 answer.md 里）。
+ *
+ * 只映射这两个有据可查的历史值，其余非法值照旧拒绝：兼容层不能把 fail-closed 的方向反转。
+ */
+const LEGACY_ENUM_ALIASES = new Map([
+  ["relationStatus:resolved", "matched"],
+  ["sourceType:icon", "visible"],
+]);
+
+/**
+ * 按兼容表重写引用上的两个枚举值，并回报实际发生的映射。
+ *
+ * 抽成纯函数是为了能被单独测试 —— 它接受的是**旧数据**，而旧数据一旦被误映射就会写进库里，
+ * 比"拒绝写入"更难挽回。
+ */
+export function normalizeLegacyCitationEnums(citations) {
+  const migrated = [];
+  const normalized = citations.map((citation) => {
+    if (!citation) return citation;
+    const alias = (field, value) => {
+      if (value == null) return value;
+      const mapped = LEGACY_ENUM_ALIASES.get(`${field}:${value}`);
+      if (mapped === undefined) return value;
+      migrated.push(`${field}:${value}->${mapped}`);
+      return mapped;
+    };
+    return {
+      ...citation,
+      relationStatus: alias("relationStatus", citation.relationStatus),
+      sourceType: alias("sourceType", citation.sourceType),
+    };
+  });
+  return { citations: normalized, migrated };
+}
+
 function prepareCitations(citations) {
+  // 兼容映射必须发生在校验**之前**。改之前顺序是反的：校验先抛错，而下面构建行时那两处
+  // 兜底规范化永远走不到，等于死代码 —— 一批「采集成功但没落库」的旧数据就这么被永久挡在门外。
+  const { citations: normalized, migrated } = normalizeLegacyCitationEnums(citations);
+  if (migrated.length) {
+    // 兼容层不能静默：这两个值只可能来自旧 artifact，出现就说明有历史数据正在重放。
+    console.warn(`[persist] 历史枚举值按兼容表映射：${[...new Set(migrated)].join(", ")}`);
+  }
+
   const unsupported = [
     ...new Set(
-      citations
+      normalized
         .map((citation) => citation?.relationStatus)
         .filter((value) => value != null && !ALLOWED_RELATION_STATUS.has(value)),
     ),
@@ -171,7 +226,7 @@ function prepareCitations(citations) {
 
   const unsupportedSources = [
     ...new Set(
-      citations
+      normalized
         .map((citation) => citation?.sourceType)
         .filter((value) => value != null && !ALLOWED_SOURCE_TYPES.has(value)),
     ),
@@ -185,7 +240,7 @@ function prepareCitations(citations) {
 
   const rows = [];
   const skipped = [];
-  citations.forEach((citation, index) => {
+  normalized.forEach((citation, index) => {
     const originalUrl = citation?.url ?? null;
     const canonicalUrl = citation?.canonicalUrl ?? canonicalizeUrl(originalUrl);
     if (!canonicalUrl || !originalUrl) {
