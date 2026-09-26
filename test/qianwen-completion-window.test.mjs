@@ -119,6 +119,13 @@ test("a request the platform silently drops is abandoned instead of waited out",
     window < 900_000,
     "零字容忍窗必须显著小于 900s 预算，否则「提前退出」不可能先于超时到达，等于没做",
   );
+  // 实测首字延迟的尾部是 97s（2026-09-26 批次 68 的 7 条样本：8/8/8/8/6/50/97 秒）。
+  // 窗口必须离它足够远 —— 最初按推理定的 120s 只高 23s，那正是这次抬到 180s 的原因：
+  // 判错的方向不可逆（被判死的那条已经提交过提问，重跑就是重复提问）。
+  assert.ok(
+    window >= 150_000,
+    `零字容忍窗 ${window}ms 离实测首字延迟尾部 97s 太近，误杀的代价不可逆`,
+  );
   assert.match(
     source,
     /return intEnvValue\("ONEGL_ANSWER_FIRST_TOKEN_MS", ANSWER_FIRST_TOKEN_MS_DEFAULT, 30_000\);/,
@@ -126,7 +133,7 @@ test("a request the platform silently drops is abandoned instead of waited out",
   );
   // 判据只认「从未出现过答案」：出过一个字就永久关闭这条路径。这是整个改动里唯一可能造成
   // 不可逆损失的地方 —— 一次页面重渲染导致的 0 采样不该把一条慢任务判死。
-  const windowMs = 120_000;
+  const windowMs = window;
   assert.equal(isSilentlyDropped({ answerLength: 0, firstTokenSeen: false, waitedMs: windowMs, windowMs }), true);
   assert.equal(isSilentlyDropped({ answerLength: 0, firstTokenSeen: false, waitedMs: windowMs - 1, windowMs }), false);
   assert.equal(isSilentlyDropped({ answerLength: 12, firstTokenSeen: false, waitedMs: 900_000, windowMs }), false);
