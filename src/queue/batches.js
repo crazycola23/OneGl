@@ -2,7 +2,8 @@ import { Queue } from "bullmq";
 import { safetyConfig } from "../accounts/safety.js";
 import { accountIdentity, accountQueueName, getRedis, isQueueConfigured } from "./connection.js";
 import { loadBatch, loadBatchAssignments } from "../sampling/batch.js";
-import { resolveBatchOutcome } from "./batch-status.js";
+import { resolveBatchOutcome, resolveFailedCount } from "./batch-status.js";
+import { countOrphanFailedJobs } from "./batch-reconcile.js";
 
 /**
  * 批次任务入队、停止与进度刷新。
@@ -217,8 +218,17 @@ export async function refreshBatchProgress(pool, batchId) {
   if (!row) return null;
 
   const completed = Number(row.completed);
-  const failed = Number(row.failed);
   const requested = Number(row.requested_jobs);
+  const dbFailed = Number(row.failed);
+
+  // runs 表可能缺行：死在 RunStore.createRun 之前的任务一行都不写，只按表统计会让批次的
+  // settled 永远为 false，卡在 running 不再前进。账对不上时才去问队列 —— 队列的 failed
+  // 集合才是唯一事实来源，runs 表只是它的投影。
+  const orphanFailed =
+    completed + dbFailed >= requested
+      ? 0
+      : await countOrphanFailedJobs(pool, batchId).catch(() => 0);
+  const failed = resolveFailedCount({ requested, completed, dbFailed, orphanFailed });
 
   const outcome = resolveBatchOutcome({
     requested,

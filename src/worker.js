@@ -131,8 +131,44 @@ let listeningAccounts = [];
  *
  * 键带 TTL：Worker 崩溃后会自动过期，不会留下一个「假装在线」的心跳。
  */
+/**
+ * worker 运行时长上限：跑满这么久就主动退出，让容器编排拉起一个全新的进程。
+ *
+ * 为什么需要（2026-09-26 实测）：同一次长跑（12+ 小时）里反复出现
+ * `timeout exceeded when trying to connect`（ioredis 连接超时），而 Redis 侧完全健康 ——
+ * rejected_connections=0、内存 4.73M/256M、慢查询最长 11ms。失效发生在 **worker 侧的连接**，
+ * 重启就恢复。
+ *
+ * 但带着失效连接继续跑是有代价的：队列里的任务会一条条耗到 attempts 用尽、被永久判死。
+ * 批次 68 因此反复卡在 76/100，而且从 runs 表看只表现为「若干条没有记录」，
+ * 极容易被误判成平台问题。
+ *
+ * 选「按时退出」而不是「检测到异常再退」：前者不依赖探测逻辑恰好命中，
+ * 而这类失效本来就是间歇的。退出是安全的 —— compose 里 RestartPolicy=unless-stopped，
+ * 容器会被自动拉起。
+ */
+const MAX_WORKER_UPTIME_MS = (() => {
+  const raw = Number(process.env.ONEGL_WORKER_MAX_UPTIME_MS);
+  return Number.isInteger(raw) && raw >= 60_000 ? raw : 6 * 60 * 60 * 1000;
+})();
+
 async function publishHeartbeat() {
   if (shuttingDown) return;
+
+  // 运行时长自检放在心跳里：它本来就有 10 秒的定时器，不必新开一个生命周期。
+  const uptimeMs = Date.now() - workerStartedAt;
+  if (uptimeMs > MAX_WORKER_UPTIME_MS) {
+    log({
+      event: "worker-uptime-limit-reached",
+      uptime_ms: uptimeMs,
+      limit_ms: MAX_WORKER_UPTIME_MS,
+      note: "长跑后 Redis 连接会失效，主动退出让编排拉起新进程，避免任务被耗到 attempts 用尽",
+    });
+    shuttingDown = true;
+    setTimeout(() => process.exit(0), 1_500);
+    return;
+  }
+
   try {
     const payload = {
       at: new Date().toISOString(),

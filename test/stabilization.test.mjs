@@ -14,7 +14,7 @@ import {
 import { loadConfig } from "../src/config.js";
 import { executeDoubaoPrompt } from "../src/doubao.js";
 import { ErrorCode } from "../src/errors.js";
-import { resolveBatchOutcome } from "../src/queue/batch-status.js";
+import { resolveBatchOutcome, resolveFailedCount } from "../src/queue/batch-status.js";
 import { planUnavailableJob } from "../src/queue/job-plan.js";
 import { RunStore } from "../src/store.js";
 
@@ -78,6 +78,34 @@ test("批次计数：同一个分配既失败又被跳过时不会把总数算�
   assert.equal(outcome.status, "partial");
   assert.equal(outcome.skipped, 1);
   assert.equal(8 + 1 + outcome.skipped, 10);
+});
+
+test("批次失败数：runs 表缺行时由队列侧对账补齐", () => {
+  // 批次 68 的真实形状：100 条分配、79 条成功，runs 表只记到 10 条失败，
+  // 另外 11 条死在 RunStore.createRun 之前 —— 表里连一行都没有，却在队列的 failed 集合里。
+  const failed = resolveFailedCount({
+    requested: 100,
+    completed: 79,
+    dbFailed: 10,
+    orphanFailed: 11,
+  });
+  assert.equal(failed, 21);
+
+  const outcome = resolveBatchOutcome({ requested: 100, completed: 79, failed, skipped: 0 });
+  assert.equal(outcome.settled, true, "补齐后批次必须能收口，否则会永远停在 running");
+  assert.equal(outcome.status, "partial");
+});
+
+test("批次失败数：账已对上时不再采信队列侧数字", () => {
+  // 正常路径下 runs 表已覆盖全部任务，对账结果不参与计算
+  assert.equal(
+    resolveFailedCount({ requested: 10, completed: 10, dbFailed: 0, orphanFailed: 5 }),
+    0,
+  );
+  assert.equal(
+    resolveFailedCount({ requested: 10, completed: 6, dbFailed: 4, orphanFailed: 5 }),
+    4,
+  );
 });
 
 // ---------------------------------------------------------------------------

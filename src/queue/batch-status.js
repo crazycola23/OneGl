@@ -44,3 +44,21 @@ export function resolveBatchOutcome({ requested, completed, failed, skipped }) {
 
   return { settled, status, skipped: skippedCount, produced, outstanding };
 }
+
+/**
+ * 失败数解析：runs 表统计不到的那部分，必须从队列侧补上。
+ *
+ * 任务可能死在 RunStore.createRun 之前（领取任务之后的节流 / 连接阶段），此时 runs 表里
+ * 连一行都没有，只按表统计就会把它当成「还没有结论」：completed 和 failed 都不含它，
+ * settled 永远为 false，批次停在 running 不再前进，而队列里其实早就没有活任务了。
+ * 批次 68 卡住的就是这样 11 条 —— 队列 failed 集合里有它们，runs 表里没有。
+ *
+ * 只在账对不上时才需要补，正常路径下 runs 表已覆盖全部任务，队列查询可以整段跳过。
+ */
+export function resolveFailedCount({ requested, completed, dbFailed, orphanFailed = 0 }) {
+  const req = Math.max(0, Number(requested) || 0);
+  const done = Math.max(0, Number(completed) || 0);
+  const bad = Math.max(0, Number(dbFailed) || 0);
+  const orphan = Math.max(0, Number(orphanFailed) || 0);
+  return done + bad < req ? bad + orphan : bad;
+}
