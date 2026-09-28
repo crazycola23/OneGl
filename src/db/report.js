@@ -1,5 +1,6 @@
 import { loadCitationFactorReport } from "../analysis/citation-factor-report.js";
 import { loadBatch } from "../sampling/batch.js";
+import { citationValidRunSql } from "./citation-validity.js";
 
 /**
  * Sampling batch report.
@@ -15,8 +16,9 @@ import { loadBatch } from "../sampling/batch.js";
 // contribute to citation distributions, tracked-source rates, or source leaderboards.
 const ANSWER_VALID_RUN =
   "r.status IN ('success', 'partial') AND r.conversation_reset_confirmed IS TRUE";
-const CITATION_VALID_RUN =
-  "r.status = 'success' AND r.conversation_reset_confirmed IS TRUE AND r.citation_state IN ('found', 'none_visible')";
+// 口径集中定义在 citation-validity.js —— 各平台 citation_state 词表不同
+// （千问 'ok' / 豆包 'found'），就地写死会让非豆包平台的来源统计静默归零。
+const CITATION_VALID_RUN = citationValidRunSql("r");
 const VISIBLE_CITATION = "c.source_type = 'visible' AND c.visible_to_user IS TRUE";
 
 function pct(numerator, denominator) {

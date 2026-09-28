@@ -1,5 +1,6 @@
 import { loadProjectDoubaoSourceSignals } from "../db/doubao-source-signals.js";
 import { loadProjectGeoIntelligence } from "../db/geo-intelligence.js";
+import { CITATION_EVIDENCE_STATES, citationValidRunSql } from "../db/citation-validity.js";
 import {
   getExecution,
   getTask,
@@ -23,7 +24,7 @@ async function distinctCitedDomainCount(pool, projectId, from, to) {
         AND r.created_at <= $3
         AND r.status = 'success'
         AND r.conversation_reset_confirmed IS TRUE
-        AND r.citation_state IN ('found', 'none_visible')
+        AND r.citation_state IN (${CITATION_EVIDENCE_STATES.map((s) => `'${s}'`).join(", ")})
         AND c.source_type = 'visible'
         AND c.visible_to_user IS TRUE`,
     [projectId, from, to],

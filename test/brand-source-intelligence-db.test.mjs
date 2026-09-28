@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildBrandSourceIntelligence } from "../src/db/brand-source-intelligence.js";
+import { CITATION_EVIDENCE_STATES, CITATION_UNRELIABLE_STATES } from "../src/db/citation-validity.js";
 
 function fakePool(runRows) {
   return {
@@ -26,7 +27,20 @@ function fakePool(runRows) {
       }
       assert.match(sql, /c\.source_type = 'visible'/);
       assert.match(sql, /c\.visible_to_user IS TRUE/);
-      assert.match(sql, /r\.citation_state IN \('found', 'none_visible'\)/);
+      // 引用有效性的 citation_state 白名单来自 db/citation-validity.js：
+      // 各平台词表不同（千问 'ok'、豆包 'found'），断言必须跟随共享定义，
+      // 不能就地写死一份字面量，否则修一处漏一处。
+      assert.match(sql, /r\.citation_state IN \([^\)]*\)/);
+      for (const state of CITATION_EVIDENCE_STATES) {
+        assert.ok(sql.includes(`'${state}'`), `引用口径包含 ${state}`);
+      }
+      for (const state of CITATION_UNRELIABLE_STATES) {
+        // 不可信状态不能出现在白名单里，否则会混入「抓到条数对不上」的运行
+        assert.ok(
+          !new RegExp(`r\\.citation_state IN \\([^)]*'${state}'`).test(sql),
+          `引用口径排除 ${state}`,
+        );
+      }
       return { rows: runRows };
     },
   };

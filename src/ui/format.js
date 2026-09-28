@@ -109,3 +109,21 @@ export const METRIC_HINTS = {
 export function sourceLabel(accountKey) {
   return accountKey ?? "未分配";
 }
+
+/* ---------------------------------------------------------- 平台标识 */
+
+/**
+ * provider 是数据库里的原始值（qianwen / doubao / zhipu），
+ * 界面上一律走这里翻译，避免各页面各写一份对照表。
+ */
+const PROVIDER_LABELS = {
+  qianwen: "千问",
+  doubao: "豆包",
+  zhipu: "智谱",
+  wenxin: "文心",
+  yuanbao: "元宝",
+};
+
+export function providerLabel(provider) {
+  return PROVIDER_LABELS[provider] ?? provider ?? "—";
+}

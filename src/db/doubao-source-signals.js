@@ -1,7 +1,7 @@
 import { summarizeDoubaoSourceSignals } from "../analysis/doubao-source-signals.js";
+import { citationValidRunSql } from "./citation-validity.js";
 
-const CITATION_VALID_RUN =
-  "r.status = 'success' AND r.conversation_reset_confirmed IS TRUE AND r.citation_state IN ('found', 'none_visible')";
+const CITATION_VALID_RUN = citationValidRunSql("r");
 
 function normalizeRows(rows) {
   return rows.map((row) => ({

@@ -1,5 +1,6 @@
 import { buildBrandSourceIntelligence } from "./brand-source-intelligence.js";
 import { buildBatchReport } from "./report.js";
+import { citationValidRunSql, CITATION_EVIDENCE_STATES } from "./citation-validity.js";
 
 /**
  * Read-only queries that back the dashboard.
@@ -7,11 +8,13 @@ import { buildBatchReport } from "./report.js";
  * Answer-valid runs include partial observations because the captured answer remains usable.
  * Citation-valid runs are stricter: citation parsing/reconciliation must have completed and
  * only user-visible DOM citations are eligible for source analytics.
+ *
+ * 引用有效性判定来自 citation-validity.js —— 判定口径集中在一处，
+ * 各平台 citation_state 词表不同时只改那里，不再散落到每个 SQL 片段。
  */
 export const VALID_RUN_SQL =
   "r.status IN ('success', 'partial') AND r.conversation_reset_confirmed IS TRUE";
-export const CITATION_VALID_RUN_SQL =
-  "r.status = 'success' AND r.conversation_reset_confirmed IS TRUE AND r.citation_state IN ('found', 'none_visible')";
+export const CITATION_VALID_RUN_SQL = citationValidRunSql("r");
 const VISIBLE_CITATION_SQL = "c.source_type = 'visible' AND c.visible_to_user IS TRUE";
 
 export async function databaseReady(pool) {
@@ -166,7 +169,7 @@ export async function listBatches(pool, { projectId = null, limit = 50 } = {}) {
                 WHERE r2.sampling_batch_id = b.id
                   AND r2.status = 'success'
                   AND r2.conversation_reset_confirmed IS TRUE
-                  AND r2.citation_state IN ('found', 'none_visible')
+                  AND r2.citation_state IN (${CITATION_EVIDENCE_STATES.map((s) => `'${s}'`).join(", ")})
                   AND c.source_type = 'visible'
                   AND c.visible_to_user IS TRUE
                   AND c.tracked_article_id IS NOT NULL)                                  AS tracked_cited
@@ -206,9 +209,16 @@ export async function listRuns(
     status = null,
     accountKey = null,
     errorCode = null,
+    provider = null,
+    query = null,
     limit = 120,
+    offset = 0,
   } = {},
 ) {
+  // 检索走 0032 的 search_text（问题 + 回答合并，中文子串可命中）。
+  // 用空字符串而非 null：ILIKE '%%' 会匹配所有非空 search_text，
+  // 而 search_text 由触发器保证非空，两者等价，后者能稳定走索引路径。
+  const term = query ? String(query) : "";
   return (
     await pool.query(
       `SELECT r.id, r.local_run_id, r.status, r.account_key, r.sampling_batch_id,
@@ -216,6 +226,7 @@ export async function listRuns(
              r.expected_citation_count, r.captured_citation_count, r.citation_state,
              r.conversation_reset, r.conversation_reset_confirmed, r.error_code,
              r.attempt, length(r.answer) AS answer_chars,
+             r.provider, r.answer_truncated, r.answer_completion,
              pr.prompt, pj.name AS project_name, pj.id AS project_id,
              sb.name AS batch_name, sbp.category
          FROM runs r
@@ -235,9 +246,163 @@ export async function listRuns(
           AND ($3::text IS NULL OR r.status = $3)
           AND ($4::text IS NULL OR r.account_key = $4)
           AND ($5::text IS NULL OR r.error_code = $5)
+          AND ($6::text IS NULL OR r.provider = $6)
+          AND ($7::text = '' OR r.search_text ILIKE '%' || $7 || '%')
         ORDER BY r.started_at DESC
-        LIMIT $6`,
-      [projectId, batchId, status, accountKey, errorCode, limit],
+        LIMIT $8 OFFSET $9`,
+      [projectId, batchId, status, accountKey, errorCode, provider, term, limit, offset],
+    )
+  ).rows;
+}
+
+/** 档案页要「命中总数」而不只是当前页行数，所以另配一条计数查询。 */
+export async function countRuns(
+  pool,
+  {
+    projectId = null,
+    batchId = null,
+    status = null,
+    accountKey = null,
+    errorCode = null,
+    provider = null,
+    query = null,
+  } = {},
+) {
+  const term = query ? String(query) : "";
+  const { rows } = await pool.query(
+    `SELECT count(*)::int AS total
+       FROM runs r
+       JOIN prompts pr ON pr.id = r.prompt_id
+       JOIN projects pj ON pj.id = pr.project_id
+      WHERE ($1::bigint IS NULL OR pj.id = $1)
+        AND ($2::bigint IS NULL OR r.sampling_batch_id = $2)
+        AND ($3::text IS NULL OR r.status = $3)
+        AND ($4::text IS NULL OR r.account_key = $4)
+        AND ($5::text IS NULL OR r.error_code = $5)
+        AND ($6::text IS NULL OR r.provider = $6)
+        AND ($7::text = '' OR r.search_text ILIKE '%' || $7 || '%')`,
+    [projectId, batchId, status, accountKey, errorCode, provider, term],
+  );
+  return rows[0]?.total ?? 0;
+}
+
+/**
+ * 对话档案：一次带出问题、回答、引用域名摘要。
+ *
+ * 引用域名用 LATERAL 子查询单独聚合，而不是 JOIN citations 后 GROUP BY：
+ * 后者会把 run 行复制成「引用数」行，answer 正文随之被重复传输 ——
+ * 一次 100 行的档案页能传出几 MB，页面直接卡住。
+ */
+export async function listConversations(
+  pool,
+  {
+    batchId = null,
+    projectId = null,
+    provider = null,
+    query = null,
+    limit = 60,
+    offset = 0,
+  } = {},
+) {
+  const term = query ? String(query) : "";
+  return (
+    await pool.query(
+      `SELECT r.id, r.local_run_id, r.status, r.provider, r.started_at, r.finished_at,
+              r.answer, length(r.answer) AS answer_chars,
+              r.answer_truncated, r.answer_completion, r.brand_mentioned, r.mention_count,
+              r.captured_citation_count, r.expected_citation_count, r.citation_state,
+              r.error_code, r.error_message, r.account_key, r.sampling_batch_id,
+              pr.prompt, pj.name AS project_name, sb.name AS batch_name,
+              dom.domains AS cite_domains
+         FROM runs r
+         JOIN prompts pr ON pr.id = r.prompt_id
+         JOIN projects pj ON pj.id = pr.project_id
+         LEFT JOIN sampling_batches sb ON sb.id = r.sampling_batch_id
+         LEFT JOIN LATERAL (
+           SELECT array_agg(DISTINCT a.normalized_domain) AS domains
+             FROM citations c
+             JOIN articles a ON a.id = c.article_id
+            WHERE c.run_id = r.id
+              AND c.source_type = 'visible'
+              AND c.visible_to_user IS TRUE
+         ) dom ON true
+        WHERE ($1::bigint IS NULL OR r.sampling_batch_id = $1)
+          AND ($2::bigint IS NULL OR pj.id = $2)
+          AND ($3::text IS NULL OR r.provider = $3)
+          AND ($4::text = '' OR r.search_text ILIKE '%' || $4 || '%')
+        ORDER BY r.started_at DESC
+        LIMIT $5 OFFSET $6`,
+      [batchId, projectId, provider, term, limit, offset],
+    )
+  ).rows;
+}
+
+/**
+ * 找出「共享问题最多」的两个跨平台批次。
+ *
+ * 配对键必须是**问题文本**，不是 prompt_id：每个批次会为自己的问题池
+ * 新建 prompts 行，同一个问题在批次 68 是 id=381、在批次 69 可能是 id=481，
+ * 两边 prompt_id 交集为 0。按文本配对实测能正确识别出 68/69 的 50 个共享问题。
+ *
+ * 也不能按「最新两个不同平台」挑：最近的批次往往是冒烟测试，彼此没有共享
+ * 问题，并排区会空着。这里让数据库按真实重叠数排序，并强制 provider 不同。
+ */
+export async function bestComparisonPair(pool, { projectId = null } = {}) {
+  const { rows } = await pool.query(
+    `WITH batch_prompts AS (
+       SELECT DISTINCT r.sampling_batch_id AS batch_id, r.provider, pr.prompt
+         FROM runs r
+         JOIN prompts pr ON pr.id = r.prompt_id
+        WHERE r.sampling_batch_id IS NOT NULL
+          AND ($1::bigint IS NULL OR pr.project_id = $1)
+     )
+     SELECT a.batch_id AS left_batch, b.batch_id AS right_batch,
+            a.provider AS left_provider, b.provider AS right_provider,
+            count(*)::int AS overlap
+       FROM batch_prompts a
+       JOIN batch_prompts b
+         ON a.prompt = b.prompt
+        AND a.batch_id < b.batch_id
+        AND a.provider <> b.provider
+      GROUP BY a.batch_id, b.batch_id, a.provider, b.provider
+      ORDER BY overlap DESC, a.batch_id DESC, b.batch_id DESC
+      LIMIT 1`,
+    [projectId],
+  );
+  if (!rows.length) return null;
+  const row = rows[0];
+  return {
+    leftBatch: row.left_batch,
+    rightBatch: row.right_batch,
+    leftProvider: row.left_provider,
+    rightProvider: row.right_provider,
+    overlap: row.overlap,
+  };
+}
+
+/** 档案页分组头：按批次给出真实口径，不复用任何估算值。 */
+export async function conversationBatchSummary(pool, { projectId = null } = {}) {
+  return (
+    await pool.query(
+      `SELECT b.id AS batch_id, b.name AS batch_name, b.status AS batch_status,
+              b.created_at, r.provider,
+              count(DISTINCT r.id)::int AS runs,
+              count(DISTINCT r.id) FILTER (WHERE r.status = 'success')::int AS success,
+              count(DISTINCT r.id) FILTER (WHERE r.status = 'partial')::int AS partial,
+              count(DISTINCT r.id) FILTER (WHERE r.status = 'failed')::int AS failed,
+              count(DISTINCT r.id) FILTER (WHERE length(coalesce(r.answer,'')) > 0)::int AS with_answer,
+              count(c.id)::int AS citations,
+              count(DISTINCT c.article_id)::int AS unique_articles,
+              count(DISTINCT a.normalized_domain)::int AS domains
+         FROM sampling_batches b
+         JOIN runs r ON r.sampling_batch_id = b.id
+         LEFT JOIN citations c ON c.run_id = r.id
+             AND c.source_type = 'visible' AND c.visible_to_user IS TRUE
+         LEFT JOIN articles a ON a.id = c.article_id
+        WHERE ($1::bigint IS NULL OR b.project_id = $1)
+        GROUP BY b.id, b.name, b.status, b.created_at, r.provider
+        ORDER BY b.id DESC`,
+      [projectId],
     )
   ).rows;
 }

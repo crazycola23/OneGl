@@ -1,5 +1,9 @@
+import { citationValidRunSql } from "./citation-validity.js";
+
 const ANSWER_VALID_RUN_SQL = "r.status IN ('success', 'partial') AND r.conversation_reset_confirmed IS TRUE";
-const CITATION_VALID_RUN_SQL = "r.status = 'success' AND r.conversation_reset_confirmed IS TRUE AND r.citation_state IN ('found', 'none_visible')";
+// 口径集中定义在 citation-validity.js：各平台 citation_state 词表不同
+// （千问用 'ok'，豆包用 'found'），在这里写死会让非豆包平台的引用统计静默归零。
+const CITATION_VALID_RUN_SQL = citationValidRunSql("r");
 
 function num(value) {
   return Number(value ?? 0);
