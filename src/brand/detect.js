@@ -28,17 +28,95 @@ function regexForTerm(term) {
   return new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, "giu");
 }
 
-function validateExcludePattern(source) {
-  // Operator-supplied regexes run against full model answers. Keep the advanced escape
-  // hatch, but bound it so an accidental giant expression cannot become an easy CPU DoS.
-  if (source.length > 200) {
-    throw new Error(`Brand exclude pattern is too long (${source.length} > 200)`);
+/**
+ * 拒绝会在长文本上爆炸的正则。
+ *
+ * ## 为什么不用「检测灾难性回溯形态」这条路
+ *
+ * 早期版本只挡了一种形态：带括号的无界量词嵌套（`(a+)+`、`(.*)*`）。
+ * 实测这个判据有致命缺口 —— `a*a*a*a*a*a*a*a*a*a*b` 这种**没有括号**的
+ * 相邻无界量词构成多项式回溯，完全绕过检查，而 `new RegExp` 正常编译。
+ * 代价：40 字符的回答文本，单次 exec 耗时 242 秒。
+ *
+ * 而 detectBrandMention 是对「每条回答 × 每个品牌」循环调用的，
+ * 也就是说单个 HTTP 请求就能把 Node 事件循环占住数分钟，
+ * 期间整个 API 进程不响应任何其它租户。限流按请求数计，挡不住。
+ *
+ * ## 现在的做法：数结构特征，不猜形态
+ *
+ * 灾难性回溯的成因是「同一个位置有多种切分方式」，表现为两类：
+ *   1. 嵌套无界量词（指数级）：`(a+)+`、`(a|a?)+`
+ *   2. 大量相邻/嵌套的无界量词（多项式级）：`a*a*a*...*b`
+ *
+ * 与其枚举形态，不如直接约束「能制造多少种切分的结构」：
+ *   - 不允许量词内部再含量词（嵌套）
+ *   - 不允许量词内部含分支（`(a|aa)+` 同样是多项式回溯）
+ *   - 无界量词总数封顶（相邻量词的次数决定多项式次数）
+ *
+ * 仍不是完备证明（语言本身难以静态判定），但把可利用的攻击面收敛到
+ * 「3 个以内无界量词且无嵌套无分支」，这个上限下最坏情况是线性或低次多项式。
+ */
+
+/** 无界量词（`*` `+` `{n,}`）总数上限。3 个是「能表达真实排除规则」与「不会爆炸」之间的折中。 */
+const MAX_UNBOUNDED_QUANTIFIERS = 3;
+/** 有界量词 `{n,m}` 允许的最大展开规模：`{1,1000}` 之类也足以致命。 */
+const MAX_BOUNDED_EXPANSION = 1000;
+
+export function validateExcludePattern(source) {
+  const pattern = String(source ?? "");
+
+  if (pattern.length > 200) {
+    throw new Error(`Brand exclude pattern is too long (${pattern.length} > 200)`);
   }
-  // Reject the most common catastrophic-backtracking shape: a quantified group whose
-  // body itself contains an unbounded quantifier, e.g. (a+)+ or (.*)*. This is not a
-  // complete regex safety proof, but it removes the high-risk form without a dependency.
-  if (/\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d*,?\d*\})/.test(source)) {
-    throw new Error(`Brand exclude pattern contains nested unbounded quantifiers: ${JSON.stringify(source)}`);
+
+  // 1) 量词内部含量词或分支：`(a+)+`、`(a|aa)+`、`(a?)*` 都能造指数级切分
+  if (/\((?:[^()\\]|\\.)*(?:[+*?]|\{\d+,?\d*\})(?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d+,?\d*\})/.test(pattern)) {
+    throw new Error(`Brand exclude pattern nests a quantifier inside a quantified group: ${JSON.stringify(source)}`);
+  }
+  // `(a|aa)+` / `(a|a?)+`：分支里的两个分支能匹配同一段文本
+  if (/\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d+,?\d*\})/.test(pattern)) {
+    throw new Error(`Brand exclude pattern quantifies a group with alternation: ${JSON.stringify(source)}`);
+  }
+
+  // 2) 无界量词总数封顶：相邻量词个数就是多项式回溯的次数
+  //
+  // 计数要排除被反斜杠转义的（`a\*` 是字面星号不是量词）。用逐字符扫描而不是
+  // 正则：`/[+*]/g` 会把 `\*` 也数进去，而带负向后行断言的版本在 alternation
+  // 里会漏掉最后一个量词（实测 `a+a+a+a` 只数到 3 个）。
+  let unbounded = 0;
+  for (let i = 0; i < pattern.length; i += 1) {
+    if (pattern[i] === "\\") { i += 1; continue; } // 跳过被转义的下一个字符
+    if (pattern[i] === "*" || pattern[i] === "+") unbounded += 1;
+    else if (pattern[i] === "{" && /^\{\d+,\}/.test(pattern.slice(i))) unbounded += 1;
+  }
+  if (unbounded > MAX_UNBOUNDED_QUANTIFIERS) {
+    throw new Error(
+      `Brand exclude pattern has ${unbounded} unbounded quantifiers ` +
+        `(max ${MAX_UNBOUNDED_QUANTIFIERS}); adjacent quantifiers cause polynomial backtracking`,
+    );
+  }
+
+  // 3) 反向引用与前瞻：这些结构常与量词组合出高代价回溯，且排除规则用不到
+  if (/(?<!\\)\\[1-9]/.test(pattern)) {
+    throw new Error(`Brand exclude pattern uses a backreference: ${JSON.stringify(source)}`);
+  }
+
+  // 4) 有界量词展开规模封顶：`a{1,1000}` 在长文本上同样致命
+  for (const m of pattern.matchAll(/(?<!\\)\{(\d+),(\d+)\}/g)) {
+    const [, low, high] = m.map(Number);
+    if (high - low > MAX_BOUNDED_EXPANSION) {
+      throw new Error(
+        `Brand exclude pattern expands to ${high - low} repetitions (max ${MAX_BOUNDED_EXPANSION})`,
+      );
+    }
+  }
+
+  // 5) 兜底：必须能编译（非法正则不该留到运行期才炸）
+  try {
+    // eslint-disable-next-line no-new
+    new RegExp(pattern, "giu");
+  } catch (error) {
+    throw new Error(`Brand exclude pattern is not a valid regular expression: ${error.message}`);
   }
 }
 

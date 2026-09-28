@@ -1,4 +1,4 @@
-import { citationValidRunSql } from "./citation-validity.js";
+import { CITATION_EVIDENCE_STATES, citationValidRunSql } from "./citation-validity.js";
 
 const ANSWER_VALID_RUN_SQL = "r.status IN ('success', 'partial') AND r.conversation_reset_confirmed IS TRUE";
 // 口径集中定义在 citation-validity.js：各平台 citation_state 词表不同
@@ -316,7 +316,9 @@ export async function buildBrandSourceIntelligence(pool, batchId) {
     localRunId: row.local_run_id,
     status: row.status,
     citationState: row.citation_state,
-    citationComplete: row.status === "success" && ["found", "none_visible"].includes(row.citation_state),
+    // 口径来自 citation-validity.js，不能在这里写死豆包的 (found, none_visible)：
+    // 千问用 'ok'，写死会让它那 94 条 'ok' 全部判为无效，来源结论静默归零。
+    citationComplete: row.status === "success" && CITATION_EVIDENCE_STATES.includes(row.citation_state),
     prompt: row.prompt,
     category: row.category,
     aiBrandMentioned: row.brand_mentioned === true,

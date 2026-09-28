@@ -1,4 +1,4 @@
-import { ApiHttpError, readJsonBody, sendJson } from "./http.js";
+import { ApiHttpError, parsePositiveInt, readJsonBody, sendJson } from "./http.js";
 import {
   bindProject,
   ensureTenantAccount,
@@ -532,7 +532,11 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
       const removed = await detachTaskGroupMember(db, {
         tenantId: tenant.id,
         publicId: groupMembers[1],
-        taskId: positiveId(taskId, "task_id"),
+        // 用 http.js 的 parsePositiveInt：这里原先调用了一个本文件里
+        // 不存在的 positiveId（它在 geo-intelligence-routes.js 是模块私有函数、
+        // 没有导出），任何调用都会抛 ReferenceError 变 500 ——
+        // 意味着该端点对所有租户都是坏的。
+        taskId: parsePositiveInt(taskId, "task_id"),
       });
       if (!removed) throw new ApiHttpError(404, "group_member_not_found", "task is not a member of this group");
       return sendJson(res, 200, { data: { removed: true } });

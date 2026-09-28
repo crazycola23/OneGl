@@ -39,6 +39,31 @@ export function safeContext(text, position, length, radius) {
   return safeSlice(text, Math.max(0, position - radius), Math.min(String(text ?? "").length, position + length + radius));
 }
 
+/**
+ * 一段 AI 回答短到多少才不可信。
+ *
+ * 平台在检索过程中会把 UI 文案短暂渲染成回答区域，采集器如实记下后
+ * `status` 仍是 success、正文也非空 —— 实测豆包侧就有 4 条
+ * 「找到 1 篇资料」「找到 10 篇资料」这种 8–9 字的检索中间态。
+ * 它们不是 AI 的回答，却会：
+ *   - 稀释提及率分母（brand-mentions.js）
+ *   - 占掉喂给模型的抽样额度，模型可能把界面文字当成 AI 推荐的品牌
+ *
+ * 按长度设阈比按内容匹配稳：真实回答再短也有几百字（实测正常回答最短 404 字），
+ * 平台中间态都在 10 字以内。80 字留了足够余量。
+ *
+ * 集中在 text-slice 而不是各模块自定义：抽样与统计必须用同一个阈值，
+ * 否则会出现「样本里有废答案但统计里没有」这种口径错位。
+ */
+export const MIN_USABLE_ANSWER_CHARS = 80;
+
+/** 回答是否值得进入统计分母 / 抽样池。 */
+export function isUsableAnswerText(text) {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed) return false;
+  return trimmed.length >= MIN_USABLE_ANSWER_CHARS;
+}
+
 /** 判断字符串里是否残留孤立代理项（测试与自检用）。 */
 export function hasLoneSurrogate(value) {
   const text = String(value ?? "");

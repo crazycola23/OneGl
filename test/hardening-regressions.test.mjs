@@ -21,9 +21,11 @@ test("ASCII brand aliases use token boundaries while CJK aliases keep substring 
 });
 
 test("brand exclude regex rejects nested unbounded quantifiers", () => {
+  // 措辞随校验策略演进过：早期只挡「括号内含量词再被量化」，现在统一表述为
+  // 「nests a quantifier inside a quantified group」。行为不变 —— 仍然拒绝。
   assert.throws(
     () => compileBrandRules({ name: "X", excludePatterns: ["(a+)+$"] }),
-    /nested unbounded quantifiers/,
+    /nests a quantifier inside a quantified group/,
   );
 });
 

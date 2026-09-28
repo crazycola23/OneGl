@@ -1,5 +1,5 @@
 import { ApiHttpError } from "../api/http.js";
-import { safeSlice } from "./text-slice.js";
+import { safeSlice, MIN_USABLE_ANSWER_CHARS } from "./text-slice.js";
 
 /**
  * AI 回答的读取与分层抽样。
@@ -29,6 +29,8 @@ import { safeSlice } from "./text-slice.js";
 
 /** 单次返回的最大回答数：防止一次拉爆响应体。 */
 const MAX_ANSWERS = 500;
+/** seed 长度上限：hashSeed 每行调用一次，不限长就是 CPU 放大面。 */
+const MAX_SEED_CHARS = 64;
 /** 单条回答的最大字符数：超长截断，但保留开头（AI 结论通常在前面）。 */
 const MAX_ANSWER_CHARS = 4000;
 
@@ -112,12 +114,18 @@ export async function listAnswers(client, options = {}) {
     from = null,
     to = null,
     sampleRatio = null,
-    limit = 100,
+    // 不能在这里就地改写：解构出来的是 const 绑定，`limit = Number(limit)`
+    // 会抛 TypeError: Assignment to constant variable，让整个端点不可用。
+    // 归一化后放进单独的可变变量。
+    limit: rawLimit = 100,
     afterId = null,
     seed = "onegl-answer-sample",
   } = options;
 
   if (!taskId && !groupId) fail("task_id or group_id is required");
+  // limit 可能来自 query string（字符串），必须先转数字：
+  // Number.isInteger("100") 是 false，不转的话 ?limit=100 恒定 400。
+  const limit = Number(rawLimit);
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_ANSWERS) {
     fail(`limit must be an integer between 1 and ${MAX_ANSWERS}`);
   }
@@ -125,6 +133,11 @@ export async function listAnswers(client, options = {}) {
   // 游标必须是正整数：内部主键，传 0 或负数会静默返回全量。
   if (afterId != null && (!Number.isInteger(Number(afterId)) || Number(afterId) < 1)) {
     fail("after_id must be a positive integer when provided");
+  }
+  // seed 长度必须限制：hashSeed 对每个字符做一次运算且每行调用，
+  // 不限长就能用一个超长 seed 把事件循环占住数秒（契约已声明 maxLength 64）。
+  if (String(seed).length > MAX_SEED_CHARS) {
+    fail(`seed must be at most ${MAX_SEED_CHARS} characters`);
   }
 
   // 批次范围与报告口径一致：按批次 started_at 落入本地日期范围，只取已结束批次。
@@ -149,9 +162,14 @@ export async function listAnswers(client, options = {}) {
   }
 
   let batchIds = scope.map((row) => Number(row.batch_id));
-  const platformSet = Array.isArray(platforms) && platforms.length ? new Set(platforms) : null;
+  // 平台名归一化必须与报告侧（geo-customer-reports.js 的 platforms 归一）一致：
+  // 那边会 trim + toLowerCase，这边不处理的话 ?platform=Qianwen 在报告接口
+  // 能用、在答案接口却报 422。空值数组按「不过滤」处理。
+  const platformSet = Array.isArray(platforms) && platforms.length
+    ? new Set(platforms.map((item) => String(item).trim().toLowerCase()).filter(Boolean))
+    : null;
   if (platformSet) {
-    batchIds = scope.filter((row) => platformSet.has(row.provider)).map((row) => Number(row.batch_id));
+    batchIds = scope.filter((row) => platformSet.has(String(row.provider).toLowerCase())).map((row) => Number(row.batch_id));
   }
   if (!batchIds.length) fail("no collection batches match the requested platforms", 422, "no_batches");
 
@@ -160,6 +178,15 @@ export async function listAnswers(client, options = {}) {
     "r.status = 'success'",
     "r.conversation_reset_confirmed IS TRUE",
     "length(COALESCE(r.answer, '')) > 0",
+    // 排除平台检索中间态与抓取残片。实测豆包有 8–9 字的「找到 1 篇资料」
+    // 这类 UI 文案被记成 success 回答；把它喂给模型，模型会把平台界面上
+    // 的字当成 AI 的回答内容去读品牌，白占样本额度还可能带出幻觉品牌。
+    `length(COALESCE(r.answer, '')) >= ${MIN_USABLE_ANSWER_CHARS}`,
+    // 排除平台没写完的回答：被预算掐断（timeout / length-stability-fallback）
+    // 的正文停在半句话上，喂给模型会让它把残缺内容当完整推荐来读。
+    // 与 geo-customer-reports.js 的 UNTRUSTED_COMPLETION_SQL 同一口径。
+    "COALESCE(r.answer_truncated, false) IS NOT TRUE",
+    "COALESCE(r.answer_completion, 'follow-up-chips') NOT IN ('timeout', 'length-stability-fallback')",
   ];
   if (from) {
     params.push(from);
@@ -195,12 +222,20 @@ export async function listAnswers(client, options = {}) {
     params,
   );
 
+  // 抽样只影响「本窗口内挑哪些」，不影响「窗口走到哪」。
+  //
+  // 游标必须取**扫描窗口的末尾**（rows 里 id 最大的那条），不能取抽样结果的末尾：
+  // 后者会把「窗口内被抽样淘汰、id 落在游标之前」的那些回答永久跳过 ——
+  // 例如 limit=100、窗口 1..2000、抽样后末位 id=1502，下次从 1503 开始，
+  // id ∈ (100, 1502) 区间里未被抽中的约 190 条就再也取不到了。
+  // 而且接口照样返回 200，调用方无从察觉。
+  const scanEnd = rows.length ? Number(rows[rows.length - 1].id) : null;
+  // 抽样后本页实际返回的条数；窗口里剩下的（即使已被抽样淘汰）仍属于「未取完」
+  const hasMore = scanEnd != null && rows.length >= scanCap;
+  const nextCursor = hasMore ? String(scanEnd) : null;
+
   const sampled = stratifiedSample(rows, ratio, seed);
   const page = sampled.slice(0, limit);
-  const last = page.at(-1) ?? null;
-  // 还有剩余就给出续游标；没有则 null，调用方据此停止翻页。
-  const consumedTo = last ? Number(last.id) : null;
-  const hasMore = consumedTo != null && rows.some((row) => Number(row.id) > consumedTo);
 
   // 报告实际覆盖量：抽样时用来告诉调用方「样本占全量的比例」
   const totals = {};
@@ -219,8 +254,11 @@ export async function listAnswers(client, options = {}) {
     seed: ratio != null ? seed : null,
     // rows 是本次扫描到的候选数（受 scanCap 限制），不是数据库里的真实总量。
     // 两者分开报，调用方才知道自己看到的是全部还是被截断过的一段。
+    // rows 是本次扫描窗口内的候选数（受 scan_cap 限制），**不是**数据库里的真实总量。
+    // 单独报出两者，避免调用方拿一个被截断的数当分母去算「我覆盖了多少」。
     scanned: rows.length,
     scan_cap: scanCap,
+    scan_truncated: rows.length >= scanCap,
     total_available: rows.length,
     returned: page.length,
     // 抽样时告诉你「样本占全量的比例」；未抽样时 sampled === available
@@ -236,7 +274,10 @@ export async function listAnswers(client, options = {}) {
     ),
     meta: {
       has_more: hasMore,
-      next_cursor: hasMore ? String(consumedTo) : null,
+      // 取扫描窗口末尾而非本页末尾，保证「窗口内被抽样淘汰」的回答也能在
+      // 后续页被取到。详见上方注释。
+      next_cursor: nextCursor,
+      cursor_basis: "scan_window_end",
     },
     answers: page.map((row) => ({
       run_id: row.local_run_id,
@@ -248,7 +289,11 @@ export async function listAnswers(client, options = {}) {
       answer: safeSlice(row.answer, 0, MAX_ANSWER_CHARS),
       answer_chars: Number(row.answer_chars),
       truncated_by_length: Number(row.answer_chars) > MAX_ANSWER_CHARS,
-      answer_truncated: row.answer_truncated,
+      // 这两个标志必须透出：调用方拿到的每一条样本都要能自己判断可信度。
+      // 之前 SELECT 查了却没输出，模型读到被平台掐断的回答会把半句话当完整推荐。
+      // null 表示旧行/平台未上报，按可信处理。
+      answer_truncated: row.answer_truncated === true,
+      answer_completion: row.answer_completion ?? null,
       citation_count: Number(row.captured_citation_count ?? 0),
     })),
     interpretation: {

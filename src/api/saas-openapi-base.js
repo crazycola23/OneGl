@@ -292,9 +292,14 @@ export function applySaasOpenApi(document) {
     },
     BrandMentionsResource: {
       type: "object",
-      required: ["answer_count", "brand_count", "basis", "brands", "interpretation"],
+      required: ["answer_count", "excluded_answers", "brand_count", "basis", "brands", "interpretation"],
       properties: {
-        answer_count: { type: "integer", minimum: 0 },
+        answer_count: { type: "integer", minimum: 0, description: "Answers that count toward mention-rate denominators." },
+        excluded_answers: {
+          type: "integer",
+          minimum: 0,
+          description: "Answers dropped before counting: blank, shorter than the minimum usable length (platform UI text such as '找到 1 篇资料'), or flagged as truncated by the platform. Reported so the denominator is auditable.",
+        },
         brand_count: { type: "integer", minimum: 0 },
         basis: { type: "string", const: "mentioned_answers_over_valid_answers" },
         brands: { type: "array", items: { $ref: "#/components/schemas/GeoReportBrandSummary" } },
@@ -651,8 +656,16 @@ export function applySaasOpenApi(document) {
         question: { type: ["string", "null"] },
         answer: { type: "string", description: "AI answer text, safe-sliced to avoid splitting surrogate pairs." },
         answer_chars: { type: "integer", minimum: 0, description: "Full length before slicing." },
-        truncated_by_length: { type: "boolean" },
-        answer_truncated: { type: ["boolean", "null"], description: "The platform itself appeared to be cut off mid-answer." },
+        truncated_by_length: { type: "boolean", description: "The response text was cut at MAX answer length for transport." },
+        answer_truncated: {
+          type: "boolean",
+          description: "The platform appears to have stopped mid-answer. Untrusted answers are already excluded from this endpoint, so this is informational.",
+        },
+        answer_completion: {
+          type: ["string", "null"],
+          enum: ["follow-up-chips", "length-stability-fallback", "timeout", "unknown", null],
+          description: "How the end of the answer was decided. Null on old rows; treat as untrusted only for the two explicitly untrusted values.",
+        },
         citation_count: { type: "integer", minimum: 0 },
       },
       additionalProperties: true,
@@ -665,8 +678,9 @@ export function applySaasOpenApi(document) {
         sample_ratio: { type: ["number", "null"], minimum: 0, maximum: 1 },
         seed: { type: ["string", "null"], description: "Same seed always selects the same answers, so a model-derived brand list can be reproduced." },
         scanned: { type: "integer", minimum: 0, description: "Candidates examined after applying filters; capped by scan_cap." },
-        scan_cap: { type: "integer", minimum: 0, description: "Hard ceiling on candidates examined in one call. Reaching it means results are truncated." },
-        total_available: { type: "integer", minimum: 0 },
+        scan_cap: { type: "integer", minimum: 0, description: "Hard ceiling on candidates examined in one call." },
+        scan_truncated: { type: "boolean", description: "True when scan_cap was hit, meaning more answers exist beyond the current window." },
+        total_available: { type: "integer", minimum: 0, description: "Same as scanned: candidates in the current window, NOT the full table count." },
         returned: { type: "integer", minimum: 0 },
         by_platform: {
           type: "object",
@@ -687,8 +701,9 @@ export function applySaasOpenApi(document) {
             has_more: { type: "boolean" },
             next_cursor: {
               type: ["string", "null"],
-              description: "Pass back as after_id to continue. Null when the page is the last one.",
+              description: "Pass back as after_id to continue. Null when the scan window reached the end. This is the window end, not the last returned id, so answers skipped by sample_ratio inside the window stay reachable.",
             },
+            cursor_basis: { type: "string", const: "scan_window_end" },
           },
           additionalProperties: true,
         },
@@ -1208,9 +1223,9 @@ export function applySaasOpenApi(document) {
             in: "query",
             schema: { type: "integer", minimum: 1 },
             description:
-              "Opaque-ish cursor: pass meta.next_cursor from the previous page to continue. Answers are ordered " +
-              "by internal run id, so pages never overlap or skip. Combine with sample_ratio only on the first page — " +
-              "resampling a later page would not correspond to the first.",
+              "Continuation cursor from meta.next_cursor of the previous page. The cursor is the end of the " +
+              "SCAN window, not of the returned page: answers filtered out by sample_ratio inside a window " +
+              "remain reachable on later pages, so no answer is skipped. It equals runs.id ordering.",
           },
           {
             name: "seed",

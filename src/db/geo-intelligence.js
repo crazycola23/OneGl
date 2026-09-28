@@ -1,4 +1,5 @@
-import { compileBrandRules, detectBrandMention } from "../brand/detect.js";
+import { compileBrandRules, detectBrandMention, validateExcludePattern } from "../brand/detect.js";
+import { CITATION_EVIDENCE_STATES } from "./citation-validity.js";
 import {
   buildGeoOpportunities,
   citationDifficulty,
@@ -22,8 +23,16 @@ function competitorRules(row) {
   });
 }
 
+/**
+ * 这次运行的引用证据是否可信。
+ *
+ * 口径必须来自 citation-validity.js：各平台 citation_state 词表不同
+ * （豆包 'found'、千问 'ok'、智谱/文心 'dom-only'），在这里写死豆包那套会让
+ * 千问的 94 条 'ok' 全部判为无效，来源相关结论静默归零 —— 数字看起来合法
+ * （0 也是数字），不会有任何告警。
+ */
 function citationCompleteRun(run) {
-  return run?.status === "success" && new Set(["found", "none_visible"]).has(run?.citation_state);
+  return run?.status === "success" && CITATION_EVIDENCE_STATES.includes(run?.citation_state);
 }
 
 function queryEvidenceUsable(run) {
@@ -56,6 +65,17 @@ export async function upsertProjectCompetitor(pool, projectId, input = {}) {
     .map(String)
     .map((value) => value.trim())
     .filter(Boolean);
+  // 排除规则必须在这里校验，不能等到 buildIntelligence 编译时才拦。
+  // 那是持久化型 DoS：恶意正则一旦落库，此后每次看板刷新都会重新编译并执行它，
+  // 攻击成本与受害次数解耦，且 db 层原本连长度上限都没有。
+  // 校验口径与报告 brands[].exclude_patterns 完全一致（同一个 validateExcludePattern）。
+  for (const pattern of excludePatterns) {
+    try {
+      validateExcludePattern(pattern);
+    } catch (error) {
+      throw new Error(`invalid competitor exclude_patterns: ${error.message}`);
+    }
+  }
   const enabled = input.enabled !== false;
 
   const { rows } = await pool.query(

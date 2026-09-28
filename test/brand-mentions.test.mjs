@@ -2,13 +2,48 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { BrandInputError, computeBrandMentions, normalizeBrands } from "../src/analysis/brand-mentions.js";
+import { MIN_USABLE_ANSWER_CHARS } from "../src/analysis/text-slice.js";
+
+/**
+ * 测试文本必须长到真实回答的量级。
+ *
+ * 提及率的分母会排除短于 MIN_USABLE_ANSWER_CHARS 的文本（平台检索中间态
+ * 如「找到 1 篇资料」不是 AI 的回答）。用几十字的样本会让整批被排除掉，
+ * 测试就成了在验证「全部为空」而不是在验证匹配逻辑。
+ */
+const pad = (core) => core + "。".repeat(Math.max(0, MIN_USABLE_ANSWER_CHARS));
 
 const answers = [
-  { runId: "r1", provider: "qianwen", text: "推荐思邈棠中式养生体质调理（银泰城店） 核心优势：先辨证后调理。绍兴市中医院 特色：公立三甲。" },
-  { runId: "r2", provider: "qianwen", text: "思邈棠值得一试，另外沈园堂也口碑不错。" },
-  { runId: "r3", provider: "doubao", text: "1. 思邈棠中式养生体质调理\n📍位置：越城区\n✅适合：肩颈僵硬" },
-  { runId: "r4", provider: "doubao", text: "董大盲人医疗按摩所 位置：老城区。适合：慢性酸痛。" },
+  { runId: "r1", provider: "qianwen", text: pad("推荐思邈棠中式养生体质调理（银泰城店） 核心优势：先辨证后调理。绍兴市中医院 特色：公立三甲。") },
+  { runId: "r2", provider: "qianwen", text: pad("思邈棠值得一试，另外沈园堂也口碑不错。") },
+  { runId: "r3", provider: "doubao", text: pad("1. 思邈棠中式养生体质调理\n📍位置：越城区\n✅适合：肩颈僵硬") },
+  { runId: "r4", provider: "doubao", text: pad("董大盲人医疗按摩所 位置：老城区。适合：慢性酸痛。") },
 ];
+
+test("平台检索中间态不计入分母（真实事故驱动）", () => {
+  // 实测豆包有 4 条 status=success 但正文只有 8–9 字的「找到 1 篇资料」，
+  // 它们不是 AI 的回答，却会压低分母、稀释提及率。
+  const brands = normalizeBrands([{ name: "思邈棠" }]);
+  const result = computeBrandMentions(
+    [
+      ...answers,
+      { runId: "junk1", provider: "doubao", text: "找到 1 篇资料" },
+      { runId: "junk2", provider: "doubao", text: "找到 10 篇资料" },
+      { runId: "junk3", provider: "qianwen", text: "正在搜索" },
+    ],
+    brands,
+  );
+  assert.equal(result.answer_count, answers.length, "只有真实回答计入分母");
+  assert.equal(result.excluded_answers, 3, "被排除的条数必须报出来");
+  assert.equal(result.brands[0].mention_rate, 0.75, "提及率不被废答案稀释");
+});
+
+test("排除的条数在响应里可查证", () => {
+  const brands = normalizeBrands([{ name: "思邈棠" }]);
+  const clean = computeBrandMentions(answers, brands);
+  assert.equal(clean.excluded_answers, 0);
+  assert.ok(clean.interpretation.guidance.includes("排除了 0 条"));
+});
 
 test("normalizeBrands 接受最小输入并默认 role", () => {
   const brands = normalizeBrands([{ name: "思邈棠" }]);
@@ -68,7 +103,7 @@ test("别名与产品名参与匹配并记录 match_terms", () => {
 test("同一回答内多次出现只计一次提及率，但次数累加", () => {
   const brands = normalizeBrands([{ name: "思邈棠" }]);
   const once = computeBrandMentions(
-    [{ runId: "x", provider: "qianwen", text: "思邈棠 思邈棠 思邈棠" }],
+    [{ runId: "x", provider: "qianwen", text: pad("思邈棠 思邈棠 思邈棠") }],
     brands,
   );
   assert.equal(once.brands[0].mentioned_answers, 1, "提及率分子按回答数计");
@@ -96,7 +131,7 @@ test("空白回答不计入分母", () => {
   const brands = normalizeBrands([{ name: "思邈棠" }]);
   const result = computeBrandMentions(
     [
-      { runId: "a", provider: "qianwen", text: "思邈棠不错" },
+      { runId: "a", provider: "qianwen", text: pad("思邈棠不错") },
       { runId: "b", provider: "qianwen", text: "   " },
       { runId: "c", provider: "qianwen", text: "" },
     ],

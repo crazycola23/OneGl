@@ -1,5 +1,5 @@
 import { compileBrandRules, detectBrandMention } from "../brand/detect.js";
-import { safeContext } from "./text-slice.js";
+import { safeContext, isUsableAnswerText, MIN_USABLE_ANSWER_CHARS } from "./text-slice.js";
 
 /**
  * 品牌提及对比。
@@ -131,8 +131,22 @@ export function normalizeBrands(input) {
  *                      还是「顺带列举」—— 数值越小越靠前）
  *   examples           原文片段，可回溯核对
  */
+/**
+ * 一段回答是否值得进入提及率的分母。
+ *
+ * 判定规则（阈值与理由）见 text-slice.js 的 MIN_USABLE_ANSWER_CHARS ——
+ * 刻意不只判空：平台在检索过程中会短暂把 UI 文案当成回答内容，
+ * 采集器如实记下后 `status` 仍是 success、正文也非空。实测豆包侧就有
+ * 4 条「找到 1 篇资料」「找到 10 篇资料」这种 8–9 字的检索中间态，
+ * 它们不是 AI 的回答，却会实打实地压低分母、稀释提及率。
+ *
+ * 与 answer-sample.js 共用同一阈值：抽样喂给模型的样本集与统计分母
+ * 必须是同一批回答，否则会出现「模型读到废答案、统计却没算」的错位。
+ */
 export function computeBrandMentions(answers, brands, { exampleRadius = 90, maxExamples = MAX_EXAMPLES } = {}) {
-  const valid = answers.filter((answer) => String(answer?.text ?? "").trim());
+  const valid = answers.filter((answer) => isUsableAnswerText(answer?.text));
+  // 明确告知有多少条被排除：分母变了，调用方必须能查证
+  const excluded = answers.length - valid.length;
   const compiled = brands.map((brand) => ({
     brand,
     rules: compileBrandRules({
@@ -234,6 +248,9 @@ export function computeBrandMentions(answers, brands, { exampleRadius = 90, maxE
   return {
     schema: "brand-mentions.v1",
     answer_count: valid.length,
+    // 分母被排除的条数。平台检索中间态（如「找到 1 篇资料」）和抓取残片
+    // 会实打实稀释提及率，必须让调用方看得见排除了多少。
+    excluded_answers: excluded,
     brand_count: rows.length,
     // 按 mention_rate 降序；同率按总提及次数。再同则按名称。
     basis: "mentioned_answers_over_valid_answers",
@@ -243,7 +260,9 @@ export function computeBrandMentions(answers, brands, { exampleRadius = 90, maxE
       role: "mention_statistics",
       conclusion: null,
       guidance:
-        "这是可复现的提及率统计：分母是该平台有正文的回答数，分子是提及该品牌的回答数。" +
+        "这是可复现的提及率统计：分母是该平台**有效**回答数（正文非空且不短于 " +
+        `${MIN_USABLE_ANSWER_CHARS} 字，以排除平台检索中间态与抓取残片），分子是提及该品牌的回答数。` +
+        `本次排除了 ${excluded} 条过短回答。` +
         "match_terms 是实际参与匹配的词表，请确认它符合预期 —— 少写别名会漏匹配。" +
         "「被提及」不等于「被推荐」：判断推荐强度、渠道差异、以及如何应对，" +
         "请结合 examples.context 与排名用你自己的模型分析。",

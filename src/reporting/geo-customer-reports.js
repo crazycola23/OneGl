@@ -217,9 +217,19 @@ async function queryRunMetrics(client, batchIds, brandConfigured) {
         "count(*) FILTER (WHERE status = 'failed') AS failed_runs, " +
         "count(*) FILTER (WHERE status IN ('success', 'partial') AND conversation_reset_confirmed IS NOT TRUE) AS reset_unconfirmed_runs, " +
         "count(*) FILTER (WHERE status IN ('success', 'partial') AND conversation_reset_confirmed IS TRUE " +
-          "AND answer IS NOT NULL AND btrim(answer) <> '') AS answers_with_text, " +
+          "AND answer IS NOT NULL AND btrim(answer) <> '' " +
+          // 排除平台自己没写完的回答：answer_truncated 是标点启发式（结尾不是句末标点），
+          // answer_completion='timeout' 是被预算掐断的确定性证据。
+          // 早期版本两者都没排除，于是「平均回答长度」把半句话当完整回答算进均值，
+          // 「answers_with_text」也把不可信产出计入 —— 数字看起来正常，无从察觉。
+          "AND COALESCE(answer_truncated, false) IS NOT TRUE " +
+          "AND COALESCE(answer_completion, 'follow-up-chips') NOT IN ('timeout', 'length-stability-fallback')" +
+          ") AS answers_with_text, " +
         "avg(char_length(answer)) FILTER (WHERE status IN ('success', 'partial') " +
-          "AND conversation_reset_confirmed IS TRUE AND answer IS NOT NULL AND btrim(answer) <> '') AS average_answer_characters, " +
+          "AND conversation_reset_confirmed IS TRUE AND answer IS NOT NULL AND btrim(answer) <> '' " +
+          "AND COALESCE(answer_truncated, false) IS NOT TRUE " +
+          "AND COALESCE(answer_completion, 'follow-up-chips') NOT IN ('timeout', 'length-stability-fallback')" +
+          ") AS average_answer_characters, " +
         "count(*) FILTER (WHERE status IN ('success', 'partial') AND conversation_reset_confirmed IS TRUE " +
           "AND brand_mentioned IS TRUE) AS mentioned_runs " +
         "FROM runs WHERE sampling_batch_id = ANY($1::bigint[])",
@@ -428,6 +438,21 @@ async function queryAnswerExcerpts(client, batchIds, { limit = 400 } = {}) {
   }));
 }
 
+/**
+ * 「这条回答是不是 AI 完整说完了」——品牌提及统计只认完整回答。
+ *
+ * 三处口径必须完全一致（报告概览、平均长度、提及率分母），抽成常量
+ * 就是为了避免只改一处：早期版本这里判空、别处判截断，结果是
+ * 「有 122 条回答」但「只有 97 条可信」，两个数字在同一份 payload 里对不上。
+ *
+ * answer_completion 为 NULL 表示旧行/平台未上报，按可信处理（COALESCE 到
+ * follow-up-chips）—— 与 citation-validity.js 的处理方式一致：
+ * 缺数据不等于不可信。
+ */
+const UNTRUSTED_COMPLETION_SQL =
+  "COALESCE(r.answer_truncated, false) IS NOT TRUE " +
+  "AND COALESCE(r.answer_completion, 'follow-up-chips') NOT IN ('timeout', 'length-stability-fallback')";
+
 /** 排名所需的完整回答正文（含 run_id 供 agent 回溯）。只在生成排名时读，不进快照。 */
 async function queryAnswersForRanking(client, batchIds, { limit = 2000 } = {}) {
   if (!batchIds.length) return [];
@@ -437,6 +462,9 @@ async function queryAnswersForRanking(client, batchIds, { limit = 2000 } = {}) {
       "WHERE r.sampling_batch_id = ANY($1::bigint[]) " +
       "  AND r.status = 'success' AND r.conversation_reset_confirmed IS TRUE " +
       "  AND length(COALESCE(r.answer, '')) > 0 " +
+      // 与上面的 answers_with_text / average_answer_characters 同一口径，
+      // 否则报告里「有 N 条回答」与「提及率分母 M」会互相矛盾。
+      `  AND ${UNTRUSTED_COMPLETION_SQL} ` +
       "ORDER BY r.id LIMIT $2",
     [batchIds, limit],
   );
