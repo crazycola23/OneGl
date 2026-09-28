@@ -394,6 +394,11 @@ const reportContractSchemas = {
       type: ["boolean", "null"],
       description: "The capture looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null when the field predates this check. Exclude or separate these rows when computing mention and citation rates.",
     },
+    answer_completion: {
+      type: ["string", "null"],
+      enum: ["follow-up-chips", "length-stability-fallback", "timeout", "unknown", null],
+      description: "How the end of the answer was decided. 'follow-up-chips' means the platform emitted an explicit finished signal; 'length-stability-fallback' and 'timeout' are guesses and the capture may be cut off at a complete sentence, which answer_truncated cannot see. Null when the field predates this check.",
+    },
   }, { required: ["question", "status"] }),
 
   ReportContractResource: object({

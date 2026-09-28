@@ -10,6 +10,27 @@ export class DatabasePersistError extends Error {
   }
 }
 
+/**
+ * 完成判据的合法取值，与 `migrations/0031` 的 CHECK 约束逐字一致。
+ *
+ * 刻意**不**抛错：这是一个纯观测字段，driver 报上来一个没见过的值时，
+ * 让整条 run 写不进去（连带它已经抓到的答案与引用一起丢）比丢这个标记更糟。
+ * 未知值降级为 null（= 没上报），由 0031 那个部分索引和报告侧的「这批里有多少
+ * 是靠猜的」统计去暴露，而不是让一次采集失败。
+ */
+const ANSWER_COMPLETION_VALUES = new Set([
+  "follow-up-chips",
+  "length-stability-fallback",
+  "timeout",
+  "unknown",
+]);
+
+export function normalizeAnswerCompletion(value) {
+  if (value == null) return null;
+  const text = String(value).trim().toLowerCase();
+  return ANSWER_COMPLETION_VALUES.has(text) ? text : null;
+}
+
 const PROJECT_UPSERT = `
   INSERT INTO projects (name, description)
   VALUES ($1, $2)
@@ -62,12 +83,14 @@ const RUN_UPSERT = `
     sampling_batch_id, account_key, conversation_reset_confirmed,
     brand_mentioned, mention_count, first_mention_position, matched_terms, brand_detection_version,
     run_token, job_id, attempt, login_state, answer_truncated, request_slot,
+    answer_completion,
     last_attempt_started_at
   )
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
           $11, $12, $13, $14, $15, $16::jsonb, $17, $18,
           $19, $20, $21, $22, $23, $24, $25::jsonb, $26,
           $27, $28, $29, $30, $31, $32,
+          $33,
           $4)
   ON CONFLICT (local_run_id) DO UPDATE
     SET prompt_id = EXCLUDED.prompt_id,
@@ -107,7 +130,11 @@ const RUN_UPSERT = `
         run_token = COALESCE(EXCLUDED.run_token, runs.run_token),
         job_id = COALESCE(EXCLUDED.job_id, runs.job_id),
         attempt = EXCLUDED.attempt,
-        answer_truncated = EXCLUDED.answer_truncated
+        answer_truncated = EXCLUDED.answer_truncated,
+        -- 重放同一条 run 时不该把它已判定的完成来源擦掉：persistRun 可能被
+        -- .ops/replay-*.mjs 再调一次，而那次的 driver 结果不一定带这个字段。
+        -- COALESCE 让"这次没上报"与"上报了 null"都保持原有判定。
+        answer_completion = COALESCE(EXCLUDED.answer_completion, runs.answer_completion)
   RETURNING id
 `;
 
@@ -393,9 +420,17 @@ export async function persistRun({
       // partition that was never measured.
       run?.loginState === "anonymous" ? "anonymous" : "account",
       // A hint, so a half-sentence capture can be excluded from rates instead of counted as one.
+      //
+      // ⚠️ 这个判据对「停在半句话」的截断有效（千问实测：…体态问、…仓桥直街128），
+      // 对「停在**完整句**之后」的截断**结构上看不见** —— 而后者实测存在（文心：答案块
+      // 反复整块重写，收到的是平台收尾追问句，以句号结尾）。所以它只是提示，
+      // 判定「凭什么收尾」用下一列 answer_completion。
       looksTruncatedAnswer(run?.answer),
       // 这一次采集实际跑在哪个并发槽位。指纹轮换的计数按槽位分开，见 migrations/0028。
       Number.isInteger(requestSlot) && requestSlot >= 0 ? requestSlot : 0,
+      // 完成判据的可信度。null = 没上报（旧行 / 该平台未产出这个字段），
+      // 与「上报了 unknown」在回填统计里必须分开。见 migrations/0031。
+      normalizeAnswerCompletion(run?.answerCompletion),
     ]);
     const runId = runResult.rows[0].id;
 

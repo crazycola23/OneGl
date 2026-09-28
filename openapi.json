@@ -4705,6 +4705,20 @@
               "null"
             ]
           },
+          "answer_completion": {
+            "description": "How the end of the answer was decided. 'follow-up-chips' means the platform emitted an explicit finished signal; 'length-stability-fallback' and 'timeout' are guesses and the capture may be cut off at a complete sentence, which answer_truncated cannot see. Null when the field predates this check.",
+            "enum": [
+              "follow-up-chips",
+              "length-stability-fallback",
+              "timeout",
+              "unknown",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "answer_truncated": {
             "description": "The capture looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null when the field predates this check. Exclude or separate these rows when computing mention and citation rates.",
             "type": [
@@ -6436,6 +6450,20 @@
       },
       "ResultListItem": {
         "properties": {
+          "answer_completion": {
+            "description": "How the end of the answer was decided. 'follow-up-chips' is the platform's own finished signal; 'length-stability-fallback' and 'timeout' are guesses and the answer may be cut at a sentence boundary, so separate or exclude those rows when computing rates. Null while no run has been recorded.",
+            "enum": [
+              "follow-up-chips",
+              "length-stability-fallback",
+              "timeout",
+              "unknown",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "answer_truncated": {
             "description": "The captured answer looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null while no run has been recorded. Do not average these rows into a mention or citation rate.",
             "type": [
@@ -6596,6 +6624,20 @@
               "mention_count"
             ],
             "type": "object"
+          },
+          "answer_completion": {
+            "description": "How the end of the answer was decided. 'follow-up-chips' is the platform's own finished signal; 'length-stability-fallback' and 'timeout' are guesses and the answer may be cut at a sentence boundary, so separate or exclude those rows when computing rates. Null while no run has been recorded.",
+            "enum": [
+              "follow-up-chips",
+              "length-stability-fallback",
+              "timeout",
+              "unknown",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "answer_truncated": {
             "description": "The captured answer looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null while no run has been recorded. Do not average these rows into a mention or citation rate.",
@@ -6761,6 +6803,20 @@
         "additionalProperties": true,
         "properties": {
           "account_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "answer_completion": {
+            "description": "How the end of the answer was decided. A platform that rewrites its answer block can yield a whole sentence that is still an intermediate state, which answer_truncated cannot detect.",
+            "enum": [
+              "follow-up-chips",
+              "length-stability-fallback",
+              "timeout",
+              "unknown",
+              null
+            ],
             "type": [
               "string",
               "null"

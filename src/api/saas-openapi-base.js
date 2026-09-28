@@ -84,6 +84,14 @@ const nullableAnswerTruncated = {
   type: ["boolean", "null"],
   description: "The captured answer looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null while no run has been recorded. Do not average these rows into a mention or citation rate.",
 };
+// Orthogonal to answer_truncated: that one asks "does the text look complete", this one asks
+// "what justified calling it complete". A platform that rewrites its answer block can hand back
+// a whole sentence that is still an intermediate state, which the punctuation check cannot see.
+const nullableAnswerCompletion = {
+  type: ["string", "null"],
+  enum: ["follow-up-chips", "length-stability-fallback", "timeout", "unknown", null],
+  description: "How the end of the answer was decided. 'follow-up-chips' is the platform's own finished signal; 'length-stability-fallback' and 'timeout' are guesses and the answer may be cut at a sentence boundary, so separate or exclude those rows when computing rates. Null while no run has been recorded.",
+};
 const nullablePlatform = {
   type: ["string", "null"],
   enum: [...PROVIDERS(), null],
@@ -356,6 +364,7 @@ export function applySaasOpenApi(document) {
         login_state: nullableLoginState,
 
         answer_truncated: nullableAnswerTruncated,
+        answer_completion: nullableAnswerCompletion,
         brand_mentioned: { type: ["boolean", "null"] },
         mention_count: { type: ["integer", "null"], minimum: 0 },
         finished_at: nullableDateTime,
@@ -393,6 +402,7 @@ export function applySaasOpenApi(document) {
         login_state: nullableLoginState,
 
         answer_truncated: nullableAnswerTruncated,
+        answer_completion: nullableAnswerCompletion,
         answer: {
           type: "object",
           required: ["text", "brand_mentioned", "mention_count"],

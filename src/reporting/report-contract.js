@@ -302,6 +302,10 @@ function contractRunRow(row = {}, identity = null) {
     // A label, not a rejection: a capture that stopped mid-sentence (the platform was still
     // writing when the run ended) must not be counted as a complete observation.
     answer_truncated: row.answer_truncated == null ? null : Boolean(row.answer_truncated),
+    // 凭什么判定收尾。与 answer_truncated 正交 —— 那一列只看文本结尾的标点，
+    // 而实测存在「停在**完整句**之后」的截断（文心的答案块反复整块重写，收到的是
+    // 平台的收尾追问句，以句号结尾）。这一列才是那种情况的唯一可见信号。
+    answer_completion: text(row.answer_completion),
   };
 }
 

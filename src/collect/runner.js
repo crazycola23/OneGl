@@ -412,6 +412,10 @@ export async function runOnePrompt({
       citationState: result.citationState,
       expectedCitationCount: result.expectedCitationCount,
       citationDiagnostics: result.citationDiagnostics,
+      // 完成判据的可信度。与 answer_truncated 正交：那一列说「收尾的文本看起来完整吗」，
+      // 这一列说「凭什么判定收尾」。文心的截断形态是停在**完整句**之后（答案块反复整块
+      // 重写），标点启发式看不见它，只有这一列能把它标出来。
+      answerCompletion: result.answerCompletion ?? null,
       submissionMethod: result.submissionMethod,
       conversationReset: result.conversationReset,
       conversationResetConfirmed: result.conversationResetConfirmed ?? null,

@@ -146,6 +146,9 @@ export class RunStore {
       expectedCitationCount: null,
       citations: [],
       conversationResetConfirmed: null,
+      // 完成判据的可信度，默认 null 而不是 'unknown'：还没采集到东西时是
+      // 「没有观测」，不是「观测到值未知」。两者在回填统计里必须分开。
+      answerCompletion: null,
       brandMentioned: null,
       mentionCount: null,
       firstMentionPosition: null,

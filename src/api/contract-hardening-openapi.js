@@ -300,6 +300,11 @@ const coreSchemas = {
         type: "boolean",
         description: "The captured answer looks cut off mid-sentence: the platform was probably still writing when the run ended.",
       },
+      answer_completion: {
+        type: ["string", "null"],
+        enum: ["follow-up-chips", "length-stability-fallback", "timeout", "unknown", null],
+        description: "How the end of the answer was decided. A platform that rewrites its answer block can yield a whole sentence that is still an intermediate state, which answer_truncated cannot detect.",
+      },
       project_id: { type: ["integer", "null"] },
       project_name: { type: ["string", "null"] },
       account_id: { type: ["string", "null"] },

@@ -574,6 +574,10 @@ export function publicResultFields(row) {
     // A capture that stopped mid-sentence is a defect of the run, not a finding about the
     // platform: label it so a rate can exclude it instead of averaging it in.
     answer_truncated: row.run_answer_truncated == null ? null : Boolean(row.run_answer_truncated),
+    // 凭什么判定这次收尾了。与 answer_truncated 正交：那一列说"文本看起来完整吗"，
+    // 这一列说"完成判据本身可不可信"。'length-stability-fallback' 与 'timeout' 的行
+    // 可能是被截断的完整句子，标点判据看不见 —— 统计时应当单列或排除。
+    answer_completion: row.run_answer_completion ?? null,
     assignment_status: assignmentStatusFor({ runStatus, batchStatus }),
     terminal_reason: terminalReasonFor({
       runStatus,
@@ -593,6 +597,7 @@ export async function listExecutionResults(pool, tenantId, executionId) {
             r.status AS run_status, r.brand_mentioned, r.mention_count, r.finished_at,
             r.login_state AS run_login_state,
             r.answer_truncated AS run_answer_truncated,
+            r.answer_completion AS run_answer_completion,
 r.error_code AS run_error_code, r.error_message AS run_error_message,
             b.status AS batch_status,
             t.public_id AS task_public_id,
@@ -625,6 +630,7 @@ export async function getResult(pool, tenantId, resultId) {
             r.id AS run_db_id, r.status AS run_status,
             r.login_state AS run_login_state,
             r.answer_truncated AS run_answer_truncated,
+            r.answer_completion AS run_answer_completion,
 r.error_code AS run_error_code, r.error_message AS run_error_message,
             b.status AS batch_status
        FROM service_task_results sr

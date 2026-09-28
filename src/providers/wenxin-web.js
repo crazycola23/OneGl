@@ -1,6 +1,20 @@
 import { executeWenxinPrompt, openWenxin } from "../wenxin.js";
+import { intEnvValue } from "../accounts/safety.js";
 import { normalizeProviderResult, PROVIDER_ACCESS } from "./contract.js";
 import { CITATION_TIERS } from "./profile.js";
+
+/** 文心匿名面撞墙后的静置时长（2026-09-28 实测：第二题即撞墙）。 */
+const WENXIN_BURST_PAUSE_MS_DEFAULT = 30 * 60_000;
+
+/**
+ * 文心匿名面每轮只给 1 条，撞墙后要静置多久。0 = 不静置（取消这条限制）。
+ *
+ * 单独成函数而不是模块常量：值每次判定时现读，改环境变量重启进程即生效，
+ * 也不把「30 分钟」这个实测事实埋成一个看不出来源的数字。千问用的是同一个形状。
+ */
+function wenxinBurstPauseMs() {
+  return intEnvValue("ONEGL_WENXIN_BURST_PAUSE_MS", WENXIN_BURST_PAUSE_MS_DEFAULT, 0);
+}
 
 /**
  * 文心一言 Web（百度，入口 wenxin.baidu.com）—— 匿名面。
@@ -55,13 +69,21 @@ export const wenxinWebProfile = {
   // 真实服务域名。yiyan.baidu.com / chat.baidu.com 都会 302 到这里（实测）。
   entryUrl: "https://wenxin.baidu.com/",
 
-  // Phase 0 已在本地 Camoufox 出货引擎跑过 14 轮（2026-09-28），匿名提问端到端成功。
+  // Phase 0 已在本地 Camoufox 出货引擎跑过 15 轮探针（2026-09-28），匿名提问端到端成功。
   //
   // 之前不敢打开的三个理由现在都不成立：
   //   - 「答案容器没有稳定标识」→ 实测 `ai-entry-block.ai-markdown` 稳定，且答案块内部干净
   //     （追问气泡、免责声明实测都在块外），不需要任何噪声过滤。
   //   - 「引用读不到」→ 实测引用 URL 在 data 属性里，22-45 条全部可解析成完整 URL。
   //   - 「撞墙后无法识别」→ 墙的形态与文案都已逐字实测，判据落在 URL 与正文上。
+  //
+  // ⚠️ 2026-09-28 生产节奏复测后的保留意见（**通电≠可放量**）：
+  //   - 墙在**第二题**就撞（探针 16），已按此设 burstPrompts=1 / burstPauseMs=30min；
+  //   - 撞墙退去后还有一段**静默拒答**期：页面正常、提交成功、90 秒零产出，
+  //     driver 只能报 ANSWER_NOT_FOUND，与"生成慢"在预算耗尽前无法区分（探针 17/18）；
+  //   - **基础事实题是否触发检索尚未测清**（探针 11 拿到 0 引用，探针 7/14 同题拿到 22-24 条）。
+  //     `citation.tier` 在"不触发检索"时的语义未定，会污染引用率。
+  // 详见 docs/WENXIN_PHASE0.md §8。
   validated: true,
   requiresStoredAuth: false,
 
@@ -164,6 +186,25 @@ export const wenxinWebProfile = {
     // 1，与豆包/千问/智谱同口径。实测两问之间必须点「新对话」清空上下文，否则第二个问题
     // 落在同一段对话里 —— 那测的是「追问后的可见性」，引用率与提及率被人为抬高。
     promptsPerWindow: 1,
+
+    // ⚠️ 2026-09-28 复测把上一版结论**推翻**了：墙不是「累积约 15 题之后」，
+    // 而是**第二题就撞**。生产节奏（60 秒间隔）下实测：
+    //
+    //   q1  OK   325 字符 / 27 引用 / 自陈共参考27篇资料
+    //   q2  墙   跳到 wappass.baidu.com 滑块验证
+    //
+    // 之前那版结论来自探针 5/7/14（4-5 题连问、间隔 20-30 秒全部成功），
+    // 撞墙那次（探针 13）发生在 5 个探针脚本连跑之后，于是被读成「累积量」，
+    // 而不是「每轮配额」。两种解释都符合当时的观测，但它们的处置完全相反，
+    // 而我选了错的那个 —— 这正是 §13「一次样本说明不了不存在」的镜像：
+    // 这次不是样本少，是**把两个假设当成了一个**。
+    //
+    // 静置时长取 30 分钟：探针 13 撞墙后静置约 15 分钟，同一出口立刻恢复
+    // （探针 14 连续 9 题全过）。15 分钟是下界不是实测恢复点，
+    // 取两倍余量 —— 撞墙的代价是整轮预算白烧，宁可等久一点。
+    burstPrompts: 1,
+    burstPauseMs: wenxinBurstPauseMs(),
+
     // 未观测到「问了但没回」的情形，保持与千问同一起步值。
     suspectedIdleMs: 120_000,
     // 已实测有效：这一句能拿到简短稳定的自述回答（实测 62-235 字符），
@@ -172,18 +213,19 @@ export const wenxinWebProfile = {
   },
 
   limits: {
-    // 2026-09-28 实测：5 个独立浏览器会话各问 1 题全部成功（间隔 30 秒），
-    // 同一会话连问 4 题也全部成功（间隔 20 秒）—— **本轮探测期间没再撞墙**。
-    // 撞墙记录来自探测 13（连续 5 轮探针、约 15 题之后），所以分界线是**累积提问量**，
-    // 不是单题频率 —— 与千问「当天累计约 37 次后弹登录墙」同形
-    // （docs/MULTI_PLATFORM_LESSONS.md §4）。
+    // 2026-09-28 实测（生产节奏 60 秒间隔，探针 16）：q1 成功（325 字符 / 27 引用 /
+    // 自陈共参考27篇资料），**q2 即撞百度安全验证墙**。
+    // ⚠️ 上面 quota 里的 burstPrompts/burstPauseMs 才是真正生效的静置门（走
+    // providerBurstPacing → classifyAccountState）；这里这几个数**没人读**。
     //
-    // ⚠️ **这些值当前不会被消费。** accounts/safety.js 只读全局的
-    // ONEGL_MIN_DELAY_MS / ONEGL_MAX_DELAY_MS / ONEGL_ACCOUNT_HOURLY_LIMIT /
-    // ONEGL_ACCOUNT_DAILY_LIMIT；代码里不存在对 profile.limits 的引用
-    // （doubao-web.js 也没有这个字段，zhipu-web.js 的同名字段同样没人读 —— 已记 §10.4）。
-    // 保留它是为了记录实测结论，**不是**当前生效的配置。
-    // 当前生效的是全局值，部署环境已按 60-120 秒 / 小时 6 / 日 20 配置。
+    // 保留它们只是记录"这台机器的出站 IP 已经是共享资源"这一事实：
+    // 与豆包账号、千问、智谱共用同一出口，所以一个平台被风控会同时影响另外几个。
+    //
+    // ⚠️ accounts/safety.js 只读全局的 ONEGL_MIN_DELAY_MS / ONEGL_MAX_DELAY_MS /
+    // ONEGL_ACCOUNT_HOURLY_LIMIT / ONEGL_ACCOUNT_DAILY_LIMIT；代码里不存在对
+    // profile.limits 的引用（doubao-web.js 没有这个字段，zhipu-web.js 的同名字段
+    // 同样没人读 —— 见 MULTI_PLATFORM_LESSONS.md §10.4）。**声称它生效会让人以为
+    // 调平台节奏只需改这里。** 当前生效的是全局值，部署环境已按 60-120 秒 / 小时 6 / 日 20 配置。
     minDelayMs: 60_000,
     maxDelayMs: 120_000,
     hourlyLimit: 6,

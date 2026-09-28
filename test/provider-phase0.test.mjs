@@ -25,10 +25,12 @@ import {
   getProviderAdapter,
   listProviderAdapters,
   pendingProviderProfiles,
+  providerBurstPacing,
   providerProfileGaps,
   selectRegistrableAdapters,
   supportedProviderIds,
 } from "../src/providers/index.js";
+import { AVAILABILITY, classifyAccountState } from "../src/accounts/safety.js";
 import { yuanbaoWebProfile } from "../src/providers/yuanbao-web.js";
 import { zhipuWebProfile, zhipuWebProvider } from "../src/providers/zhipu-web.js";
 import { qianwenWebProfile, qianwenWebProvider } from "../src/providers/qianwen-web.js";
@@ -385,6 +387,63 @@ test("wenxin is registered, and its wall is recognised as a navigation, not a mi
     "匿名面撞墙的代价是白烧，间隔不应低于 60 秒",
   );
   assert.deepEqual(collectProfileErrors(wenxinWebProfile), []);
+});
+
+/**
+ * 额度门必须**真的被消费**。
+ *
+ * 上一版 profile 只写了 `limits: { minDelayMs: 60000 }`，而那个字段没有任何代码读它
+ * （accounts/safety.js 只读全局环境变量，见 MULTI_PLATFORM_LESSONS.md §10.4）。
+ * 于是这条 lane 的可用性判定拿到 `providerBurstPacing('wenxin') === null`，
+ * **等于没有静置门** —— 撞墙的代价是整轮预算白烧，而配置读起来像是配了。
+ *
+ * 这条断言盯的是 providerBurstPacing 的返回值，不是 profile 里的字面量：
+ * 字段存在不等于被消费（同一份教训，§10.4）。
+ */
+test("wenxin's burst pacing is a real back-off gate, not an unread field", () => {
+  const pacing = providerBurstPacing("wenxin");
+  assert.ok(pacing, "可用性门必须拿到静置参数；返回 null 等于这条 lane 无限速");
+  // 生产节奏复测（探针 16，60 秒间隔）：q1 成功、**q2 撞墙**。
+  // 所以每轮配额是 1，不是 4（千问）也不是"累积 15 条"（上一版的误读）。
+  assert.equal(pacing.prompts, 1,
+    "每轮只给 1 条：60 秒间隔下第二题即撞墙，配额给多了就是白烧");
+  assert.ok(pacing.pauseMs >= 15 * 60_000,
+    "静置不低于实测恢复下界（撞墙后约 15 分钟恢复），取两倍余量");
+});
+
+/**
+ * 静置门真的会把 lane 挡住 —— 不只 profile 上写着。
+ *
+ * 这一条钉的是 `classifyAccountState` 的实际行为：pacing 必须在
+ * `isCredentialFreeSurface` 的豁免**之前**被检查（safety.js:396 的注释解释了为什么：
+ * 触发额度的那条提问已经提交、已经丢了，事后等待太晚）。
+ */
+test("the burst gate holds a wenxin lane after one prompt, before the anonymous exemption", () => {
+  const now = new Date("2026-09-28T10:00:00Z");
+  const pacing = { prompts: 1, pauseMs: 30 * 60_000 };
+
+  // 第一条还没跑：可用。
+  const fresh = classifyAccountState(
+    { enabled: true, consecutiveFailures: 0 },
+    { now, pacing, burst: { runsInWindow: 0, newestRunAt: new Date("2026-09-28T09:00:00Z") } },
+  );
+  assert.equal(fresh.kind, AVAILABILITY.AVAILABLE);
+
+  // 已用 1 条：静置到最后一轮之后 30 分钟，且必须是 TEMPORARY（可恢复）而不是 PERMANENT。
+  const spent = classifyAccountState(
+    { enabled: true, consecutiveFailures: 0 },
+    { now, pacing, burst: { runsInWindow: 1, newestRunAt: new Date("2026-09-28T09:50:00Z") } },
+  );
+  assert.equal(spent.kind, AVAILABILITY.TEMPORARY, "静置是临时的，要能被恢复");
+  assert.equal(spent.paced, true, "paced 标记让 worker 不把它算进「账号长期不可用」的预算");
+  assert.ok(spent.retryAt > now, "必须给出未来的重试时刻");
+
+  // 静置已过：重新可用 —— 否则静置时长写错会把 lane 永久钉死。
+  const after = classifyAccountState(
+    { enabled: true, consecutiveFailures: 0 },
+    { now, pacing, burst: { runsInWindow: 1, newestRunAt: new Date("2026-09-28T09:00:00Z") } },
+  );
+  assert.equal(after.kind, AVAILABILITY.AVAILABLE, "静置期满后必须恢复可用");
 });
 
 /**
