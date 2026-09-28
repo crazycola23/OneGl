@@ -18,3 +18,11 @@ pnpm-debug.log*
 
 # 本地运维脚本（含 SSH/Redis 凭据，只留在本机）
 .ops/
+
+# 排查与冒烟用的临时脚本 / 探针产物（含服务器地址与凭据，不进仓库）
+.runtime/
+# 从生产镜像里提取的浏览器插件包：构建产物，本地按需重建
+.runtime-addons/
+# 智谱清言冒烟用的项目与关键词池：示例配置，不是产品资产
+examples/project.zhipu-smoke.json
+examples/keyword-pool.zhipu-smoke.json

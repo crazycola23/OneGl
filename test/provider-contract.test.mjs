@@ -44,6 +44,8 @@ test("registers the measured providers as scraped adapters", () => {
   assert.deepEqual(listProviderAdapters(), [
     { id: "doubao-web", provider: "doubao", model: "doubao", access: "scraped" },
     { id: "qianwen-web", provider: "qianwen", model: "qianwen", access: "scraped" },
+    // 智谱清言在 Phase 0 跑通并注册（docs/ZHIPU_PHASE0.md）。匿名面，与千问同形。
+    { id: "zhipu-web", provider: "zhipu", model: "zhipu", access: "scraped" },
   ]);
   // 别名仍然按 provider 命中，但匿名面必须自己声明不需要登录态。
   assert.equal(getProviderAdapter("qianwen").id, "qianwen-web");
@@ -51,4 +53,6 @@ test("registers the measured providers as scraped adapters", () => {
   assert.equal(getProviderAdapter("doubao").requiresStoredAuth, true);
   assert.equal(getProviderAdapter("doubao").frontEndGuard, true);
   assert.equal(getProviderAdapter("qianwen").frontEndGuard, undefined);
+  assert.equal(getProviderAdapter("zhipu").id, "zhipu-web");
+  assert.equal(getProviderAdapter("zhipu").requiresStoredAuth, false);
 });

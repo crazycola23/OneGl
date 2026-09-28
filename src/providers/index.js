@@ -3,14 +3,17 @@ import { doubaoWebProvider } from "./doubao-web.js";
 import { collectProfileErrors, isProfileValidated } from "./profile.js";
 import { qianwenWebProfile, qianwenWebProvider } from "./qianwen-web.js";
 import { yuanbaoWebProfile } from "./yuanbao-web.js";
+import { zhipuWebProfile, zhipuWebProvider } from "./zhipu-web.js";
 
 /**
  * Profiles that exist but have not passed Phase 0. They are discoverable by the probe tool,
  * but never selectable for collection: registering an unmeasured profile would mean driving a
  * live site with guessed selectors and guessed session cookies, which is how a platform that
  * was never logged into gets recorded as a successful capture.
+ *
+ * 智谱清言不在这里：它的 Phase 0 已跑通并注册（docs/ZHIPU_PHASE0.md）。
  */
-export const pendingProviderProfiles = [yuanbaoWebProfile, qianwenWebProfile];
+export const pendingProviderProfiles = [yuanbaoWebProfile];
 
 /**
  * The collection table: hand-written drivers plus any profile-driven adapter whose profile has
@@ -26,7 +29,10 @@ export function selectRegistrableAdapters(candidates) {
     .map(assertProviderAdapter);
 }
 
-const adapters = selectRegistrableAdapters([doubaoWebProvider, qianwenWebProvider]);
+// zhipu 已通过 Phase 0 并进注册表（docs/ZHIPU_PHASE0.md；翻转理由见 zhipu-web.js profile 注释）。
+// 闸门本身没有变：yuanbao 仍留在 pendingProviderProfiles，由 `selectRegistrableAdapters`
+// 挡在外面 —— 「API 接受这个平台」与「采集器真能跑它」不会脱节。
+const adapters = selectRegistrableAdapters([doubaoWebProvider, qianwenWebProvider, zhipuWebProvider]);
 const byId = new Map();
 
 /** What still has to be measured before a pending profile can be registered. */

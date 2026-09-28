@@ -483,6 +483,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read what this instance currently supports
+         * @description Probe for integration: `providers` says which lanes exist and whether each is switched on *right now*, `worker` reports the concurrency defaults. `enabled` is a runtime fact rather than a capability declaration — an anonymous lane whose feature flag is off answers `enabled=false` here, so a caller can grey the option out instead of discovering the refusal by creating an account and failing. Concurrency is reported as `max_slots`, the number of browsers one account may run at the same time. A lane with `requires_stored_auth=true` using more than one slot gives up the account-level serialization that keeps a login state from being hammered concurrently, which is why account creation demands an explicit acknowledgement in that case.
+         */
+        get: operations["getCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/executions/{executionId}": {
         parameters: {
             query?: never;
@@ -631,6 +651,50 @@ export interface paths {
          * @description Resume only unfinished work
          */
         post: operations["createExecutionsByExecutionIdResume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/geo-reports/{reportId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reportId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get an immutable GEO customer report snapshot
+         * @description Get an immutable GEO customer report snapshot
+         */
+        get: operations["getGeoReportsByReportId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/geo-reports/{reportId}/html": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reportId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Download the self-contained customer HTML report
+         * @description Download the self-contained customer HTML report
+         */
+        get: operations["getGeoReportsByReportIdHtml"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -881,7 +945,7 @@ export interface paths {
         };
         /**
          * List configured provider adapter types
-         * @description Lists the collection adapters this instance has registered, which is exactly the set of platforms a Task can execute on. Provider identity stays explicit so every measurement remains attributable to the surface that produced it.
+         * @description Lists the collection adapters this instance has registered, which is exactly the set of platforms a Task can execute on. Provider identity stays explicit so every measurement remains attributable to the surface that produced it. Note that `id` and `provider` differ for an anonymous surface: `doubao-anonymous` is a separate adapter that shares the `doubao` platform, so a client may run both a signed-in lane and an anonymous lane against the same platform without them being confused for one observation surface. `requires_stored_auth=false` marks the anonymous lanes.
          */
         get: operations["getProviders"];
         put?: never;
@@ -1233,6 +1297,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/tasks/{taskId}/geo-reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * List generated GEO customer reports for a task
+         * @description List generated GEO customer reports for a task
+         */
+        get: operations["getTasksByTaskIdGeoReports"];
+        put?: never;
+        /**
+         * Generate a fixed-format GEO customer report
+         * @description Builds a persisted report snapshot synchronously from this tenant-scoped Task. Only terminal batches whose started_at falls within each inclusive local date period are included. Repeating an Idempotency-Key replays the first created report.
+         */
+        post: operations["createTasksByTaskIdGeoReports"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/tasks/{taskId}/reports": {
         parameters: {
             query?: never;
@@ -1515,8 +1605,16 @@ export interface components {
     schemas: {
         AccountCreate: {
             account_id: string;
+            /** @description How many browsers this account may run at the same time. Defaults to the server's ONEGL_ACCOUNT_SLOTS. Each slot holds its own browser process, page and fingerprint, so the platform sees N independent visitors rather than one session issuing parallel prompts. */
+            account_slots?: number;
+            /**
+             * @description Required to be true when the adapter needs a stored login (requires_stored_auth=true) and account_slots>1. Raising the slot count gives up the account-level serialization that keeps one login state from being hammered concurrently, so the caller has to say it knows. Anonymous lanes need no such acknowledgement: they have no login state to protect. Missing this answers 422 concurrency_risk_not_acknowledged.
+             * @default false
+             */
+            acknowledge_concurrency_risk: boolean;
             label?: string | null;
             /**
+             * @description Adapter id, not just the platform. An anonymous lane is a separate adapter sharing the platform (`doubao-anonymous` collects from `doubao`), so this field decides the observation surface the account will produce.
              * @default doubao
              * @enum {string}
              */
@@ -1738,6 +1836,29 @@ export interface components {
             started_at?: string | null;
             /** @enum {string} */
             status: "pending" | "queued" | "running" | "paused" | "completed" | "partial" | "failed" | "aborted";
+        } & {
+            [key: string]: unknown;
+        };
+        CapabilityResource: {
+            notes: string[];
+            providers: ({
+                /** @description 运行期事实：false 表示这条通道在当前实例上尚未开启，调用方应置灰而不是试错。 */
+                enabled: boolean;
+                id: string;
+                /** @description 同一账号可同时运行的浏览器数。 */
+                max_slots: number;
+                /** @enum {string} */
+                provider: "doubao" | "qianwen";
+                requires_stored_auth: boolean;
+            } & {
+                [key: string]: unknown;
+            })[];
+            worker: {
+                account_parallelism: number;
+                account_slots_default: number;
+            } & {
+                [key: string]: unknown;
+            };
         } & {
             [key: string]: unknown;
         };
@@ -1992,6 +2113,91 @@ export interface components {
             task_name: string;
             /** @enum {string} */
             trigger: "manual" | "rerun" | "schedule";
+        };
+        GeoCustomerReportCreate: {
+            /**
+             * @default html
+             * @constant
+             */
+            format: "html";
+            /** @description Ordered stages. Supplying multiple stages stores comparable snapshots in one report. */
+            periods: components["schemas"]["GeoReportPeriodInput"][];
+            /** @description Defaults to the platforms configured on this Task. */
+            platforms?: ("doubao" | "qianwen")[];
+        };
+        GeoCustomerReportDetails: components["schemas"]["GeoCustomerReportResource"] & {
+            snapshot: components["schemas"]["GeoCustomerReportSnapshot"];
+        };
+        GeoCustomerReportResource: {
+            content_hash: string;
+            /** @constant */
+            format: "html";
+            /** Format: date-time */
+            generated_at: string;
+            html_url: string;
+            periods: components["schemas"]["GeoReportPeriodSummary"][];
+            platforms: ("doubao" | "qianwen")[];
+            profile_version: string;
+            report_id: string;
+            report_url: string;
+            /** @constant */
+            status: "ready";
+            task_id: string;
+            title: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** @description Immutable report snapshot and fixed-format customer HTML source data. */
+        GeoCustomerReportSnapshot: {
+            methodology: {
+                [key: string]: string;
+            };
+            periods: {
+                [key: string]: unknown;
+            }[];
+            profile: {
+                [key: string]: unknown;
+            };
+            report_id: string;
+            schema_version: string;
+            scope: {
+                [key: string]: unknown;
+            };
+            target: {
+                [key: string]: unknown;
+            };
+            task_id: string;
+            warnings: string[];
+        } & {
+            [key: string]: unknown;
+        };
+        GeoReportPeriodInput: {
+            /**
+             * Format: date
+             * @description Inclusive local calendar date.
+             */
+            from: string;
+            key?: string;
+            label?: string;
+            /**
+             * @description IANA time zone used to interpret the date boundaries.
+             * @default Asia/Shanghai
+             */
+            time_zone: string;
+            /**
+             * Format: date
+             * @description Inclusive local calendar date; the range may span at most 366 days.
+             */
+            to: string;
+        };
+        GeoReportPeriodSummary: {
+            /** Format: date */
+            from: string;
+            key: string;
+            label: string;
+            time_zone: string;
+            /** Format: date */
+            to: string;
         };
         HealthResource: {
             auth: {
@@ -4566,6 +4772,52 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    getCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Instance capabilities */
+            200: {
+                headers: {
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CapabilityResource"];
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     getExecutionsByExecutionId: {
         parameters: {
             query?: never;
@@ -4909,6 +5161,105 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["SaasConflict"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getGeoReportsByReportId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reportId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Report metadata and frozen aggregate snapshot */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["GeoCustomerReportDetails"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getGeoReportsByReportIdHtml: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reportId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Single-file UTF-8 HTML with inline CSS and no external assets. */
+            200: {
+                headers: {
+                    "Content-Disposition"?: string;
+                    /** @description SHA-256 of the stored immutable HTML artifact. */
+                    ETag?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
             /** @description API request rate limit exceeded. */
             429: {
                 headers: {
@@ -6868,6 +7219,148 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["ExecutionResource"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["SaasConflict"];
+            422: components["responses"]["SaasBadRequest"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getTasksByTaskIdGeoReports: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque next_cursor returned by the previous page. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description GEO customer reports */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["GeoCustomerReportResource"][];
+                        meta: components["schemas"]["PageMeta"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createTasksByTaskIdGeoReports: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Recommended for create/execute requests. Reusing the same key with the same request replays the first response; reusing it with a different body returns idempotency_conflict. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "format": "html",
+                 *       "periods": [
+                 *         {
+                 *           "from": "2026-09-01",
+                 *           "key": "baseline",
+                 *           "label": "基线阶段",
+                 *           "time_zone": "Asia/Shanghai",
+                 *           "to": "2026-09-07"
+                 *         },
+                 *         {
+                 *           "from": "2026-09-22",
+                 *           "key": "follow-up",
+                 *           "label": "优化后",
+                 *           "time_zone": "Asia/Shanghai",
+                 *           "to": "2026-09-28"
+                 *         }
+                 *       ],
+                 *       "platforms": [
+                 *         "doubao",
+                 *         "qianwen"
+                 *       ]
+                 *     }
+                 */
+                "application/json": components["schemas"]["GeoCustomerReportCreate"];
+            };
+        };
+        responses: {
+            /** @description Generated report resource and download URLs */
+            201: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["GeoCustomerReportResource"];
                     };
                 };
             };

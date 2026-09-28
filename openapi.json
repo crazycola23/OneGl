@@ -326,7 +326,8 @@
             "description": "Adapter id, not just the platform. An anonymous lane is a separate adapter sharing the platform (`doubao-anonymous` collects from `doubao`), so this field decides the observation surface the account will produce.",
             "enum": [
               "doubao",
-              "qianwen"
+              "qianwen",
+              "zhipu"
             ],
             "type": "string"
           }
@@ -414,7 +415,8 @@
           "provider": {
             "enum": [
               "doubao",
-              "qianwen"
+              "qianwen",
+              "zhipu"
             ],
             "type": "string"
           },
@@ -454,7 +456,8 @@
           "provider": {
             "enum": [
               "doubao",
-              "qianwen"
+              "qianwen",
+              "zhipu"
             ],
             "type": "string"
           },
@@ -545,7 +548,8 @@
           "provider": {
             "enum": [
               "doubao",
-              "qianwen"
+              "qianwen",
+              "zhipu"
             ],
             "type": "string"
           },
@@ -741,7 +745,8 @@
             "description": "Platform to collect on. The batch is single-platform, and the listed accounts must be bound to this same platform.",
             "enum": [
               "doubao",
-              "qianwen"
+              "qianwen",
+              "zhipu"
             ],
             "type": "string"
           },
@@ -1116,7 +1121,8 @@
           "provider": {
             "enum": [
               "doubao",
-              "qianwen"
+              "qianwen",
+              "zhipu"
             ],
             "type": "string"
           },
@@ -1197,7 +1203,8 @@
                 "provider": {
                   "enum": [
                     "doubao",
-                    "qianwen"
+                    "qianwen",
+                    "zhipu"
                   ],
                   "type": "string"
                 },
@@ -1873,7 +1880,8 @@
                 "items": {
                   "enum": [
                     "doubao",
-                    "qianwen"
+                    "qianwen",
+                    "zhipu"
                   ],
                   "type": "string"
                 },
@@ -2089,7 +2097,8 @@
                 "items": {
                   "enum": [
                     "doubao",
-                    "qianwen"
+                    "qianwen",
+                    "zhipu"
                   ],
                   "type": "string"
                 },
@@ -2267,7 +2276,8 @@
             "items": {
               "enum": [
                 "doubao",
-                "qianwen"
+                "qianwen",
+                "zhipu"
               ],
               "type": "string"
             },
@@ -2369,6 +2379,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "zhipu",
               null
             ],
             "type": [
@@ -2449,6 +2460,260 @@
           "progress",
           "login_states",
           "created_at"
+        ],
+        "type": "object"
+      },
+      "GeoCustomerReportCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "format": {
+            "const": "html",
+            "default": "html",
+            "type": "string"
+          },
+          "periods": {
+            "description": "Ordered stages. Supplying multiple stages stores comparable snapshots in one report.",
+            "items": {
+              "$ref": "#/components/schemas/GeoReportPeriodInput"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array"
+          },
+          "platforms": {
+            "description": "Defaults to the platforms configured on this Task.",
+            "items": {
+              "enum": [
+                "doubao",
+                "qianwen",
+                "zhipu"
+              ],
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "periods"
+        ],
+        "type": "object"
+      },
+      "GeoCustomerReportDetails": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/GeoCustomerReportResource"
+          },
+          {
+            "properties": {
+              "snapshot": {
+                "$ref": "#/components/schemas/GeoCustomerReportSnapshot"
+              }
+            },
+            "required": [
+              "snapshot"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "GeoCustomerReportResource": {
+        "additionalProperties": true,
+        "properties": {
+          "content_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "format": {
+            "const": "html",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "html_url": {
+            "type": "string"
+          },
+          "periods": {
+            "items": {
+              "$ref": "#/components/schemas/GeoReportPeriodSummary"
+            },
+            "type": "array"
+          },
+          "platforms": {
+            "items": {
+              "enum": [
+                "doubao",
+                "qianwen",
+                "zhipu"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "profile_version": {
+            "type": "string"
+          },
+          "report_id": {
+            "pattern": "^rpt_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "report_url": {
+            "type": "string"
+          },
+          "status": {
+            "const": "ready",
+            "type": "string"
+          },
+          "task_id": {
+            "pattern": "^tsk_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "report_id",
+          "task_id",
+          "status",
+          "format",
+          "title",
+          "generated_at",
+          "platforms",
+          "periods",
+          "profile_version",
+          "content_hash",
+          "report_url",
+          "html_url"
+        ],
+        "type": "object"
+      },
+      "GeoCustomerReportSnapshot": {
+        "additionalProperties": true,
+        "description": "Immutable report snapshot and fixed-format customer HTML source data.",
+        "properties": {
+          "methodology": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "periods": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "profile": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "report_id": {
+            "pattern": "^rpt_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "scope": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "target": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "task_id": {
+            "pattern": "^tsk_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "report_id",
+          "task_id",
+          "schema_version",
+          "target",
+          "profile",
+          "scope",
+          "periods",
+          "methodology",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "GeoReportPeriodInput": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "Inclusive local calendar date.",
+            "format": "date",
+            "type": "string"
+          },
+          "key": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "time_zone": {
+            "default": "Asia/Shanghai",
+            "description": "IANA time zone used to interpret the date boundaries.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Inclusive local calendar date; the range may span at most 366 days.",
+            "format": "date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "GeoReportPeriodSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "format": "date",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "time_zone": {
+            "type": "string"
+          },
+          "to": {
+            "format": "date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "from",
+          "to",
+          "time_zone"
         ],
         "type": "object"
       },
@@ -3351,45 +3616,6 @@
         ],
         "type": "object"
       },
-      "ProviderAdapterResource": {
-        "additionalProperties": true,
-        "properties": {
-          "access": {
-            "enum": [
-              "scraped",
-              "official_api"
-            ],
-            "type": "string"
-          },
-          "id": {
-            "description": "Adapter id, e.g. doubao-web.",
-            "type": "string"
-          },
-          "model": {
-            "type": "string"
-          },
-          "provider": {
-            "description": "Platform the adapter collects from.",
-            "enum": [
-              "doubao",
-              "qianwen"
-            ],
-            "type": "string"
-          },
-          "requires_stored_auth": {
-            "description": "false 表示匿名通道：不需要绑定登录态，也不吃账号级每日/每小时额度。",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "id",
-          "provider",
-          "model",
-          "access",
-          "requires_stored_auth"
-        ],
-        "type": "object"
-      },
       "ProviderResource": {
         "additionalProperties": true,
         "properties": {
@@ -3402,7 +3628,8 @@
           "provider": {
             "enum": [
               "doubao",
-              "qianwen"
+              "qianwen",
+              "zhipu"
             ],
             "type": "string"
           }
@@ -5740,6 +5967,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "zhipu",
               null
             ],
             "type": [
@@ -5834,7 +6062,8 @@
           "provider": {
             "enum": [
               "doubao_web",
-              "qianwen_web"
+              "qianwen_web",
+              "zhipu_web"
             ],
             "type": "string"
           },
@@ -5946,6 +6175,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "zhipu",
               null
             ],
             "type": [
@@ -6245,7 +6475,8 @@
           "platform": {
             "enum": [
               "doubao",
-              "qianwen"
+              "qianwen",
+              "zhipu"
             ],
             "type": "string"
           },
@@ -6397,7 +6628,8 @@
           "platform": {
             "enum": [
               "doubao",
-              "qianwen"
+              "qianwen",
+              "zhipu"
             ],
             "type": "string"
           },
@@ -6553,7 +6785,8 @@
           "provider": {
             "enum": [
               "doubao",
-              "qianwen"
+              "qianwen",
+              "zhipu"
             ],
             "type": "string"
           },
@@ -6869,7 +7102,8 @@
             "items": {
               "enum": [
                 "doubao",
-                "qianwen"
+                "qianwen",
+                "zhipu"
               ],
               "type": "string"
             },
@@ -6934,7 +7168,8 @@
             "items": {
               "enum": [
                 "doubao",
-                "qianwen"
+                "qianwen",
+                "zhipu"
               ],
               "type": "string"
             },
@@ -7008,7 +7243,8 @@
             "items": {
               "enum": [
                 "doubao",
-                "qianwen"
+                "qianwen",
+                "zhipu"
               ],
               "type": "string"
             },
@@ -8105,7 +8341,8 @@
           "schema": {
             "enum": [
               "doubao",
-              "qianwen"
+              "qianwen",
+              "zhipu"
             ],
             "type": "string"
           }
@@ -10928,6 +11165,224 @@
           "Executions"
         ]
       }
+    },
+    "/v1/geo-reports/{reportId}": {
+      "get": {
+        "description": "Get an immutable GEO customer report snapshot",
+        "operationId": "getGeoReportsByReportId",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/GeoCustomerReportDetails"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Report metadata and frozen aggregate snapshot",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Get an immutable GEO customer report snapshot",
+        "tags": [
+          "Reports"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "reportId",
+          "required": true,
+          "schema": {
+            "example": "rpt_0123456789abcdef0123456789abcdef",
+            "pattern": "^rpt_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/v1/geo-reports/{reportId}/html": {
+      "get": {
+        "description": "Download the self-contained customer HTML report",
+        "operationId": "getGeoReportsByReportIdHtml",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Single-file UTF-8 HTML with inline CSS and no external assets.",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "SHA-256 of the stored immutable HTML artifact.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Download the self-contained customer HTML report",
+        "tags": [
+          "Reports"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "reportId",
+          "required": true,
+          "schema": {
+            "example": "rpt_0123456789abcdef0123456789abcdef",
+            "pattern": "^rpt_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ]
     },
     "/v1/monitor-plans/{monitorPlanId}": {
       "delete": {
@@ -15238,6 +15693,307 @@
           }
         },
         "summary": "Execute or re-execute a task",
+        "tags": [
+          "Tasks"
+        ]
+      }
+    },
+    "/v1/tasks/{taskId}/geo-reports": {
+      "get": {
+        "description": "List generated GEO customer reports for a task",
+        "operationId": "getTasksByTaskIdGeoReports",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque next_cursor returned by the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/GeoCustomerReportResource"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/PageMeta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "GEO customer reports",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "List generated GEO customer reports for a task",
+        "tags": [
+          "Tasks"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "taskId",
+          "required": true,
+          "schema": {
+            "example": "tsk_0123456789abcdef0123456789abcdef",
+            "pattern": "^tsk_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "description": "Builds a persisted report snapshot synchronously from this tenant-scoped Task. Only terminal batches whose started_at falls within each inclusive local date period are included. Repeating an Idempotency-Key replays the first created report.",
+        "operationId": "createTasksByTaskIdGeoReports",
+        "parameters": [
+          {
+            "description": "Recommended for create/execute requests. Reusing the same key with the same request replays the first response; reusing it with a different body returns idempotency_conflict.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "format": "html",
+                "periods": [
+                  {
+                    "from": "2026-09-01",
+                    "key": "baseline",
+                    "label": "基线阶段",
+                    "time_zone": "Asia/Shanghai",
+                    "to": "2026-09-07"
+                  },
+                  {
+                    "from": "2026-09-22",
+                    "key": "follow-up",
+                    "label": "优化后",
+                    "time_zone": "Asia/Shanghai",
+                    "to": "2026-09-28"
+                  }
+                ],
+                "platforms": [
+                  "doubao",
+                  "qianwen"
+                ]
+              },
+              "schema": {
+                "$ref": "#/components/schemas/GeoCustomerReportCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/GeoCustomerReportResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Generated report resource and download URLs",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/SaasConflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Generate a fixed-format GEO customer report",
         "tags": [
           "Tasks"
         ]
