@@ -292,13 +292,22 @@ export function applySaasOpenApi(document) {
     },
     BrandMentionsResource: {
       type: "object",
-      required: ["answer_count", "excluded_answers", "brand_count", "basis", "brands", "interpretation"],
+      required: ["answer_count", "excluded_answers", "truncated", "brand_count", "basis", "brands", "interpretation"],
       properties: {
         answer_count: { type: "integer", minimum: 0, description: "Answers that count toward mention-rate denominators." },
         excluded_answers: {
           type: "integer",
           minimum: 0,
           description: "Answers dropped before counting: blank, shorter than the minimum usable length (platform UI text such as '找到 1 篇资料'), or flagged as truncated by the platform. Reported so the denominator is auditable.",
+        },
+        truncated: {
+          type: "boolean",
+          description: "True when the answer count exceeded the per-report statistics limit; mention rates were computed on the earliest answers only.",
+        },
+        notes: {
+          type: "array",
+          items: { type: "string" },
+          description: "Caveats affecting how the numbers above should be read.",
         },
         brand_count: { type: "integer", minimum: 0 },
         basis: { type: "string", const: "mentioned_answers_over_valid_answers" },

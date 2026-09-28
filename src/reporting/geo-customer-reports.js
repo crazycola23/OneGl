@@ -453,22 +453,32 @@ const UNTRUSTED_COMPLETION_SQL =
   "COALESCE(r.answer_truncated, false) IS NOT TRUE " +
   "AND COALESCE(r.answer_completion, 'follow-up-chips') NOT IN ('timeout', 'length-stability-fallback')";
 
-/** 排名所需的完整回答正文（含 run_id 供 agent 回溯）。只在生成排名时读，不进快照。 */
+/** 排名所需的完整回答正文。只在生成排名时读，不进快照。 */
 async function queryAnswersForRanking(client, batchIds, { limit = 2000 } = {}) {
-  if (!batchIds.length) return [];
+  if (!batchIds.length) return { answers: [], eligible: 0, excluded: 0, truncatedByLimit: false };
+  // 一次查两件事：过完整口径的正文（喂匹配），以及「有正文但被口径排除」的计数。
+  // 第二个数字是分母可审计的关键 —— 只报 answer_count 的话，调用方无从判断
+  // 分母小是因为平台没回答，还是我们主动剔掉了不可信样本。
   const { rows } = await client.query(
-    "SELECT r.local_run_id AS run_id, r.provider, r.answer AS text " +
-      "FROM runs r " +
-      "WHERE r.sampling_batch_id = ANY($1::bigint[]) " +
-      "  AND r.status = 'success' AND r.conversation_reset_confirmed IS TRUE " +
-      "  AND length(COALESCE(r.answer, '')) > 0 " +
-      // 与上面的 answers_with_text / average_answer_characters 同一口径，
-      // 否则报告里「有 N 条回答」与「提及率分母 M」会互相矛盾。
-      `  AND ${UNTRUSTED_COMPLETION_SQL} ` +
-      "ORDER BY r.id LIMIT $2",
-    [batchIds, limit],
+    `SELECT r.local_run_id AS run_id, r.provider, r.answer AS text,
+            (length(COALESCE(r.answer, '')) > 0
+             AND COALESCE(${UNTRUSTED_COMPLETION_SQL})) AS usable
+       FROM runs r
+      WHERE r.sampling_batch_id = ANY($1::bigint[])
+        AND r.status = 'success' AND r.conversation_reset_confirmed IS TRUE
+        AND length(COALESCE(r.answer, '')) > 0
+      ORDER BY r.id`,
+    [batchIds],
   );
-  return rows.map((row) => ({ runId: row.run_id, provider: row.provider, text: row.text }));
+  const eligible = rows.filter((row) => row.usable).slice(0, limit);
+  return {
+    answers: eligible.map((row) => ({ runId: row.run_id, provider: row.provider, text: row.text })),
+    eligible: eligible.length,
+    // 有正文但被口径排除的条数
+    excluded: rows.length - eligible.length,
+    // 触到 limit 上限：分母被截断，必须如实上报
+    truncatedByLimit: rows.filter((row) => row.usable).length > limit,
+  };
 }
 
 function emptyTrackedContent(trackedArticles) {
@@ -525,7 +535,20 @@ async function platformMetrics(client, { batchRows, projectIds, brandConfigured,
 
   // 回答正文读一次，算完即弃 —— 快照里只留统计结果和出处，不留全文。
   // 正文按 run_id 单独取（见 GET /v1/answers），避免快照体积失控。
-  const answerTexts = await queryAnswersForRanking(client, batchIds);
+  const ranking = await queryAnswersForRanking(client, batchIds);
+  const brandMentions = computeBrandMentions(ranking.answers, brands);
+  // excluded_answers 报 SQL 层真正排除的条数（过短 / 被平台截断 / 空白）。
+  // 必须如实上报：只给 answer_count 的话，调用方无法判断分母小是因为
+  // 平台没回答，还是我们主动剔掉了不可信样本 —— 两种情况含义完全不同。
+  brandMentions.excluded_answers = ranking.excluded;
+  if (ranking.truncatedByLimit) {
+    brandMentions.truncated = true;
+    brandMentions.notes = [
+      ...(brandMentions.notes ?? []),
+      `回答数超过单次统计上限，仅用最早的 ${ranking.answers.length} 条计算提及率；` +
+        "分母偏小，请缩小 period 范围后重新生成。",
+    ];
+  }
   return {
     runs,
     citations,
@@ -534,7 +557,7 @@ async function platformMetrics(client, { batchRows, projectIds, brandConfigured,
     // 品牌提及：调用方在 brands 里给了哪些品牌就统计哪些，没给就是空结果而不是猜测。
     // 品牌列表怎么来 —— 调用方按平台分层抽样 1/10，把回答丢给自己的模型读一遍，
     // 拿到高频品牌再用 brands 传回。OneGl 不猜机构名，也不需要维护品牌库。
-    brand_mentions: computeBrandMentions(answerTexts, brands),
+    brand_mentions: brandMentions,
   };
 }
 
@@ -613,6 +636,10 @@ function reportSummary(payload, hash) {
         period_key: period.key,
         platform: platform.platform,
         answer_count: platform.brand_mentions?.answer_count ?? 0,
+        // 分母被排除了多少条（空白、过短的平台 UI 文案、被截断的回答）。
+        // 必须一起给出：只报 answer_count 的话，调用方无法判断
+        // 「分母小」是因为平台没回答，还是因为我们把不可信的剔掉了。
+        excluded_answers: platform.brand_mentions?.excluded_answers ?? 0,
         brands: platform.brand_mentions?.brands ?? [],
       })),
     ),

@@ -145,8 +145,10 @@ export function normalizeBrands(input) {
  */
 export function computeBrandMentions(answers, brands, { exampleRadius = 90, maxExamples = MAX_EXAMPLES } = {}) {
   const valid = answers.filter((answer) => isUsableAnswerText(answer?.text));
-  // 明确告知有多少条被排除：分母变了，调用方必须能查证
-  const excluded = answers.length - valid.length;
+  // 内存层又排除了多少（通常是 0，因为 SQL 已经过滤过一轮）。
+  // 保留这个数是为了防御调用方绕过 SQL 直接喂脏数据 ——
+  // 实测 0 说明上游过滤是干净的，不为零就说明这里救回了多少。
+  const droppedHere = answers.length - valid.length;
   const compiled = brands.map((brand) => ({
     brand,
     rules: compileBrandRules({
@@ -250,7 +252,10 @@ export function computeBrandMentions(answers, brands, { exampleRadius = 90, maxE
     answer_count: valid.length,
     // 分母被排除的条数。平台检索中间态（如「找到 1 篇资料」）和抓取残片
     // 会实打实稀释提及率，必须让调用方看得见排除了多少。
-    excluded_answers: excluded,
+    // SQL 层已过滤过一轮，这里再兜一层。报告路径会用真实值覆盖它。
+    excluded_answers: droppedHere,
+    truncated: false,
+    notes: [],
     brand_count: rows.length,
     // 按 mention_rate 降序；同率按总提及次数。再同则按名称。
     basis: "mentioned_answers_over_valid_answers",
@@ -260,9 +265,9 @@ export function computeBrandMentions(answers, brands, { exampleRadius = 90, maxE
       role: "mention_statistics",
       conclusion: null,
       guidance:
-        "这是可复现的提及率统计：分母是该平台**有效**回答数（正文非空且不短于 " +
-        `${MIN_USABLE_ANSWER_CHARS} 字，以排除平台检索中间态与抓取残片），分子是提及该品牌的回答数。` +
-        `本次排除了 ${excluded} 条过短回答。` +
+        "这是可复现的提及率统计：分母是该平台**有效**回答数（正文非空、不短于 " +
+        `${MIN_USABLE_ANSWER_CHARS} 字、且平台未把它标记为写完前中断），分子是提及该品牌的回答数。` +
+        `本次排除 ${droppedHere} 条不可信回答。` +
         "match_terms 是实际参与匹配的词表，请确认它符合预期 —— 少写别名会漏匹配。" +
         "「被提及」不等于「被推荐」：判断推荐强度、渠道差异、以及如何应对，" +
         "请结合 examples.context 与排名用你自己的模型分析。",

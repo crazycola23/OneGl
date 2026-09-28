@@ -42,7 +42,8 @@ test("排除的条数在响应里可查证", () => {
   const brands = normalizeBrands([{ name: "思邈棠" }]);
   const clean = computeBrandMentions(answers, brands);
   assert.equal(clean.excluded_answers, 0);
-  assert.ok(clean.interpretation.guidance.includes("排除了 0 条"));
+  assert.equal(clean.truncated, false, "未触上限时 truncated 应为 false");
+  assert.ok(clean.interpretation.guidance.includes("排除 0 条"));
 });
 
 test("normalizeBrands 接受最小输入并默认 role", () => {
