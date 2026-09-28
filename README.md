@@ -1,13 +1,13 @@
 # OneGl — Doubao GEO / AI Citation Intelligence
 
-OneGl is a China-first, evidence-first GEO / AI Citation Intelligence system for measuring how brands, answers, and sources appear in Doubao Web.
+OneGl is a China-first, evidence-first GEO / AI Citation Intelligence system for measuring how brands, answers, and sources appear in AI answer engines (currently Doubao Web, Qianwen Web, and Zhipu Web).
 
 It can be used in two ways:
 
 - as a local/operator CLI for authenticated Doubao collection and analysis;
 - as a backend service for a SaaS product through a versioned /v1 API, PostgreSQL, BullMQ/Redis workers, signed webhooks, and an OpenAPI 3.1 contract.
 
-The current executable provider is **Doubao Web**. Other providers are intentionally not presented as supported until their evidence chains are implemented and validated.
+The currently executable providers are **Doubao Web** (stored-auth and anonymous), plus **Qianwen Web** and **Zhipu Web** (anonymous). Other providers — Yuanbao Web among them — are intentionally not presented as supported until their evidence chains are implemented and validated.
 
 > **Trust boundary:** OneGl treats DOM-visible citations as visible citations. Passive Network/SSE observations are stored separately as retrieval provenance and are never silently promoted into user-visible citations.
 
@@ -43,7 +43,9 @@ OneGl does **not** claim access to Doubao training data, private model reads, hi
 | Readiness, audit, metrics hooks and SLO tooling | Implemented |
 | Passive Network/SSE provenance | Experimental; opt-in |
 | Retrieval → citation factor analysis | Experimental; depends on validated network evidence |
-| Additional AI providers | Not yet supported |
+| Qianwen Web anonymous collection | Implemented |
+| Zhipu Web anonymous collection | Implemented; quota-wall copy still unmeasured |
+| Additional AI providers (e.g. Yuanbao Web) | Not yet supported; Phase 0 pending |
 
 “Implemented” means the code path exists and is covered offline/in CI where practical. Browser-facing behaviour still depends on the current Doubao Web UI and should be revalidated with an authorised real account when selectors, login flows, or network payloads change.
 
@@ -517,7 +519,7 @@ The repository CI also exercises database migrations and service-platform, GEO, 
 
 Still requiring periodic authorised real-account revalidation:
 
-- current Doubao DOM selectors and answer-completion behaviour;
+- current Doubao / Qianwen / Zhipu DOM selectors and answer-completion behaviour;
 - citation expander/count reconciliation;
 - real session-expiry, verification, and rate-limit behaviour;
 - current Network/SSE endpoint and payload shape;
@@ -555,4 +557,4 @@ A fallback browser working is not by itself evidence that production collection 
 
 OneGl keeps the upstream [OneGlanse](https://github.com/aryamantodkar/oneglanse) MIT license and attribution.
 
-The project currently focuses on making the Doubao evidence chain, service contract, and operational boundaries reliable before expanding to additional providers.
+The project currently focuses on keeping the evidence chain, service contract, and operational boundaries of the registered providers (Doubao, Qianwen, Zhipu) reliable before expanding to additional providers.

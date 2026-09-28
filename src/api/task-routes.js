@@ -22,6 +22,12 @@ import { getProviderAdapter, defaultProviderId, supportedProviderIds } from "../
 import { buildOptimizationHtmlReport } from "../report/html-report-optimization.js";
 import { buildReportContract, contractToRenderDetail } from "../reporting/report-contract.js";
 import {
+  createGeoCustomerReport,
+  getGeoCustomerReport,
+  getGeoCustomerReportHtml,
+  listGeoCustomerReports,
+} from "../reporting/geo-customer-reports.js";
+import {
   buildLiveReportContract,
   createReportRevision,
   getReportRevision,
@@ -161,7 +167,38 @@ async function createTaskResource(db, tenant, raw) {
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     if (error?.code === "23505") {
-      throw new ApiHttpError(409, "task_conflict", "external_id is already used by another task");
+      // 23505 is Postgres' generic unique-violation code and says nothing about which
+      // index was hit. Reporting it as an external_id clash unconditionally is how a
+      // collision on service_project_bindings.display_name came to be reported as
+      // "external_id is already used" -- naming a field the caller never set and
+      // sending the reader after a duplicate request id that does not exist.
+      // bindProject now catches the display_name case before the INSERT; this is the
+      // fallback for anything still unclassified, so it must not assert a cause.
+      const constraint = typeof error.constraint === "string" ? error.constraint : null;
+      if (constraint && constraint.includes("display_name")) {
+        throw new ApiHttpError(
+          409,
+          "display_name_taken",
+          "another task in this tenant already uses this name",
+          { displayName: input.name },
+        );
+      }
+      if (constraint && constraint.includes("tenant_external")) {
+        throw new ApiHttpError(
+          409,
+          "task_conflict",
+          "external_id is already used by another task",
+          { externalId: input.externalId },
+        );
+      }
+      throw new ApiHttpError(
+        409,
+        "task_conflict",
+        constraint
+          ? `task violates unique constraint ${constraint}`
+          : "task conflicts with an existing record",
+        { constraint },
+      );
     }
     throw error;
   } finally {
@@ -395,6 +432,60 @@ export async function createScheduleResource(db, tenant, taskId, raw) {
 
 export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
   const pathname = url.pathname;
+
+  const taskGeoReports = pathname.match(/^\/v1\/tasks\/(tsk_[a-f0-9]+)\/geo-reports$/);
+  if (taskGeoReports) {
+    requireScope(auth, "reports:read");
+    if (req.method === "POST") {
+      const summary = await createGeoCustomerReport(db, {
+        tenantId: tenant.id,
+        taskPublicId: taskGeoReports[1],
+        input: await readJsonBody(req),
+      });
+      return sendJson(res, 201, { data: summary });
+    }
+    if (req.method === "GET") {
+      const page = await listGeoCustomerReports(db, {
+        tenantId: tenant.id,
+        taskPublicId: taskGeoReports[1],
+        limit: positiveLimit(url.searchParams.get("limit"), 100, 500),
+        cursor: url.searchParams.get("cursor"),
+      });
+      return sendJson(res, 200, page);
+    }
+  }
+
+  const geoReportHtml = pathname.match(/^\/v1\/geo-reports\/(rpt_[a-f0-9]+)\/html$/);
+  if (req.method === "GET" && geoReportHtml) {
+    requireScope(auth, "reports:read");
+    const artifact = await getGeoCustomerReportHtml(db, {
+      tenantId: tenant.id,
+      reportPublicId: geoReportHtml[1],
+    });
+    if (!artifact) throw new ApiHttpError(404, "report_not_found", "GEO report was not found");
+    const html = artifact.html;
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": Buffer.byteLength(html),
+      "content-disposition": `attachment; filename="onegl-${geoReportHtml[1]}.html"`,
+      "cache-control": "private, no-cache",
+      etag: `"${artifact.artifact_hash}"`,
+      "x-content-type-options": "nosniff",
+    });
+    res.end(html);
+    return true;
+  }
+
+  const geoReport = pathname.match(/^\/v1\/geo-reports\/(rpt_[a-f0-9]+)$/);
+  if (req.method === "GET" && geoReport) {
+    requireScope(auth, "reports:read");
+    const report = await getGeoCustomerReport(db, {
+      tenantId: tenant.id,
+      reportPublicId: geoReport[1],
+    });
+    if (!report) throw new ApiHttpError(404, "report_not_found", "GEO report was not found");
+    return sendJson(res, 200, { data: report });
+  }
 
   if (pathname === "/v1/tasks") {
     if (req.method === "GET") {

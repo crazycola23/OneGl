@@ -208,6 +208,99 @@ export function applySaasOpenApi(document) {
         updated_at: { type: "string", format: "date-time" },
       },
     },
+    GeoReportPeriodInput: {
+      type: "object",
+      additionalProperties: false,
+      required: ["from", "to"],
+      properties: {
+        key: { type: "string", minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+        label: { type: "string", maxLength: 100 },
+        from: { type: "string", format: "date", description: "Inclusive local calendar date." },
+        to: { type: "string", format: "date", description: "Inclusive local calendar date; the range may span at most 366 days." },
+        time_zone: { type: "string", default: "Asia/Shanghai", description: "IANA time zone used to interpret the date boundaries." },
+      },
+    },
+    GeoCustomerReportCreate: {
+      type: "object",
+      additionalProperties: false,
+      required: ["periods"],
+      properties: {
+        platforms: {
+          type: "array",
+          minItems: 1,
+          maxItems: 20,
+          uniqueItems: true,
+          items: { type: "string", enum: PROVIDERS() },
+          description: "Defaults to the platforms configured on this Task.",
+        },
+        periods: {
+          type: "array",
+          minItems: 1,
+          maxItems: 8,
+          items: { $ref: "#/components/schemas/GeoReportPeriodInput" },
+          description: "Ordered stages. Supplying multiple stages stores comparable snapshots in one report.",
+        },
+        format: { type: "string", const: "html", default: "html" },
+      },
+    },
+    GeoReportPeriodSummary: {
+      type: "object",
+      additionalProperties: false,
+      required: ["key", "label", "from", "to", "time_zone"],
+      properties: {
+        key: { type: "string" },
+        label: { type: "string" },
+        from: { type: "string", format: "date" },
+        to: { type: "string", format: "date" },
+        time_zone: { type: "string" },
+      },
+    },
+    GeoCustomerReportResource: {
+      type: "object",
+      required: ["report_id", "task_id", "status", "format", "title", "generated_at", "platforms", "periods", "profile_version", "content_hash", "report_url", "html_url"],
+      properties: {
+        report_id: reportId,
+        task_id: taskId,
+        status: { type: "string", const: "ready" },
+        format: { type: "string", const: "html" },
+        title: { type: "string" },
+        generated_at: { type: "string", format: "date-time" },
+        platforms: { type: "array", items: { type: "string", enum: PROVIDERS() } },
+        periods: { type: "array", items: { $ref: "#/components/schemas/GeoReportPeriodSummary" } },
+        profile_version: { type: "string" },
+        content_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        report_url: { type: "string" },
+        html_url: { type: "string" },
+      },
+      additionalProperties: true,
+    },
+    GeoCustomerReportSnapshot: {
+      type: "object",
+      description: "Immutable report snapshot and fixed-format customer HTML source data.",
+      required: ["report_id", "task_id", "schema_version", "target", "profile", "scope", "periods", "methodology", "warnings"],
+      properties: {
+        report_id: reportId,
+        task_id: taskId,
+        schema_version: { type: "string" },
+        target: { type: "object", additionalProperties: true },
+        profile: { type: "object", additionalProperties: true },
+        scope: { type: "object", additionalProperties: true },
+        periods: { type: "array", items: { type: "object", additionalProperties: true } },
+        methodology: { type: "object", additionalProperties: { type: "string" } },
+        warnings: { type: "array", items: { type: "string" } },
+      },
+      additionalProperties: true,
+    },
+    GeoCustomerReportDetails: {
+      allOf: [
+        { $ref: "#/components/schemas/GeoCustomerReportResource" },
+        {
+          type: "object",
+          required: ["snapshot"],
+          properties: { snapshot: { $ref: "#/components/schemas/GeoCustomerReportSnapshot" } },
+        },
+      ],
+    },
     ExecutionCreate: {
       type: "object",
       additionalProperties: false,
@@ -557,6 +650,56 @@ export function applySaasOpenApi(document) {
         summary: "List historical reports for a task",
         parameters: paginationParameters,
         responses: { 200: pageJson("Reports", { $ref: "#/components/schemas/ReportListItem" }) },
+      },
+    },
+    "/v1/tasks/{taskId}/geo-reports": {
+      parameters: [stringId("taskId", "tsk")],
+      get: {
+        summary: "List generated GEO customer reports for a task",
+        parameters: paginationParameters,
+        responses: { 200: pageJson("GEO customer reports", { $ref: "#/components/schemas/GeoCustomerReportResource" }) },
+      },
+      post: {
+        summary: "Generate a fixed-format GEO customer report",
+        description: "Builds a persisted report snapshot synchronously from this tenant-scoped Task. Only terminal batches whose started_at falls within each inclusive local date period are included. Repeating an Idempotency-Key replays the first created report.",
+        parameters: [idempotencyHeader],
+        requestBody: body({ $ref: "#/components/schemas/GeoCustomerReportCreate" }, {
+          platforms: ["doubao", "qianwen"],
+          periods: [
+            { key: "baseline", label: "基线阶段", from: "2026-09-01", to: "2026-09-07", time_zone: "Asia/Shanghai" },
+            { key: "follow-up", label: "优化后", from: "2026-09-22", to: "2026-09-28", time_zone: "Asia/Shanghai" },
+          ],
+          format: "html",
+        }),
+        responses: {
+          201: json("Generated report resource and download URLs", { $ref: "#/components/schemas/GeoCustomerReportResource" }),
+          409: { $ref: "#/components/responses/SaasConflict" },
+          422: { $ref: "#/components/responses/SaasBadRequest" },
+        },
+      },
+    },
+    "/v1/geo-reports/{reportId}": {
+      parameters: [stringId("reportId", "rpt")],
+      get: {
+        summary: "Get an immutable GEO customer report snapshot",
+        responses: { 200: json("Report metadata and frozen aggregate snapshot", { $ref: "#/components/schemas/GeoCustomerReportDetails" }) },
+      },
+    },
+    "/v1/geo-reports/{reportId}/html": {
+      parameters: [stringId("reportId", "rpt")],
+      get: {
+        summary: "Download the self-contained customer HTML report",
+        responses: {
+          200: {
+            description: "Single-file UTF-8 HTML with inline CSS and no external assets.",
+            headers: {
+              ETag: { schema: { type: "string" }, description: "SHA-256 of the stored immutable HTML artifact." },
+              "Content-Disposition": { schema: { type: "string" } },
+            },
+            content: { "text/html": { schema: { type: "string" } } },
+          },
+          404: { $ref: "#/components/responses/SaasNotFound" },
+        },
       },
     },
     "/v1/tasks/{taskId}/schedules": {

@@ -442,6 +442,7 @@ function tagFor(pathname) {
   if (pathname.startsWith("/v1/tasks")) return "Tasks";
   if (pathname.startsWith("/v1/executions")) return "Executions";
   if (pathname.startsWith("/v1/results")) return "Results";
+  if (pathname.startsWith("/v1/geo-reports")) return "Reports";
   if (pathname.startsWith("/v1/reports")) return "Reports";
   if (pathname.includes("/schedules")) return "Schedules";
   if (pathname.includes("webhook")) return "Webhooks";
@@ -602,6 +603,9 @@ export function applyContractHardeningOpenApi(document) {
   };
   Object.assign(document.components.schemas, coreSchemas);
   attachCoreSuccessSchemas(document);
+  // The final provider contract uses ProviderResource. The legacy base schema is
+  // overwritten above and otherwise remains an unreferenced component that breaks client codegen.
+  delete document.components.schemas.ProviderAdapterResource;
   attachCommonErrors(document);
   attachOperationMetadata(document);
   attachWebhooks(document);
