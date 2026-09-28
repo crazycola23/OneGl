@@ -466,9 +466,48 @@ export async function executeWenxinPrompt(page, prompt, config, profile) {
         stage: "answer", url: page.url(), gate: wall.kind, ...wall.details,
       });
     }
+    // ⚠️ 静默拒答要单独报错，不能和"生成慢"共用一句话。
+    //
+    // 实测（探针 17/18）：撞墙退去后有一段页面正常、提交成功、但 90 秒零产出的时期。
+    // 判据是**问题气泡有没有出现** —— 气泡没出现说明这条提问根本没进对话，
+    // 那就不是"还没写完"，是"不给"。两种情况都需要重试，但处置不同：
+    // 慢生成可以继续等（下一个 job 自然会等到），拒答要退避（等下去只是白烧预算）。
+    //
+    // 用 ANSWER_NOT_FOUND 报它，会让报告和告警把"平台限流"读成"页面结构变化"——
+    // 这正是 MULTI_PLATFORM_LESSONS.md §4 记的那次复发（千问撞墙被记成 TIMEOUT）。
+    //
+    // 为什么选 ACCESS_RESTRICTED：它让 run 带上 `access_restricted` 这个**语义正确的**
+    // 状态，报告与告警能读出"出口被平台限制了"，而 ANSWER_NOT_FOUND 读出来的是
+    // "页面结构变化"。这正是 §4 记的那次复发（千问撞墙被记成 TIMEOUT）。
+    //
+    // 核对过两件事，避免误以为换码能改变行为：
+    //  - 两个码都**不在** RETRYABLE_CODES 里，所以重试行为没变（换码是为了可读性，
+    //    不是为了"不重试"）；
+    //  - ACCESS_RESTRICTED 虽然在 ACCOUNT_BLOCKING_CODES 里且 `manual: true`，
+    //    但**对本平台不生效**：recordAccountFailure 在 `isCredentialFreeSurface(provider)`
+    //    为真时直接返回 degraded，**在**查那张表**之前**。所以匿名 lane 不会被挂起
+    //    等人处理，下一条照常取。真正让 lane 静置的是 quota 的 burst 门。
+    //
+    // ⚠️ 换句话说这里的语义是"这一轮不可重试、换下一条"，不是"停掉这条 lane"。
+    if (settled.promptAcknowledged === false) {
+      throw new DoubaoMvpError(
+        ErrorCode.ACCESS_RESTRICTED,
+        "文心一言收下了提交但没有产出正文（问题气泡始终未出现，页面无验证文案）："
+          + "这是静默拒答，应退避等待，不要连续重试。",
+        {
+          stage: "answer",
+          url: page.url(),
+          before,
+          waitedMs: settled.waitedMs,
+          navigations: settled.navigations,
+          diagnostics: settled.diagnostics,
+          promptAcknowledged: false,
+        },
+      );
+    }
     throw new DoubaoMvpError(
       ErrorCode.ANSWER_NOT_FOUND,
-      "文心一言提交后未读到回答正文。",
+      "文心一言提交后未读到回答正文（问题气泡已出现，属生成未完成）。",
       {
         stage: "answer",
         url: page.url(),
@@ -476,6 +515,8 @@ export async function executeWenxinPrompt(page, prompt, config, profile) {
         waitedMs: settled.waitedMs,
         lastLength: settled.lastLength,
         navigations: settled.navigations,
+        diagnostics: settled.diagnostics,
+        promptAcknowledged: true,
       },
     );
   }
@@ -535,6 +576,9 @@ async function waitForAnswer(page, { timeoutMs, pollMs }) {
   let best = null;
   let navigations = 0;
   let lastBody = "";
+  // 提问有没有被平台收下：问题气泡一出现就是 true。用于在预算耗尽时区分
+  // "还在生成" 与 "根本不给"（见函数末尾的 diagnostics 注释）。
+  let promptAcknowledged = false;
 
   while (Date.now() < deadline) {
     await page.waitForTimeout(pollMs);
@@ -564,6 +608,7 @@ async function waitForAnswer(page, { timeoutMs, pollMs }) {
     lastBody = nav?.body ?? "";
 
     const snapshot = await readAnswer(page);
+    if (snapshot.promptAcknowledged) promptAcknowledged = true;
     if (snapshot.answer && (!best || snapshot.answer.length > best.answer.length)) {
       best = snapshot;
     }
@@ -571,22 +616,24 @@ async function waitForAnswer(page, { timeoutMs, pollMs }) {
 
     // ⚠️ 完成判据是**追问气泡出现**，不是长度稳定。
     //
-    // 实测（探针 15，2026-09-28）：文心的答案块**不是流式增长的**，而是**反复整块重写** ——
-    // 同一次提问里长度序列是 116 → 40 → 9 → 115 → 134 → 36 → 19 → 41。
-    // 任何"长度不再增长就收"的判据都会在重写间隙收下一个**半成品**，
-    // 而且它读起来是通顺的：实测被误收的是 41 字符的收尾追问句
-    // 「需要我为你规划一条西湖区一日游经典路线吗？」—— 报告里完全看不出被截断。
-    // 这就是 MULTI_PLATFORM_LESSONS.md §3 那一族（千问 104 字停 56 秒），但更隐蔽：
-    // 平台根本不是"停顿"，是"重写"。
+    // 文心的答案块**不是流式增长的，而是反复整块重写**（探针 15，500ms 采样）：
+    // 长度序列 116 → 40 → 9 → 115 → 134 → 36 → 19 → 41。所以任何"长度不再增长就收"
+    // 的判据都会落在重写间隙上 —— 这一点决定了兜底门槛必须是 10 轮而不是 3 轮。
     //
     // 真正的完成信号是**追问气泡**（`cs-question-closely-*`）：实测它在 t=29.6s 出现，
     // 与答案冻结是同一时刻（之前 29.1 秒里恒为 0，之后 26.8 秒恒为 199）。
-    // 平台只有在认为这一轮结束时才渲染它。
+    // 探针 20 又在四种题型上复核，每题在气泡出现后都不再增长 —— 信号可靠。
     //
-    // 早先一直找不到它，是因为一直在找「生成中 / 停止生成」这类文案 —— 而文心
-    // 根本不用文案表示"还在生成"（14 轮实测 stopish 恒为 0）。
-    // 结论：**信号未必是文案，找到什么就用什么**；但出现后仍要求长度稳定 N 轮，
-    // 因为气泡与答案冻结是同帧发生的，DOM 顺序不保证。
+    // ⚠️ 一度把一条 39-41 字符的回答判成"重写中间态被误收"，**那是错的**：
+    // 探针 19/20 证明同一句提问两次采集分别得到 39 与 600 字符，而 39 那条在答案块
+    // 之外没有更长的正文、折叠区 innerLen == textLen —— 短答案是平台真实行为。
+    // 详见 docs/WENXIN_PHASE0.md §4.3。所以这里**不**加"答案太短就重取"这类启发式：
+    // 那会把平台的合法短回答误判成采集失败。
+    //
+    // 早先一直找不到这个信号，是因为一直在找「生成中 / 停止生成」这类**文案** ——
+    // 而文心根本不用文案表示"还在生成"（14 轮实测 stopish 恒为 0）。
+    // 结论：**信号未必是文案**；找到什么就用什么。气泡与答案冻结同帧发生，
+    // DOM 顺序不保证，所以仍要求长度稳定 N 轮再收。
     if (snapshot.followUpVisible && length > 0) {
       if (length === lastLength) {
         stableRounds += 1;
@@ -631,7 +678,23 @@ async function waitForAnswer(page, { timeoutMs, pollMs }) {
   return {
     answer: "",
     citations: [],
-    diagnostics: ["wenxin-answer-not-located"],
+    // ⚠️ 区分「平台还在慢慢生成」与「平台根本不再产出正文」。
+    //
+    // 实测（探针 17/18，2026-09-28）：撞墙退去后有一段**静默拒答**期 —— 页面正常、
+    // textarea 可提交、提交成功（输入框被清空），但 90 秒内 0 个答案块、0 个思考块、
+    // 0 条引用。没有验证文案、没有验证码控件，URL 也是正常的 wenxin.baidu.com。
+    //
+    // 判据是**问题有没有被平台收下**：正常受理时提问气泡会立刻出现
+    // （`cs-question-bubble`，实测它在答案之前渲染）。气泡都没出现，说明这条提问
+    // 根本没进对话 —— 那就不是"慢"，是"不给"。
+    //
+    // 为什么要分：两种情况处置相反。慢生成要继续等并留下 timeout 记录；
+    // 拒答要立刻退避（继续等只是白烧整轮预算），且被记成 ANSWER_NOT_FOUND 时
+    // 报告和告警读不出真相 —— 这正是 MULTI_PLATFORM_LESSONS.md §4 记的那条复发。
+    diagnostics: promptAcknowledged
+      ? ["wenxin-answer-not-located"]
+      : ["wenxin-silent-refusal", "wenxin-answer-not-located"],
+    promptAcknowledged,
     waitedMs,
     lastLength,
     navigations,
@@ -674,10 +737,23 @@ async function readAnswer(page) {
       return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none";
     };
 
+    // 提问有没有被平台收下。正常受理时问题气泡立刻出现（实测它在答案之前渲染），
+    // 所以「气泡始终为 0」= 这条提问根本没进对话 —— 用来在预算耗尽时把
+    // 「还在慢生成」与「平台不再产出正文」分开。
+    //
+    // ⚠️ 这个判断必须在「没有答案块」的早退**之前**做。静默拒答的实测形态正是
+    // 「一个块都没有」：先在这里 return 的话，拒答与正常回答会走同一条路径，
+    // 而它们需要的处置完全相反。
+    const acknowledged = [...document.querySelectorAll(userBubble)].some((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
+
     // 只取**最后一个**答案块：同一会话里若有历史轮，取第一个会读到上一题。
     const answers = [...document.querySelectorAll(answer)].filter(vis);
     if (!answers.length) {
-      return { answerText: "", references: [], bodyText: "" };
+      return { answerText: "", references: [], bodyText: document.body?.innerText || "",
+               promptAcknowledged: acknowledged, followUpVisible: false };
     }
     const node = answers[answers.length - 1];
 
@@ -688,6 +764,7 @@ async function readAnswer(page) {
 
     return {
       answerText: clone.innerText || "",
+      promptAcknowledged: acknowledged,
       // 追问气泡：平台只在**认为这一轮结束时**才渲染它们，实测与答案冻结同帧发生。
       // 这是本平台唯一可靠的完成信号（见 waitForAnswer 的注释）。
       followUpVisible: [...document.querySelectorAll(followUpChips)].some((el) => {
@@ -711,7 +788,8 @@ async function readAnswer(page) {
 
   if (!raw || raw.__navigated) {
     return { answer: "", citations: [], diagnostics: ["wenxin-scan-navigated"],
-             expectedCitationCount: null, followUpVisible: false };
+             expectedCitationCount: null, followUpVisible: false,
+             promptAcknowledged: false };
   }
 
   const body = cleanAnswerText(raw.answerText);
@@ -722,6 +800,7 @@ async function readAnswer(page) {
     citations,
     expectedCitationCount,
     followUpVisible: Boolean(raw.followUpVisible),
+    promptAcknowledged: Boolean(raw.promptAcknowledged),
     diagnostics: body
       ? citationDiagnostics({ captured: citations.length, selfReported: expectedCitationCount })
       : ["wenxin-answer-not-located"],

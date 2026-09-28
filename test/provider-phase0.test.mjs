@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -549,7 +550,8 @@ test("the wenxin adapter is wired to the real driver, not a stub", async () => {
  */
 test("wenxin's completion signal is the follow-up chips, not length stability", () => {
   // 追问气泡是 driver 判完成的依据，它必须是**实测存在**的类名。
-  // 实测（探针 15）：提问后 29.1 秒内恒为 0，t=29.6s 与答案冻结同帧出现，之后恒定。
+  // 探针 20 在四种题型上复核：气泡首现于 t=23.0s / 5.7s / 8.8s，每题出现后答案**不再增长**，
+  // 所以这个信号是可靠的（docs/WENXIN_PHASE0.md §4.2）。
   assert.ok(
     wenxinWebProfile.chat.answerSelectors.length > 0,
     "答案选择器必须存在（回归钉子）",
@@ -563,6 +565,46 @@ test("wenxin's completion signal is the follow-up chips, not length stability", 
 
   // 注册闸门本身不能被这次改动削弱：driver 仍要接到真实实现。
   assert.equal(getProviderAdapter("wenxin").id, "wenxin-web");
+});
+
+/**
+ * ⚠️ 短答案**不是**采集缺陷 —— 这条断言是为了钉住一次已经撤回的错误结论。
+ *
+ * 我曾把 39-41 字符的回答判成「平台收尾追问句被当成答案误收」，并在验收脚本里加了
+ * 「短答案 + 有问号 + 无句号收尾 = 失败」。探针 19/20 证伪了它 ——
+ * 同一句「宁波的气候有什么特点？」两次采集分别得到 39 字符（一句追问）与
+ * 600 字符（完整清单），两条都带 21-28 条引用且与平台自陈数完全对上。
+ *
+ * 保留错误断言的代价是**把正确的数据判成失败**：平台的合法短回答会被拒收，
+ * 而拒收理由（"这不像答案"）在报告里读起来像是采集侧发现了质量问题。
+ * 错误的护栏比没有护栏更贵 —— docs/MULTI_PLATFORM_LESSONS.md §14.1。
+ *
+ * ⚠️ 验收脚本本身在 `.runtime/`（已 gitignore），所以这里**不能**去读它 ——
+ *    那样这条测试在任何 clone 上都会失败。改为断言真正被提交的那部分：
+ *    driver 必须落库完成来源，且**不**存在任何按答案长度做拒绝的判据。
+ */
+test("a short answer is a platform behaviour, not a defect to be rejected", () => {
+  // 平台在只给一句收尾追问时照样检索并列出全部来源（实测 25 条、自陈 25/25），
+  // 所以引用率可用，而「回答长度」不能当作质量指标。
+  const driver = readFileSync(new URL("../src/wenxin.js", import.meta.url), "utf8");
+
+  // driver 必须报出完成来源 —— 这是唯一可靠的护栏，区分「平台明确收尾」与「靠猜」。
+  assert.match(driver, /answerCompletion/);
+  // 兜底路径必须自报家门：它在真实采集里一次都没触发过，不能与气泡路径同等可信。
+  assert.match(driver, /length-stability-fallback/);
+
+  // ⚠️ 不得出现"答案太短就重取/判失败"这类判据：实测同题两次分别得到 39 与 600 字符，
+  // 两者都是平台的合法回答。留着它会把正确数据拒收。
+  assert.doesNotMatch(
+    driver,
+    /answer\.length\s*<\s*\d+[^;]*\b(fail|throw|Error)/,
+    "不得按答案长度拒绝采集结果：短答案是平台真实行为（docs/WENXIN_PHASE0.md §4.3）",
+  );
+  assert.doesNotMatch(
+    driver,
+    /looksLikeClosingLine|isClosingQuestion|tooShort/,
+    "不得存在把短答案判成平台客套的启发式：它已被实测证伪",
+  );
 });
 
 /**
