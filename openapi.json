@@ -327,6 +327,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu"
             ],
             "type": "string"
@@ -416,6 +417,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu"
             ],
             "type": "string"
@@ -457,6 +459,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu"
             ],
             "type": "string"
@@ -549,6 +552,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu"
             ],
             "type": "string"
@@ -746,6 +750,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu"
             ],
             "type": "string"
@@ -1122,6 +1127,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu"
             ],
             "type": "string"
@@ -1204,6 +1210,7 @@
                   "enum": [
                     "doubao",
                     "qianwen",
+                    "wenxin",
                     "zhipu"
                   ],
                   "type": "string"
@@ -1881,6 +1888,7 @@
                   "enum": [
                     "doubao",
                     "qianwen",
+                    "wenxin",
                     "zhipu"
                   ],
                   "type": "string"
@@ -2098,6 +2106,7 @@
                   "enum": [
                     "doubao",
                     "qianwen",
+                    "wenxin",
                     "zhipu"
                   ],
                   "type": "string"
@@ -2277,6 +2286,7 @@
               "enum": [
                 "doubao",
                 "qianwen",
+                "wenxin",
                 "zhipu"
               ],
               "type": "string"
@@ -2379,6 +2389,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu",
               null
             ],
@@ -2486,6 +2497,7 @@
               "enum": [
                 "doubao",
                 "qianwen",
+                "wenxin",
                 "zhipu"
               ],
               "type": "string"
@@ -2548,6 +2560,7 @@
               "enum": [
                 "doubao",
                 "qianwen",
+                "wenxin",
                 "zhipu"
               ],
               "type": "string"
@@ -3629,6 +3642,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu"
             ],
             "type": "string"
@@ -5967,6 +5981,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu",
               null
             ],
@@ -6063,6 +6078,7 @@
             "enum": [
               "doubao_web",
               "qianwen_web",
+              "wenxin_web",
               "zhipu_web"
             ],
             "type": "string"
@@ -6175,6 +6191,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu",
               null
             ],
@@ -6476,6 +6493,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu"
             ],
             "type": "string"
@@ -6629,6 +6647,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu"
             ],
             "type": "string"
@@ -6786,6 +6805,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu"
             ],
             "type": "string"
@@ -7103,6 +7123,7 @@
               "enum": [
                 "doubao",
                 "qianwen",
+                "wenxin",
                 "zhipu"
               ],
               "type": "string"
@@ -7169,6 +7190,7 @@
               "enum": [
                 "doubao",
                 "qianwen",
+                "wenxin",
                 "zhipu"
               ],
               "type": "string"
@@ -7244,6 +7266,7 @@
               "enum": [
                 "doubao",
                 "qianwen",
+                "wenxin",
                 "zhipu"
               ],
               "type": "string"
@@ -8342,6 +8365,7 @@
             "enum": [
               "doubao",
               "qianwen",
+              "wenxin",
               "zhipu"
             ],
             "type": "string"
