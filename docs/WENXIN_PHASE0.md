@@ -1,0 +1,300 @@
+# 文心一言（wenxin.baidu.com）Phase 0 实测记录
+
+采集日期：2026-09-28 · 引擎：本地 Camoufox（`.venv`，headless，zh-CN）
+探针：`.runtime/probe_yiyan2.py` … `probe_yiyan15.py`（共 15 轮，累计约 25 次提问）
+原始数据：`.runtime/yiyan-probe-02.json` … `yiyan-probe-15.json`
+在线复验：`.runtime/verify-wenxin.mjs`
+
+这份记录是 `src/providers/wenxin-web.js` 与 `src/wenxin.js` 每个字段的来源。
+按 `docs/MULTI_PLATFORM_LESSONS.md` 的教训，**没有一项是从豆包、千问或智谱类比来的** ——
+类比正是前三次翻车的原因（§1/§2）。
+
+---
+
+## 1. 入口域名：宣传域名不是服务域名
+
+| 入口 | 实际落地 |
+|---|---|
+| `https://yiyan.baidu.com/` | → `https://wenxin.baidu.com/?enter_type=yiyan_site` |
+| `https://chat.baidu.com/` | → `https://wenxin.baidu.com/?enter_type=chat_site` |
+
+真实服务域名是 **wenxin.baidu.com**，页面标题「百度文心助手 - 办公学习一站解决」。
+`entryUrl` 用它而不是 yiyan.baidu.com，多跳一次重定向，且风控判定里拿到的
+host 与实测墙的 host 不一致。
+
+---
+
+## 2. 匿名面成立
+
+| 观察 | 结果 |
+|---|---|
+| 登录墙 | 14 轮**从未出现**（页面常驻「请登录」入口与「登录同步历史对话」，但那不是墙） |
+| 匿名提问 | **成功**，9 轮独立会话各问 1 题全部作答 |
+| cookie | `BAIDUID` / `H_WISE_SIDS` / `BA_HECTOR` / `ZFY` —— 全是设备标识与埋点类 |
+
+cookie 里没有任何承载登录语义的名字，因此 `login.sessionCookies` 保持空数组。
+把设备 cookie 当凭证就会重演豆包「CSRF cookie 当登录态」那次事故。
+
+---
+
+## 3. 四个真实障碍
+
+### 3.1 答案块与思考块共用 `ai-entry-block` 类名
+
+同一轮实测：
+
+```
+div.ai-entry-block.ai-thinking-steps   942 字符   ← 搜索步骤 + 关键词 + 参考条目
+div.ai-entry-block.ai-markdown        155 字符   ← 真正的答案
+```
+
+思考块是答案的 **6 倍**。按"最长文本块"取答案会**稳定地**采到搜索步骤，
+而 `status=success` —— 报告里完全看不出内容错了。这是
+`MULTI_PLATFORM_LESSONS.md` §3 那一族，但比"页脚比答案长"更隐蔽。
+
+**处置**：`answerSelectors` 必须带 `ai-markdown` 排他位。
+答案块内部很干净 —— 追问气泡与免责声明实测都在块**外面**（`insideAnswer=false`），
+不需要任何噪声过滤。
+
+### 3.2 风控墙是**导航**，不是原地替换
+
+```
+https://wappass.baidu.com/static/captcha/tuxing_v2.html?do_not_intercept=1&logid=...
+百度安全验证
+请完成下方验证后继续操作
+拖动左侧滑块使图片为正
+扫码验证| 意见反馈 |刷新
+```
+
+这与智谱的「访问验证」是**同一类墙、两种机制**：
+
+| | 智谱清言 | 文心一言 |
+|---|---|---|
+| 形态 | 原地替换，textarea 压成 0x0 | **整页跳走**到 `wappass.baidu.com` |
+| textarea | 仍在 DOM | **从 DOM 彻底消失** |
+| 判据 | 正文文案 + 输入框尺寸 | **URL + 正文文案** |
+| 对 evaluate 的影响 | 无 | 抛「Execution context was destroyed」 |
+
+实测这一条连坑了三轮：探测 7/11 出现两次"102 秒零输出"、探测 13 直接撞墙、
+探测 12 part 2 崩在 `Execution context was destroyed`。前两次之所以读成
+"平台没产出"，是因为探针**没有记录 URL**。
+
+**处置**：driver 把导航当**数据**处理（`safeEvaluate` 统一转成 `{__navigated: true}`），
+而不是让它冒泡；撞墙抛 `VERIFICATION_REQUIRED`（不可重试、阻断），退避等平台放行。
+
+### 3.3 引用 URL 在 data 属性里，DOM 里没有链接
+
+```html
+<li class="_reference-item_1jesp_5"
+    data-long-press-ext-info='{"link":"https://paper.people.com.cn/rmrbhwb/images/2023-12/20/12/rmrbhwb2023122012.pdf",
+                                "linkTitle":"&quot;数&quot;说 2023 中国旅游-人民网",
+                                "logInfo":{"longpress_content":"thinkinglink"}}'>
+  <span class="_index_1jesp_15">1.</span>
+  <span class="_text_1jesp_19">&quot;数&quot;说 2023 中国旅游-人民网</span>
+</li>
+```
+
+实测 22-45 条参考条目**全部**没有 `<a>`、没有 href 属性，
+`querySelectorAll("a[href^='http']")` 在参考列表里恒为 0。
+
+这是文心与智谱的**关键区别**：
+
+| | 智谱清言 | 文心一言 |
+|---|---|---|
+| 来源形态 | 裸域名角标 | 参考资料列表 |
+| url 形态 | 只能拿域名根占位（`https://host/`） | **完整可回查 URL** |
+| 解析失败的后果 | url 假值 | 条目被丢 |
+
+**为什么必须拿到真实 url**：`db/persist.js` 的 `prepareCitations` 会把缺 url 的
+引用整条 skip（`reason=missing-url`）。只找 `<a>` 的后果是
+「平台自陈 23 篇资料、库里一条都没有」，而报告仍显示"引用了 23 个来源"。
+
+自陈来源数实测两种文案，数字一致：
+
+```
+搜索3个关键词 共参考22篇资料
+搜索全网32篇资料
+```
+
+所以 `citation.tier = SELF_REPORTED_COUNT`，可与抓到的条目数对账。
+在线复验中 24/24、29/29、25/25 全部对上。
+
+### 3.4 重置必须点按钮，**不能重新加载**
+
+| 方式 | 实测结果 |
+|---|---|
+| 重新 `goto` 入口页 | **撞百度安全验证墙**（探针 8 condition 3） |
+| 点 `div.new-dialog-container-button` + 验证块数归零 | 连续两问正常（133 → 225 字符） |
+
+历史栏里也有个「新对话」文字节点，按文字找会点到它。
+
+**验证不是形式主义**：探针 14 里没点重置连问四题，稳定性判据在 3.1 秒就把
+**上一题的答案**（249 字符 / 25 引用，逐字相同）当成了这一题的回答。
+`status=success`，内容全错。所以 driver 在提问前要求重置被确认，
+否则抛 `CONVERSATION_RESET_FAILED` —— 宁可这一轮失败。
+
+---
+
+## 4. 完成判据：追问气泡（本平台最反直觉的一条）
+
+### 4.1 答案不是流式增长的，是**反复整块重写**
+
+同一次提问，每 500ms 采样一次：
+
+```
+t= 4.6s  ans=116
+t= 6.6s  ans= 40      ← 掉到 40
+t= 8.7s  ans= 43
+t=10.8s  ans=  9      ← 掉到 9
+t=12.9s  ans=115
+t=15.1s  ans= 52
+t=17.2s  ans=134
+t=19.3s  ans= 65
+t=21.4s  ans=140
+t=23.5s  ans= 36
+t=25.7s  ans= 46
+t=27.9s  ans= 19      ← 掉到 19
+t=30.1s  ans= 41      ← 冻结，之后 26.8 秒恒为 41
+```
+
+思考块在 t=2.5s 就已 1315 字符且**全程不变** —— 它是检索完成后的静态渲染。
+所以唯一在动的是答案块，而它在**重写**。
+
+**任何"长度不再增长就收"的判据都会收下中间态。** 第一版 driver 用
+「连续 3 轮稳定」，正好落在重写间隙，收下了 41 字符：
+
+```
+需要我为你规划一条西湖区一日游经典路线吗？帮你串联核心景点避开人流高峰。
+```
+
+这是平台的**收尾追问句**，不是答案。它通过了当时所有检查：相关、有引用、
+引用数与自陈数对得上、`status=success`。**只有"完成来源"能抓住它。**
+
+### 4.2 真正的完成信号是追问气泡
+
+```
+cs-question-closely-*   29.1 秒内恒为 0  →  t=29.6s 出现  →  之后恒为 199
+```
+
+平台**只在认为这一轮结束时**才渲染它们，与答案冻结是同一时刻。
+
+早先一直找不到它，是因为一直在找「生成中 / 停止生成」这类**文案** ——
+而文心根本不用文案表示"还在生成"：14 轮实测停止/暂停控件恒为 0 次出现，
+正文里也从不出现「生成中 / 正在生成 / 思考中」。
+
+**处置**：
+- 主判据：追问气泡出现 **且** 答案长度稳定 3 轮（同帧不保证，DOM 顺序不可靠）；
+- 兜底：长度稳定 **10 轮（10 秒）**，覆盖实测最长的 2.6 秒气泡后冻结；
+- 落库带 `answer_completion` 标记（`follow-up-chips` / `length-stability-fallback` / `timeout`），
+  让下游能区分"平台明确收尾"和"靠稳定猜的"。
+
+兜底门槛 10 轮不是拍的：重写间隙的稳定实测只持续 1-2 轮（pollMs=1s），
+而气泡出现后最长还要 2.6 秒才停。3 落在两个分布的交叠区，10 把它们分开。
+
+---
+
+## 5. 零宽字符
+
+答案正文里每个强调片段都被 U+200C 包着：
+
+```
+'中国的首都是\u200c北京\u200c。\n\n北京是中华人民共和国的法定首都…'
+```
+
+实测一条 164 字符的答案里有 2 个。它们在编辑器与 diff 里都**看不见**，
+但会让后续任何品牌名子串匹配静默失败（"小米" ≠ "小‌米"），并让长度统计偏大。
+入库前在 `src/wenxin-citations.js` 的 `cleanAnswerText` 里剥掉。
+
+---
+
+## 6. 引导弹层
+
+冷启动会注入满屏弹层并拦截输入框上的指针事件：
+
+```
+div.cos-dialog._task-mode-guide-dialog_k91ea_1   1280x720
+div.cos-dialog-mask
+关闭控件：div.cos-dialog-close / i.cos-icon-close   ← 无文字、无 aria-label
+```
+
+Playwright 的 click 会一直重试到超时并报 `subtree intercepts pointer events`。
+关闭控件既无文字也无 aria-label，按可见文字找必然失配（与智谱的
+`button.close-btn` 同一类坑）。driver 走控件 + Escape 两条路径，
+并且**验证遮罩计数归零**才继续 —— "点了关闭按钮"不等于"弹层没了"。
+
+---
+
+## 7. 输入框与提交
+
+```html
+<textarea rows="1" maxlength="20000" id="chat-textarea" autocomplete="off"
+          placeholder="帮我写国旗下讲话发言稿" class="ci-textarea ci-scroll-style">
+```
+
+⚠️ **placeholder 是轮换的热点话题，绝不能当选择器**。实测同一天内出现过：
+
+```
+肖战第1次上热搜涨粉130万
+帮我写国旗下讲话发言稿
+智界 RX及鸿蒙智行新品发布会
+帮我写面试自我介绍模版
+```
+
+发送控件**提取不到**（探测脚本的 send btns 恒为空数组），键盘 Enter 是实测
+唯一测通的提交路径。`sendSelectors` 是 profile 的必填项，指向输入框 ——
+焦点在框内按 Enter 就是实测路径，driver 不应把它当成"点这个按钮"。
+
+输入框可提交性用三条 DOM 事实判（存在 + 非零尺寸 + `elementFromPoint` 命中自身），
+不用 Playwright 的 `click({trial:true})` —— 后者在 Camoufox 上会给出与 DOM 事实
+相反的结论（`MULTI_PLATFORM_LESSONS.md` §9.2）。
+
+---
+
+## 8. 额度与节奏
+
+| 观察 | 结果 |
+|---|---|
+| 5 个独立会话各问 1 题（间隔 30 秒） | 5/5 成功 |
+| 同一会话连问 4 题（间隔 20 秒） | 4/4 成功（但未点重置，数据不可信，见 §3.4） |
+| 探测 13（连续 5 轮探针、约 15 题） | **撞墙** |
+| 墙后退避约 15 分钟 | 恢复，探测 14 立刻 9/9 成功 |
+
+分界线是**累积提问量**，不是单题频率 —— 与千问「当天累计约 37 次后弹登录墙」
+同形（`MULTI_PLATFORM_LESSONS.md` §4）。
+
+⚠️ `limits` 字段**当前不会被消费**：`accounts/safety.js` 只读全局的
+`ONEGL_MIN_DELAY_MS` 等环境变量，代码里不存在对 `profile.limits` 的引用
+（`doubao-web.js` 没有这个字段，`zhipu-web.js` 的同名字段同样没人读 —— 已记 §10.4）。
+保留它只为记录实测结论，**不是**当前生效的配置。当前生效的是全局值，
+部署环境已按 60-120 秒 / 小时 6 / 日 20 配置。
+
+---
+
+## 9. 在线复验结果
+
+`node .runtime/verify-wenxin.mjs --questions 3`（Camoufox 出货引擎）：
+
+```
+q1  2024年中国新能源汽车销量是多少？请说明数据来源。
+    12.3s | answer=295 chars | citations=24 | selfReported=24
+    completion=follow-up-chips
+    全部 17 项检查通过
+
+q2  杭州西湖区的代表性景点有哪些？
+    DOUBAO_VERIFICATION_REQUIRED —— 跳转到百度安全验证页
+    （本轮探测已累计约 25 次提问，撞墙符合预期；driver 正确识别为风控而非挂死）
+```
+
+**q1 是干净通过的一轮**：完成判据走的是平台明确信号，答案与本题相关，
+24 条引用全部带真实 URL，引用数与平台自陈数 24/24 完全对上。
+
+---
+
+## 10. 与 GEO 侧的约定
+
+- provider 码 `wenxin`、adapter id `wenxin-web`，两端逐字一致。
+- GEO 侧 `OneGlPlatforms.codeOf("ONEGL-WENXIN")` 翻译出的 `platforms: ["wenxin"]`
+  必须能命中本 adapter，否则 422。
+- 匿名面 `requiresStoredAuth: false`，不需要 GEO 账号绑定。
+- 建议平台 id 与占位符沿用智谱那一组的编法（`T-OPEN-37` 先例）：
+  **注册只在 Phase 0 通过之后**，不在通过之前先把 GEO 侧开通。
