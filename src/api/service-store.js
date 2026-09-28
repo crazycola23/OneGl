@@ -160,6 +160,29 @@ export async function bindProject(pool, { tenantId, projectId, displayName, exte
     throw new ApiHttpError(409, "project_already_owned", "project is already bound to another tenant");
   }
 
+  // service_project_bindings has UNIQUE (tenant_id, display_name), and the task route
+  // binds one row per task using the task name as display_name. Two tasks with the same
+  // name therefore collide here.
+  //
+  // The INSERT below only declares ON CONFLICT (project_id), so a display_name collision
+  // escaped as a raw Postgres 23505 and the caller reported it as "external_id is already
+  // used" -- a message that names a column the caller never set, and sends the reader
+  // looking for a duplicate request id that does not exist. Naming the constraint here
+  // makes the 409 actionable: the client can retry with a different name.
+  const nameTaken = await pool.query(
+    `SELECT project_id FROM service_project_bindings
+     WHERE tenant_id = $1 AND display_name = $2 AND project_id <> $3`,
+    [tenantId, displayName, projectId],
+  );
+  if (nameTaken.rows[0]) {
+    throw new ApiHttpError(
+      409,
+      "display_name_taken",
+      "another task in this tenant already uses this name",
+      { displayName },
+    );
+  }
+
   const { rows } = await pool.query(
     `INSERT INTO service_project_bindings (project_id, tenant_id, display_name, external_id)
      VALUES ($1, $2, $3, $4)
