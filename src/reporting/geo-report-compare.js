@@ -53,10 +53,22 @@ function percentagePointDelta(current, previous, { label, notes, noteCode }) {
   return Math.round((c - p) * 10000) / 100;
 }
 
+/**
+ * 一次查出报告的身份与快照。
+ *
+ * 之前是两个函数各查一次（loadSnapshot + loadSnapshotIdentity），
+ * 同一份报告被 SELECT 两遍。合并后每份报告只查一次。
+ *
+ * 对外只暴露 public id，不暴露内部 task / group 主键。
+ */
 async function loadSnapshot(pool, { tenantId, reportPublicId }) {
   const { rows } = await pool.query(
-    `SELECT r.public_id, r.task_id, r.group_id, r.created_at, rev.payload, rev.content_hash
+    `SELECT r.public_id, r.created_at, r.group_id,
+            t.public_id AS task_public_id, g.public_id AS group_public_id,
+            rev.payload, rev.content_hash
        FROM service_geo_reports r
+       LEFT JOIN service_tasks t ON t.id = r.task_id
+       LEFT JOIN service_task_groups g ON g.id = r.group_id
        JOIN LATERAL (
          SELECT payload, content_hash FROM service_geo_report_revisions
           WHERE report_id = r.id AND tenant_id = $1 ORDER BY revision DESC LIMIT 1
@@ -68,33 +80,12 @@ async function loadSnapshot(pool, { tenantId, reportPublicId }) {
   if (!row) fail(`geo report was not found: ${reportPublicId}`, 404, "report_not_found");
   return {
     report_id: row.public_id,
-    task_id: row.task_id == null ? null : null,
-    group_id: null,
-    created_at: row.created_at,
-    payload: row.payload,
-    content_hash: row.content_hash,
-  };
-}
-
-/** 快照的对外身份：对外只暴露 public id，不暴露内部 task / group 主键。 */
-async function loadSnapshotIdentity(pool, { tenantId, reportPublicId }) {
-  const { rows } = await pool.query(
-    `SELECT r.public_id, r.created_at,
-            t.public_id AS task_public_id, g.public_id AS group_public_id
-       FROM service_geo_reports r
-       LEFT JOIN service_tasks t ON t.id = r.task_id
-       LEFT JOIN service_task_groups g ON g.id = r.group_id
-      WHERE r.tenant_id = $1 AND r.public_id = $2`,
-    [tenantId, reportPublicId],
-  );
-  const row = rows[0];
-  if (!row) fail(`geo report was not found: ${reportPublicId}`, 404, "report_not_found");
-  return {
-    report_id: row.public_id,
     scope_kind: row.group_public_id ? "group" : "task",
     task_id: row.task_public_id ?? null,
     group_id: row.group_public_id ?? null,
     created_at: row.created_at,
+    payload: row.payload,
+    content_hash: row.content_hash,
   };
 }
 
@@ -252,11 +243,16 @@ function domainDiff(currentDomains, previousDomains, kind) {
 /**
  * 对比两份报告。
  *
- * 对齐键是 `period_key::platform`：
- *   - 同一 period 同一平台 → 直接算差值
- *   - 只在一侧出现的 period/platform → present_in_both = false，指标给 null
- * 这样调用方能自己区分「指标下降了」和「这次压根没这个平台的样本」——
- * 两者在报告里长得一样，但在决策上完全不同。
+ * **按平台对齐**，不用 period_key + platform：period_key 是调用方在报告请求里
+ * 自己填的字符串，两次生成几乎不可能一样（实测 `c1` vs `p1`），拿它当对齐键会
+ * 让同一平台的两次采集静默对不上 —— 一边标「已移除」、一边标「新增」，
+ * `present_in_both` 全为 false，一个差值都算不出来，而接口照样返回 200。
+ *
+ * 一份报告含多个 period 时，取结束日最接近 base 的那一个（见 pickComparable）。
+ *
+ * 某平台只在一侧存在时 present_in_both = false 且指标为 null，让调用方能区分
+ * 「指标下降了」和「这次压根没这个平台的样本」—— 两者在报告里长得一样，
+ * 但在决策上完全不同。
  */
 export async function compareGeoCustomerReports(pool, { tenantId, baseReportId, targetReportId }) {
   if (!baseReportId || !targetReportId) fail("base_report_id and target_report_id are required");
@@ -264,10 +260,7 @@ export async function compareGeoCustomerReports(pool, { tenantId, baseReportId, 
     fail("base_report_id and target_report_id must be different reports", 422, "same_report");
   }
 
-  const [baseIdentity, targetIdentity] = await Promise.all([
-    loadSnapshotIdentity(pool, { tenantId, reportPublicId: baseReportId }),
-    loadSnapshotIdentity(pool, { tenantId, reportPublicId: targetReportId }),
-  ]);
+  // 两份报告各查一次即可：身份与快照在同一条 SELECT 里返回。
   const [base, target] = await Promise.all([
     loadSnapshot(pool, { tenantId, reportPublicId: baseReportId }),
     loadSnapshot(pool, { tenantId, reportPublicId: targetReportId }),
@@ -283,10 +276,10 @@ export async function compareGeoCustomerReports(pool, { tenantId, baseReportId, 
         `${target.payload.target?.tracked_articles_count ?? 0}），覆盖率类指标不可直接比较。`,
     });
   }
-  if (baseIdentity.scope_kind !== targetIdentity.scope_kind) {
+  if (base.scope_kind !== target.scope_kind) {
     notes.push({
       code: "scope_kind_mismatch",
-      message: `两份报告的口径不同（${baseIdentity.scope_kind} vs ${targetIdentity.scope_kind}），请确认这是预期对比。`,
+      message: `两份报告的口径不同（${base.scope_kind} vs ${target.scope_kind}），请确认这是预期对比。`,
     });
   }
   // 品牌集合不同：提及率的分母（回答数）一样，但比的品牌不是同一批，
@@ -345,19 +338,19 @@ export async function compareGeoCustomerReports(pool, { tenantId, baseReportId, 
 
   return {
     base: {
-      report_id: baseIdentity.report_id,
-      scope_kind: baseIdentity.scope_kind,
-      task_id: baseIdentity.task_id,
-      group_id: baseIdentity.group_id,
+      report_id: base.report_id,
+      scope_kind: base.scope_kind,
+      task_id: base.task_id,
+      group_id: base.group_id,
       generated_at: base.payload.generated_at,
       platforms: base.payload.scope?.platforms ?? [],
       periods: (base.payload.scope?.periods ?? []).map((p) => ({ key: p.key, label: p.label, from: p.from, to: p.to })),
     },
     target: {
-      report_id: targetIdentity.report_id,
-      scope_kind: targetIdentity.scope_kind,
-      task_id: targetIdentity.task_id,
-      group_id: targetIdentity.group_id,
+      report_id: target.report_id,
+      scope_kind: target.scope_kind,
+      task_id: target.task_id,
+      group_id: target.group_id,
       generated_at: target.payload.generated_at,
       platforms: target.payload.scope?.platforms ?? [],
       periods: (target.payload.scope?.periods ?? []).map((p) => ({ key: p.key, label: p.label, from: p.from, to: p.to })),
