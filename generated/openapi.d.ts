@@ -115,7 +115,7 @@ export interface paths {
         parameters: {
             query?: {
                 /** @description Disambiguates an account id that is bound on more than one platform. Omit when the id is unique to one platform; send it when the call answers ambiguous_account_provider. */
-                provider?: "doubao" | "qianwen";
+                provider?: "doubao" | "qianwen" | "wenxin" | "zhipu";
             };
             header?: never;
             path: {
@@ -657,6 +657,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/geo-reports/compare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Compare two GEO report snapshots
+         * @description Aligns two immutable snapshots by period and platform and returns per-metric deltas plus source-structure changes. Returns numbers only: a missing metric is null rather than 0, so callers can distinguish a real drop from a period or platform that was not collected. Natural-language conclusions are intentionally not produced — generate them with your own model from these deltas.
+         */
+        get: operations["getGeoReportsCompare"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/geo-reports/{reportId}": {
         parameters: {
             query?: never;
@@ -1173,6 +1193,138 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/task-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List task groups
+         * @description Task groups are the cross-platform task abstraction: one customer task, one collection task per platform.
+         */
+        get: operations["getTaskGroups"];
+        put?: never;
+        /**
+         * Create a task group
+         * @description Create a task group
+         */
+        post: operations["createTaskGroups"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/task-groups/{groupId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a task group
+         * @description Get a task group
+         */
+        get: operations["getTaskGroupsByGroupId"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a task group
+         * @description Removes the group and its membership rows. Member collection tasks and their reports are not deleted.
+         */
+        delete: operations["deleteTaskGroupsByGroupId"];
+        options?: never;
+        head?: never;
+        /**
+         * Update task group metadata
+         * @description Update task group metadata
+         */
+        patch: operations["updateTaskGroupsByGroupId"];
+        trace?: never;
+    };
+    "/v1/task-groups/{groupId}/answers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Read AI answers for a task group, optionally stratified-sampled
+         * @description Returns AI answer text so a caller can run its own model over a sample to discover which brands the answers mention, then pass that list back via the reports' brands parameter. OneGl does not extract entity names: deciding what counts as a business name is a semantic judgement, and a suffix word list would break on every new industry. Sampling is stratified per platform because platform volumes differ widely; a pooled sample would leave the smaller platform with too few answers to discover its own brands.
+         */
+        get: operations["getTaskGroupsByGroupIdAnswers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/task-groups/{groupId}/geo-reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * List report history for a task group
+         * @description Every snapshot generated for this group, newest first. Use this to pick the reports to compare.
+         */
+        get: operations["getTaskGroupsByGroupIdGeoReports"];
+        put?: never;
+        /**
+         * Generate a cross-platform GEO customer report for a task group
+         * @description Covers every platform configured across the group's member tasks, laid out side by side. Defaults platforms to the union of member platforms, so a 千问 + 豆包 group produces one report with both platforms compared in the same table. Only terminal batches whose started_at falls within each inclusive local date period are included. Repeating an Idempotency-Key replays the first created report.
+         */
+        post: operations["createTaskGroupsByGroupIdGeoReports"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/task-groups/{groupId}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * List member collection tasks of a task group
+         * @description List member collection tasks of a task group
+         */
+        get: operations["getTaskGroupsByGroupIdMembers"];
+        put?: never;
+        /**
+         * Attach collection tasks to a task group
+         * @description Idempotent for tasks already in this group. A task may belong to at most one group.
+         */
+        post: operations["createTaskGroupsByGroupIdMembers"];
+        /**
+         * Detach a collection task from a task group
+         * @description Detach a collection task from a task group
+         */
+        delete: operations["deleteTaskGroupsByGroupIdMembers"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/tasks": {
         parameters: {
             query?: never;
@@ -1225,6 +1377,28 @@ export interface paths {
          * @description Update a task before execution history exists
          */
         patch: operations["updateTasksByTaskId"];
+        trace?: never;
+    };
+    "/v1/tasks/{taskId}/answers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Read AI answers for a single collection task
+         * @description Same contract as the task-group variant, scoped to one collection task.
+         */
+        get: operations["getTasksByTaskIdAnswers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/tasks/{taskId}/clone": {
@@ -1618,7 +1792,7 @@ export interface components {
              * @default doubao
              * @enum {string}
              */
-            provider: "doubao" | "qianwen";
+            provider: "doubao" | "qianwen" | "wenxin" | "zhipu";
         };
         AccountInflightResource: {
             /** @description Tenant account alias, i.e. the account_id returned by GET /v1/accounts */
@@ -1644,7 +1818,7 @@ export interface components {
             /** @description Always true after a successful reactivation; echoed from the row when nothing changed */
             enabled: boolean;
             /** @enum {string} */
-            provider: "doubao" | "qianwen";
+            provider: "doubao" | "qianwen" | "wenxin" | "zhipu";
             /** @description Whether this call actually flipped the account row out of its reclaimed state */
             reactivated: boolean;
             /** @description login_required right after a real reactivation, because the reclaimed login state cannot be restored; a no-op call echoes the existing status instead of downgrading it */
@@ -1657,7 +1831,7 @@ export interface components {
             /** @constant */
             enabled: false;
             /** @enum {string} */
-            provider: "doubao" | "qianwen";
+            provider: "doubao" | "qianwen" | "wenxin" | "zhipu";
             /**
              * @description The accounts column carrying the reclaim timestamp
              * @constant
@@ -1688,12 +1862,61 @@ export interface components {
             /** Format: date-time */
             last_run_at?: string | null;
             /** @enum {string} */
-            provider?: "doubao" | "qianwen";
+            provider?: "doubao" | "qianwen" | "wenxin" | "zhipu";
             /** @enum {string} */
             status?: "unknown" | "healthy" | "login_required" | "session_expired" | "verification_required" | "access_restricted" | "paused" | "cooldown" | "rate_limited" | "disabled";
             storage_state_present?: boolean;
             /** Format: date-time */
             updated_at?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        AnswerSampleAnswer: {
+            /** @description AI answer text, safe-sliced to avoid splitting surrogate pairs. */
+            answer: string;
+            /** @description Full length before slicing. */
+            answer_chars: number;
+            /** @description The platform itself appeared to be cut off mid-answer. */
+            answer_truncated?: boolean | null;
+            batch_id: number;
+            citation_count?: number;
+            /** @enum {string} */
+            platform: "doubao" | "qianwen" | "wenxin" | "zhipu";
+            question: string | null;
+            run_id: string;
+            truncated_by_length?: boolean;
+        } & {
+            [key: string]: unknown;
+        };
+        AnswerSampleResource: {
+            answers: components["schemas"]["AnswerSampleAnswer"][];
+            by_platform: {
+                [key: string]: {
+                    available: number;
+                    returned: number;
+                    sampled: number;
+                };
+            };
+            interpretation: {
+                [key: string]: unknown;
+            };
+            meta: {
+                has_more: boolean;
+                /** @description Pass back as after_id to continue. Null when the page is the last one. */
+                next_cursor: string | null;
+            } & {
+                [key: string]: unknown;
+            };
+            returned: number;
+            sample_ratio?: number | null;
+            sampled: boolean;
+            /** @description Hard ceiling on candidates examined in one call. Reaching it means results are truncated. */
+            scan_cap: number;
+            /** @description Candidates examined after applying filters; capped by scan_cap. */
+            scanned: number;
+            /** @description Same seed always selects the same answers, so a model-derived brand list can be reproduced. */
+            seed?: string | null;
+            total_available: number;
         } & {
             [key: string]: unknown;
         };
@@ -1748,7 +1971,7 @@ export interface components {
              * @default doubao
              * @enum {string}
              */
-            platform: "doubao" | "qianwen";
+            platform: "doubao" | "qianwen" | "wenxin" | "zhipu";
             project_id: number;
             /** @default 1 */
             repeats: number;
@@ -1828,7 +2051,7 @@ export interface components {
             project_id?: number;
             project_name?: string;
             /** @enum {string} */
-            provider?: "doubao" | "qianwen";
+            provider?: "doubao" | "qianwen" | "wenxin" | "zhipu";
             requested_jobs?: number | null;
             sample_size?: number | null;
             skipped_jobs?: number | null;
@@ -1836,6 +2059,18 @@ export interface components {
             started_at?: string | null;
             /** @enum {string} */
             status: "pending" | "queued" | "running" | "paused" | "completed" | "partial" | "failed" | "aborted";
+        } & {
+            [key: string]: unknown;
+        };
+        BrandMentionsResource: {
+            answer_count: number;
+            /** @constant */
+            basis: "mentioned_answers_over_valid_answers";
+            brand_count: number;
+            brands: components["schemas"]["GeoReportBrandSummary"][];
+            interpretation: {
+                [key: string]: unknown;
+            };
         } & {
             [key: string]: unknown;
         };
@@ -1848,7 +2083,7 @@ export interface components {
                 /** @description 同一账号可同时运行的浏览器数。 */
                 max_slots: number;
                 /** @enum {string} */
-                provider: "doubao" | "qianwen";
+                provider: "doubao" | "qianwen" | "wenxin" | "zhipu";
                 requires_stored_auth: boolean;
             } & {
                 [key: string]: unknown;
@@ -1993,7 +2228,7 @@ export interface components {
                 /** @description Observation surfaces behind the same sample: signed-in account, logged-out surface, or both. */
                 login_states: ("account" | "anonymous")[];
                 /** @description Platforms that contributed at least one valid run inside this period. This is what the numbers were measured on; task.platforms is only what the Task is configured for. */
-                platforms: ("doubao" | "qianwen")[];
+                platforms: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
             };
             questions: {
                 brand_mentions: number;
@@ -2036,7 +2271,7 @@ export interface components {
             task: {
                 external_id: string | null;
                 name: string;
-                platforms: ("doubao" | "qianwen")[];
+                platforms: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
                 /** @enum {string} */
                 state: "active";
                 target_brand: string | null;
@@ -2071,7 +2306,7 @@ export interface components {
         /** @description All fields are optional. Omitted fields inherit the saved Task configuration. Creating an Execution starts it immediately. */
         ExecutionCreate: {
             account_ids?: string[];
-            platforms?: ("doubao" | "qianwen")[];
+            platforms?: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
             sampling?: components["schemas"]["TaskSamplingInput"];
             /** @description Optional deterministic sampling seed. */
             seed?: string | null;
@@ -2098,7 +2333,7 @@ export interface components {
              * @description Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.
              * @enum {string|null}
              */
-            platform: "doubao" | "qianwen" | null;
+            platform: "doubao" | "qianwen" | "wenxin" | "zhipu" | null;
             progress: components["schemas"]["ExecutionProgress"];
             report_id: string | null;
             /** @example /v1/reports/rpt_0123456789abcdef0123456789abcdef */
@@ -2114,7 +2349,10 @@ export interface components {
             /** @enum {string} */
             trigger: "manual" | "rerun" | "schedule";
         };
+        /** @description Target brand is NOT accepted here. Brand metrics read runs.brand_mentioned, which is fixed at collection time; passing a brand to this endpoint would label the report with a name the numbers were never measured against. To change the measured brand, configure it on the project/task and collect again. */
         GeoCustomerReportCreate: {
+            /** @description Brands to measure mention rate for. Supply your own list: read a stratified answer sample with GET /v1/answers, have your model extract the high-frequency brands, then pass them here. OneGl never guesses entity names and keeps no brand library. Omitting this field skips brand analysis entirely rather than guessing. */
+            brands?: components["schemas"]["ReportBrandInput"][];
             /**
              * @default html
              * @constant
@@ -2123,38 +2361,61 @@ export interface components {
             /** @description Ordered stages. Supplying multiple stages stores comparable snapshots in one report. */
             periods: components["schemas"]["GeoReportPeriodInput"][];
             /** @description Defaults to the platforms configured on this Task. */
-            platforms?: ("doubao" | "qianwen")[];
+            platforms?: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
         };
         GeoCustomerReportDetails: components["schemas"]["GeoCustomerReportResource"] & {
             snapshot: components["schemas"]["GeoCustomerReportSnapshot"];
         };
         GeoCustomerReportResource: {
+            /** @description Per-platform mention statistics. Deterministic and reproducible; contains no conclusions. */
+            brand_mentions?: ({
+                answer_count: number;
+                brands: components["schemas"]["GeoReportBrandSummary"][];
+                period_key: string;
+                /** @enum {string} */
+                platform: "doubao" | "qianwen" | "wenxin" | "zhipu";
+            } & {
+                [key: string]: unknown;
+            })[];
+            /** @description Brands this report measured, echoed from the request. Empty when none were supplied. */
+            brands?: {
+                [key: string]: unknown;
+            }[];
             content_hash: string;
             /** @constant */
             format: "html";
             /** Format: date-time */
             generated_at: string;
+            /** @description Set when scope_kind is 'group'; null otherwise. */
+            group_id?: string | null;
             html_url: string;
             periods: components["schemas"]["GeoReportPeriodSummary"][];
-            platforms: ("doubao" | "qianwen")[];
+            platforms: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
             profile_version: string;
             report_id: string;
             report_url: string;
+            /**
+             * @description 'task' for a single collection task; 'group' for a cross-platform report covering every platform in the task group.
+             * @enum {string}
+             */
+            scope_kind: "task" | "group";
             /** @constant */
             status: "ready";
-            task_id: string;
+            /** @description Set when scope_kind is 'task'; null otherwise. */
+            task_id?: string | null;
             title: string;
         } & {
             [key: string]: unknown;
         };
         /** @description Immutable report snapshot and fixed-format customer HTML source data. */
         GeoCustomerReportSnapshot: {
+            /** @description One entry per platform, in the same order as scope.platforms. Empty when no brands were supplied. */
+            brand_mentions?: components["schemas"]["BrandMentionsResource"][];
+            group_id?: string | null;
             methodology: {
                 [key: string]: string;
             };
-            periods: {
-                [key: string]: unknown;
-            }[];
+            periods: components["schemas"]["GeoReportPeriodNode"][];
             profile: {
                 [key: string]: unknown;
             };
@@ -2163,11 +2424,155 @@ export interface components {
             scope: {
                 [key: string]: unknown;
             };
+            /** @enum {string} */
+            scope_kind: "task" | "group";
             target: {
                 [key: string]: unknown;
             };
-            task_id: string;
+            task_id?: string | null;
             warnings: string[];
+        } & {
+            [key: string]: unknown;
+        };
+        GeoReportBrandSummary: {
+            /** @description Mean character offset of the first mention. Lower means the platform raised it earlier — a weak signal for emphasis, not a substitute for reading the text. */
+            average_first_position?: number | null;
+            by_platform: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            examples?: {
+                [key: string]: unknown;
+            }[];
+            /** @description Terms actually matched, for verification. */
+            match_terms?: string[];
+            /** @description Total mentions; one answer mentioning a brand twice counts twice. */
+            mention_count: number;
+            mention_rate?: number | null;
+            mentioned_answers: number;
+            name: string;
+            platform_count?: number;
+            platforms?: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
+            /** @enum {string} */
+            role: "own" | "competitor" | "unspecified";
+            /** @description Answers with text on this platform; the mention-rate denominator. */
+            valid_answers: number;
+        } & {
+            [key: string]: unknown;
+        };
+        GeoReportCitationMetrics: {
+            citation_valid_runs: number;
+            /** @description Excludes icon/CDN references. */
+            content_citations: number;
+            icon_citations?: number;
+            top_articles?: ({
+                /** Format: uri */
+                canonical_url: string;
+                citations?: number;
+                covered_runs?: number;
+                domain?: string | null;
+                title?: string | null;
+            } & {
+                [key: string]: unknown;
+            })[];
+            top_domains?: ({
+                articles?: number;
+                citations: number;
+                covered_run_rate?: number | null;
+                covered_runs: number;
+                domain: string | null;
+            } & {
+                [key: string]: unknown;
+            })[];
+            tracked_content: components["schemas"]["GeoReportTrackedContent"];
+            unique_articles: number;
+            unique_domains: number;
+            /** @description source_type='visible' and visible_to_user=true. */
+            visible_citations: number;
+        } & {
+            [key: string]: unknown;
+        };
+        GeoReportCompareDomain: {
+            citations: number | null;
+            covered_runs: number | null;
+            domain: string | null;
+        };
+        /** @description Per-platform comparison. Aligned by platform, not by period key: period keys are caller-supplied strings and will not match between two reports, so using them as an alignment key silently yields zero comparable rows. When a report holds several periods, the one closest in time is used. */
+        GeoReportComparePlatform: {
+            /** Format: date */
+            base_period_from?: string | null;
+            /** @description Period key taken from the base report; usually differs from period_key. */
+            base_period_key?: string | null;
+            base_period_label?: string | null;
+            /** Format: date */
+            base_period_to?: string | null;
+            citations?: {
+                [key: string]: unknown;
+            };
+            /** Format: date */
+            period_from?: string;
+            /** @description Caller-supplied key of the period taken from the target report. */
+            period_key?: string;
+            period_label?: string;
+            /** Format: date */
+            period_to?: string;
+            /** @enum {string} */
+            platform: "doubao" | "qianwen" | "wenxin" | "zhipu";
+            /** @description False means the platform is missing from one side; deltas are null, not 0. */
+            present_in_both: boolean;
+            present_in_target?: boolean;
+            removed_since_base?: boolean;
+            runs?: {
+                [key: string]: unknown;
+            };
+            top_domains?: {
+                current?: components["schemas"]["GeoReportCompareDomain"][];
+                /** @description Domains present in target but absent from base. */
+                entered?: components["schemas"]["GeoReportCompareDomain"][];
+                /** @description Domains present in base but absent from target. */
+                exited?: components["schemas"]["GeoReportCompareDomain"][];
+                previous?: components["schemas"]["GeoReportCompareDomain"][];
+            } & {
+                [key: string]: unknown;
+            };
+            tracked_content?: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /** @description Structured deltas between two immutable report snapshots. This endpoint deliberately returns numbers only: missing metrics are null (never 0) so a caller can tell a real drop from a missing period. Natural-language conclusions are not produced here. */
+        GeoReportCompareResource: {
+            base: components["schemas"]["GeoReportCompareSide"];
+            interpretation: {
+                /** @description Always null. Interpretation belongs to the caller's own model. */
+                conclusion: null;
+                guidance: string;
+                /** @constant */
+                provided_by: "onegl";
+            } & {
+                [key: string]: unknown;
+            };
+            /** @description Caveats that make some deltas unsafe to read, e.g. tracked-article configuration changed between reports. */
+            notes: {
+                [key: string]: unknown;
+            }[];
+            platforms: components["schemas"]["GeoReportComparePlatform"][];
+            target: components["schemas"]["GeoReportCompareSide"];
+        } & {
+            [key: string]: unknown;
+        };
+        GeoReportCompareSide: {
+            /** Format: date-time */
+            generated_at: string;
+            group_id?: string | null;
+            periods: components["schemas"]["GeoReportPeriodSummary"][];
+            platforms: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
+            report_id: string;
+            /** @enum {string} */
+            scope_kind: "task" | "group";
+            task_id?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -2190,6 +2595,25 @@ export interface components {
              */
             to: string;
         };
+        GeoReportPeriodNode: {
+            /** @description Batches that started inside this period but never finished; excluded from metrics. */
+            excluded_batches?: {
+                [key: string]: unknown;
+            }[];
+            /** Format: date */
+            from: string;
+            key: string;
+            label: string;
+            platforms: components["schemas"]["GeoReportPlatformNode"][];
+            source_batches?: {
+                [key: string]: unknown;
+            }[];
+            time_zone: string;
+            /** Format: date */
+            to: string;
+        } & {
+            [key: string]: unknown;
+        };
         GeoReportPeriodSummary: {
             /** Format: date */
             from: string;
@@ -2198,6 +2622,59 @@ export interface components {
             time_zone: string;
             /** Format: date */
             to: string;
+        };
+        GeoReportPlatformNode: {
+            brand_mentions?: components["schemas"]["BrandMentionsResource"];
+            citations: components["schemas"]["GeoReportCitationMetrics"];
+            color?: string;
+            /** @enum {string} */
+            platform: "doubao" | "qianwen" | "wenxin" | "zhipu";
+            questions?: {
+                [key: string]: unknown;
+            }[];
+            runs: components["schemas"]["GeoReportRunMetrics"];
+        } & {
+            [key: string]: unknown;
+        };
+        /** @description Run-level counts for one platform in one period. */
+        GeoReportRunMetrics: {
+            answers_with_text?: number;
+            /** @description Platform assignments inside this period; unrun ones stay in the denominator. */
+            assignments: number;
+            average_answer_characters?: number | null;
+            brand_mention_rate?: number | null;
+            /** @description Null when no target brand is configured; do not read 0 as 'not mentioned'. */
+            brand_mentioned_runs?: number | null;
+            citation_valid_runs?: number;
+            failed_runs?: number;
+            partial_runs?: number;
+            reset_unconfirmed_runs?: number;
+            runs: number;
+            success_rate: number | null;
+            /** @description status in (success, partial) and conversation_reset_confirmed. */
+            valid_runs: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** @description Coverage of the caller's tracked (target) articles. All rates are null until articles are configured. */
+        GeoReportTrackedContent: {
+            /** @description Tracked articles that were cited at least once / configured articles. */
+            article_coverage_rate?: number | null;
+            articles?: {
+                [key: string]: unknown;
+            }[];
+            citations?: number | null;
+            cited_articles?: number | null;
+            configured: boolean;
+            configured_articles: number;
+            coverage_delta_percentage_points?: number | null;
+            /** @description Answers that cited any tracked article / citation-valid answers. */
+            coverage_rate?: number | null;
+            covered_runs?: number | null;
+            previous_period_key?: string | null;
+            truncated?: boolean;
+        } & {
+            [key: string]: unknown;
         };
         HealthResource: {
             auth: {
@@ -2470,7 +2947,7 @@ export interface components {
             enabled?: boolean;
             name?: string;
             /** @enum {string} */
-            provider?: "doubao" | "qianwen";
+            provider?: "doubao" | "qianwen" | "wenxin" | "zhipu";
         } & {
             [key: string]: unknown;
         };
@@ -2506,6 +2983,21 @@ export interface components {
              * @enum {string}
              */
             status: "idle" | "queued" | "running" | "completed" | "partial" | "failed";
+        };
+        ReportBrandInput: {
+            /** @description Alternate spellings. The name itself is always matched, so listing it again is harmless. */
+            aliases?: string[];
+            /** @description Regular expressions masking contexts where an alias means something else. */
+            exclude_patterns?: string[];
+            name: string;
+            /** @description Product or full-store-name variants, e.g. a brand written as 「思邈棠中式养生」 in answers but 「思邈棠」 elsewhere. */
+            product_aliases?: string[];
+            /**
+             * @description Label only; it is passed through to the report for grouping and does not change any metric.
+             * @default unspecified
+             * @enum {string}
+             */
+            role: "own" | "competitor" | "unspecified";
         };
         ReportCollection: {
             /** Format: date-time */
@@ -2719,6 +3211,11 @@ export interface components {
         };
         ReportContractRun: {
             answer_chars?: number | null;
+            /**
+             * @description How the end of the answer was decided. 'follow-up-chips' means the platform emitted an explicit finished signal; 'length-stability-fallback' and 'timeout' are guesses and the capture may be cut off at a complete sentence, which answer_truncated cannot see. Null when the field predates this check.
+             * @enum {string|null}
+             */
+            answer_completion?: "follow-up-chips" | "length-stability-fallback" | "timeout" | "unknown" | null;
             /** @description The capture looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null when the field predates this check. Exclude or separate these rows when computing mention and citation rates. */
             answer_truncated?: boolean | null;
             attempt?: number | null;
@@ -2971,7 +3468,7 @@ export interface components {
              * @description Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.
              * @enum {string|null}
              */
-            platform: "doubao" | "qianwen" | null;
+            platform: "doubao" | "qianwen" | "wenxin" | "zhipu" | null;
             report_id: string;
             report_url: string;
             /** @enum {string} */
@@ -2998,7 +3495,7 @@ export interface components {
             /** @description Observation surfaces that contributed to this report. Two entries mean the rates blend signed-out and account samples. */
             login_states?: ("account" | "anonymous")[];
             /** @enum {string} */
-            provider: "doubao_web" | "qianwen_web";
+            provider: "doubao_web" | "qianwen_web" | "wenxin_web" | "zhipu_web";
             /** @constant */
             source: "onegl";
         };
@@ -3031,7 +3528,7 @@ export interface components {
              * @description Platform the collection ran on, read from its own batch rather than the Task's platform list. Null only once the batch row itself is gone.
              * @enum {string|null}
              */
-            platform: "doubao" | "qianwen" | null;
+            platform: "doubao" | "qianwen" | "wenxin" | "zhipu" | null;
             readiness: components["schemas"]["ReportReadiness"];
             report_id: string;
             report_url: string;
@@ -3086,6 +3583,11 @@ export interface components {
             summary: number;
         };
         ResultListItem: {
+            /**
+             * @description How the end of the answer was decided. 'follow-up-chips' is the platform's own finished signal; 'length-stability-fallback' and 'timeout' are guesses and the answer may be cut at a sentence boundary, so separate or exclude those rows when computing rates. Null while no run has been recorded.
+             * @enum {string|null}
+             */
+            answer_completion?: "follow-up-chips" | "length-stability-fallback" | "timeout" | "unknown" | null;
             /** @description The captured answer looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null while no run has been recorded. Do not average these rows into a mention or citation rate. */
             answer_truncated?: boolean | null;
             /** @enum {string} */
@@ -3101,7 +3603,7 @@ export interface components {
             login_state: "account" | "anonymous" | null;
             mention_count?: number | null;
             /** @enum {string} */
-            platform: "doubao" | "qianwen";
+            platform: "doubao" | "qianwen" | "wenxin" | "zhipu";
             question: string;
             question_external_id?: string | null;
             repetition_count?: number | null;
@@ -3119,6 +3621,11 @@ export interface components {
                 mention_count: number | null;
                 text: string | null;
             };
+            /**
+             * @description How the end of the answer was decided. 'follow-up-chips' is the platform's own finished signal; 'length-stability-fallback' and 'timeout' are guesses and the answer may be cut at a sentence boundary, so separate or exclude those rows when computing rates. Null while no run has been recorded.
+             * @enum {string|null}
+             */
+            answer_completion?: "follow-up-chips" | "length-stability-fallback" | "timeout" | "unknown" | null;
             /** @description The captured answer looks cut off mid-sentence, so the platform was probably still writing when the run ended. Null while no run has been recorded. Do not average these rows into a mention or citation rate. */
             answer_truncated?: boolean | null;
             /** @enum {string} */
@@ -3133,7 +3640,7 @@ export interface components {
              */
             login_state: "account" | "anonymous" | null;
             /** @enum {string} */
-            platform: "doubao" | "qianwen";
+            platform: "doubao" | "qianwen" | "wenxin" | "zhipu";
             question: string;
             question_external_id?: string | null;
             repetition_count?: number | null;
@@ -3158,6 +3665,11 @@ export interface components {
         };
         RunResource: {
             account_id?: string | null;
+            /**
+             * @description How the end of the answer was decided. A platform that rewrites its answer block can yield a whole sentence that is still an intermediate state, which answer_truncated cannot detect.
+             * @enum {string|null}
+             */
+            answer_completion?: "follow-up-chips" | "length-stability-fallback" | "timeout" | "unknown" | null;
             /** @description The captured answer looks cut off mid-sentence: the platform was probably still writing when the run ended. */
             answer_truncated?: boolean;
             /** Format: date-time */
@@ -3171,7 +3683,7 @@ export interface components {
             project_id?: number | null;
             project_name?: string | null;
             /** @enum {string} */
-            provider?: "doubao" | "qianwen";
+            provider?: "doubao" | "qianwen" | "wenxin" | "zhipu";
             /** Format: date-time */
             started_at?: string | null;
             /** @enum {string} */
@@ -3262,7 +3774,7 @@ export interface components {
             account_ids?: string[];
             external_id?: string | null;
             name?: string;
-            platforms?: ("doubao" | "qianwen")[];
+            platforms?: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
             questions?: string[];
             sampling?: components["schemas"]["TaskSamplingInput"];
             target_brand?: string | null;
@@ -3278,18 +3790,61 @@ export interface components {
              *       "doubao"
              *     ]
              */
-            platforms: ("doubao" | "qianwen")[];
+            platforms: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
             /** @description Either plain strings (legacy, de-duplicated by text) or per-observation objects. Entries carrying `external_id` are never de-duplicated by text, so N questions x R repetitions can be submitted as N*R rows. `external_id` requires `sampling.repeats` to stay 1. */
             questions: (string | components["schemas"]["TaskQuestionEntry"])[];
             sampling?: components["schemas"]["TaskSamplingInput"];
             target_brand?: string | null;
+        };
+        TaskGroupCreate: {
+            /** @description Caller-owned key. Unique per tenant; use it to link snapshots of the same customer task over time. */
+            external_id?: string;
+            name: string;
+            tags?: string[];
+            /** @description Collection Tasks to group. A task may belong to at most one group. */
+            task_ids?: string[];
+        };
+        TaskGroupMemberInput: {
+            task_ids: string[];
+        };
+        TaskGroupMemberTask: {
+            batch_count: number;
+            name: string;
+            platforms: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
+            state: string;
+            task_id: string;
+        };
+        TaskGroupPatch: {
+            external_id?: string | null;
+            name?: string;
+            tags?: string[];
+        };
+        TaskGroupResource: {
+            /** @description Terminal collection batches across member tasks. */
+            batch_count: number;
+            /** @description Target brand when all member projects agree; null when they differ, in which case pass brand explicitly when creating a report. */
+            brand?: string | null;
+            /** Format: date-time */
+            created_at?: string;
+            external_id?: string | null;
+            group_id: string;
+            name: string;
+            platforms: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
+            run_count: number;
+            tags?: string[];
+            task_count: number;
+            tasks: components["schemas"]["TaskGroupMemberTask"][];
+            /** Format: date-time */
+            updated_at?: string;
+        } & {
+            [key: string]: unknown;
         };
         /** @description Partial Task update. Execution-shaping fields are rejected at runtime after the task has execution history; clone the task instead. */
         TaskPatch: {
             account_ids?: string[];
             external_id?: string | null;
             name?: string;
-            platforms?: ("doubao" | "qianwen")[];
+            platforms?: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
             questions?: string[];
             sampling?: components["schemas"]["TaskSamplingInput"];
             target_brand?: string | null;
@@ -3507,6 +4062,19 @@ export interface components {
         };
         /** @description Credential lacks the required scope */
         Forbidden: {
+            headers: {
+                "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description Unexpected server-side failure. Integrity checks (report_snapshot_integrity_error, report_artifact_integrity_error) surface here, and a corrupted snapshot makes the whole listing fail because every entry is hash-verified on read. */
+        InternalError: {
             headers: {
                 "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
                 "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
@@ -3749,6 +4317,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -3799,6 +4368,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -3847,6 +4417,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -3854,7 +4425,7 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description Disambiguates an account id that is bound on more than one platform. Omit when the id is unique to one platform; send it when the call answers ambiguous_account_provider. */
-                provider?: "doubao" | "qianwen";
+                provider?: "doubao" | "qianwen" | "wenxin" | "zhipu";
             };
             header?: never;
             path: {
@@ -3904,6 +4475,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -3951,6 +4523,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -3999,6 +4572,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4047,6 +4621,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4091,6 +4666,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4140,6 +4716,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4188,6 +4765,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4241,6 +4819,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4288,6 +4867,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4335,6 +4915,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4381,6 +4962,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4428,6 +5010,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4479,6 +5062,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4527,6 +5111,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4575,6 +5160,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4623,6 +5209,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4671,6 +5258,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4720,6 +5308,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4769,6 +5358,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4815,6 +5405,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4866,6 +5457,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4918,6 +5510,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -4970,6 +5563,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5021,6 +5615,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5068,6 +5663,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5124,6 +5720,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5176,6 +5773,64 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getGeoReportsCompare: {
+        parameters: {
+            query: {
+                /** @description Earlier snapshot. */
+                base_report_id: string;
+                /** @description Later snapshot to measure against the base. */
+                target_report_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Structured per-platform deltas and interpretation boundary */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["GeoReportCompareResource"];
+                    };
+                };
+            };
+            400: components["responses"]["SaasBadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            422: components["responses"]["SaasBadRequest"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5227,6 +5882,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5275,6 +5931,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5323,6 +5980,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5371,6 +6029,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5425,6 +6084,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5475,6 +6135,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5519,6 +6180,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5568,6 +6230,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5616,6 +6279,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5664,6 +6328,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5717,6 +6382,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5767,6 +6433,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5818,6 +6485,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5866,6 +6534,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5919,6 +6588,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -5967,6 +6637,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6021,6 +6692,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6065,6 +6737,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6116,6 +6789,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6163,6 +6837,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6215,6 +6890,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6281,6 +6957,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6355,6 +7032,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6412,6 +7090,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6463,6 +7142,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6510,6 +7190,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6561,6 +7242,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6612,6 +7294,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6668,6 +7351,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6724,6 +7408,667 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getTaskGroups: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Task groups visible to this tenant */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["TaskGroupResource"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createTaskGroups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskGroupCreate"];
+            };
+        };
+        responses: {
+            /** @description Created task group */
+            201: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["TaskGroupResource"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["SaasConflict"];
+            422: components["responses"]["SaasBadRequest"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getTaskGroupsByGroupId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Task group with member tasks and platform union */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["TaskGroupResource"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    deleteTaskGroupsByGroupId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deletion confirmation */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DeletedResource"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    updateTaskGroupsByGroupId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskGroupPatch"];
+            };
+        };
+        responses: {
+            /** @description Updated task group */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["TaskGroupResource"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            409: components["responses"]["SaasConflict"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getTaskGroupsByGroupIdAnswers: {
+        parameters: {
+            query?: {
+                /** @description Fraction of answers to keep per platform. 0.1 is a practical default: measured on a 122-answer sample, brands above 15% mention rate were still discovered 93–100% of the time. */
+                sample_ratio?: number;
+                /** @description Restrict to specific platforms. Repeat the parameter for more than one. */
+                platform?: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
+                /** @description Batch local start date, inclusive. */
+                from?: string;
+                /** @description Batch local start date, inclusive. */
+                to?: string;
+                limit?: number;
+                /** @description Opaque-ish cursor: pass meta.next_cursor from the previous page to continue. Answers are ordered by internal run id, so pages never overlap or skip. Combine with sample_ratio only on the first page — resampling a later page would not correspond to the first. */
+                after_id?: number;
+                /** @description Sampling seed. The same seed always yields the same answers. */
+                seed?: string;
+            };
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Answer page with coverage counts per platform and a continuation cursor */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AnswerSampleResource"];
+                    };
+                };
+            };
+            400: components["responses"]["SaasBadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            422: components["responses"]["SaasBadRequest"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getTaskGroupsByGroupIdGeoReports: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque next_cursor returned by the previous page. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Report history with opaque cursor pagination */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["GeoCustomerReportResource"][];
+                        meta: components["schemas"]["PageMeta"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createTaskGroupsByGroupIdGeoReports: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Recommended for create/execute requests. Reusing the same key with the same request replays the first response; reusing it with a different body returns idempotency_conflict. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "brands": [
+                 *         {
+                 *           "aliases": [
+                 *             "别名"
+                 *           ],
+                 *           "name": "某竞品",
+                 *           "product_aliases": [
+                 *             "某竞品旗舰店"
+                 *           ],
+                 *           "role": "competitor"
+                 *         }
+                 *       ],
+                 *       "format": "html",
+                 *       "periods": [
+                 *         {
+                 *           "from": "2026-09-01",
+                 *           "key": "baseline",
+                 *           "label": "基线阶段",
+                 *           "time_zone": "Asia/Shanghai",
+                 *           "to": "2026-09-07"
+                 *         },
+                 *         {
+                 *           "from": "2026-09-22",
+                 *           "key": "follow-up",
+                 *           "label": "优化后",
+                 *           "time_zone": "Asia/Shanghai",
+                 *           "to": "2026-09-28"
+                 *         }
+                 *       ],
+                 *       "platforms": [
+                 *         "qianwen",
+                 *         "doubao"
+                 *       ]
+                 *     }
+                 */
+                "application/json": components["schemas"]["GeoCustomerReportCreate"];
+            };
+        };
+        responses: {
+            /** @description Generated report resource and download URLs */
+            201: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["GeoCustomerReportResource"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["SaasConflict"];
+            422: components["responses"]["SaasBadRequest"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getTaskGroupsByGroupIdMembers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Member collection tasks */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["TaskGroupMemberTask"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createTaskGroupsByGroupIdMembers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskGroupMemberInput"];
+            };
+        };
+        responses: {
+            /** @description Task group after attaching */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["TaskGroupResource"];
+                    };
+                };
+            };
+            400: components["responses"]["SaasBadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    deleteTaskGroupsByGroupIdMembers: {
+        parameters: {
+            query: {
+                /** @description Internal task id from the members listing. */
+                task_id: number;
+            };
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Detach confirmation */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            removed?: boolean;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["SaasBadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6777,6 +8122,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6855,6 +8201,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6906,6 +8253,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -6957,6 +8305,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7014,6 +8363,70 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getTasksByTaskIdAnswers: {
+        parameters: {
+            query?: {
+                sample_ratio?: number;
+                platform?: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
+                from?: string;
+                to?: string;
+                limit?: number;
+                /** @description Continuation cursor from meta.next_cursor of the previous page. */
+                after_id?: number;
+                seed?: string;
+            };
+            header?: never;
+            path: {
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Answer sample with coverage counts per platform */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AnswerSampleResource"];
+                    };
+                };
+            };
+            400: components["responses"]["SaasBadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            422: components["responses"]["SaasBadRequest"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7074,6 +8487,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7125,6 +8539,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7181,6 +8596,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7243,6 +8659,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7299,6 +8716,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7385,6 +8803,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7441,6 +8860,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7497,6 +8917,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7572,6 +8993,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7616,6 +9038,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7660,6 +9083,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7710,6 +9134,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7754,6 +9179,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };
@@ -7802,6 +9228,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaasError"];
                 };
             };
+            500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };

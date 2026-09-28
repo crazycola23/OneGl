@@ -35,6 +35,7 @@ import {
   statusTone,
   truncate,
 } from "./format.js";
+import { providerBadge } from "./conversations.js";
 
 /* ------------------------------------------------------------ 通用小组件 */
 
@@ -872,9 +873,20 @@ export function runsPage({
   const selected = (value, current) => (String(value ?? "") === String(current ?? "") ? " selected" : "");
   body.push(
     panel("筛选", {
-      hint: "按项目、批次、账号或错误码定位到具体一次运行",
+      hint: "关键词同时匹配问题与 AI 回答正文，支持中文任意子串",
       body: `<div class="card-body pad">
         <form method="get" action="/runs" class="form-row">
+          <div class="field grow"><label>关键词（问题 + 回答）</label>
+            <input type="search" name="q" value="${escapeHtml(filterState.query ?? "")}" placeholder="例如：思邈棠 / 携程 / 医保" /></div>
+          <div class="field grow"><label>平台</label>
+            <select name="provider">
+              <option value="">全部平台</option>
+              ${[...new Set(runs.map((r) => r.provider).filter(Boolean))]
+                .map(
+                  (p) => `<option value="${escapeHtml(p)}"${selected(p, filterState.provider)}>${escapeHtml(p)}</option>`,
+                )
+                .join("")}
+            </select></div>
           <div class="field grow"><label>项目</label>
             <select name="project">
               <option value="">全部项目</option>
@@ -946,12 +958,15 @@ export function runsPage({
                   : ""
               }` },
           { label: "账号", render: (row) => `<code>${escapeHtml(row.account_key ?? "—")}</code>` },
+          { label: "平台", render: (row) => (row.provider ? providerBadge(row.provider) : "—") },
           { label: "新会话", render: (row) => resetBadge(row.conversation_reset_confirmed) },
           { label: "引用", align: "right", render: (row) => citationCell(row) },
           { label: "回答", align: "right", render: (row) =>
-              row.answer_chars == null ? "—" : `${num(row.answer_chars)} 字` },
+              row.answer_chars == null ? "—" : `${num(row.answer_chars)} 字${
+                row.answer_truncated ? ' <span class="risky">截断</span>' : ""
+              }` },
           { label: "错误", render: (row) => (row.error_code ? badge(error_code_short(row.error_code), "bad") : "—") },
-          { label: "问题", render: (row) => escapeHtml(truncate(row.prompt, 38)) },
+          { label: "问题", render: (row) => escapeHtml(truncate(row.prompt, 46)) },
           { label: "时间", className: "nowrap", render: (row) => dateTime(row.started_at) },
         ],
         rows: runs,

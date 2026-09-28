@@ -175,4 +175,142 @@ footer {
   font-size: 11px;
   font-weight: 750;
 }
+
+/* ------------------------------------------------------------ 对话档案 */
+/* 档案页的核心是「读原文」，所以排版以可读性优先：正文行高放宽、
+   引用域名做成小标签便于扫读、折叠项默认收起避免一次铺开几十屏。 */
+
+.cv-list { display: flex; flex-direction: column; gap: 6px; }
+
+.cv-item {
+  border: 1px solid var(--border-solid);
+  border-radius: 9px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.cv-item[data-tone="bad"] { border-color: var(--bad-line); }
+
+.cv-item > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 13px;
+  cursor: pointer;
+  list-style: none;
+  flex-wrap: wrap;
+}
+.cv-item > summary::-webkit-details-marker { display: none; }
+.cv-item > summary:hover { background: var(--surface-2); }
+.cv-item[open] > summary { border-bottom: 1px solid var(--border); }
+
+.cv-item-status, .cv-item-provider { flex: none; }
+.cv-item-q { font-size: 13.5px; font-weight: 550; flex: 1 1 260px; min-width: 0; }
+.cv-item-meta {
+  flex: none;
+  color: var(--text-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cv-item-body { padding: 13px 15px 15px; }
+.cv-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  margin: 12px 0 5px;
+  text-transform: uppercase;
+}
+.cv-item-body > .cv-label:first-child { margin-top: 0; }
+
+.cv-q-full {
+  padding: 9px 12px;
+  background: var(--surface-2);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 7px 7px 0;
+  font-size: 13.5px;
+  font-weight: 550;
+}
+
+/* 回答正文：只转义不渲染 markdown，保证屏幕上看到的就是数据库里的原文。 */
+.cv-answer {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.85;
+  font-size: 13.5px;
+  color: var(--text);
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 32rem;
+  overflow-y: auto;
+}
+.cv-empty { color: var(--text-3); font-size: 13px; padding: 10px 0; }
+
+.cv-marks { margin: 7px 0 0; display: flex; gap: 6px; flex-wrap: wrap; }
+
+.cv-item-foot {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin-top: 13px;
+  padding-top: 11px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.cv-domains { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.cv-domain {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-family: var(--mono, ui-monospace, monospace);
+}
+.cv-domain-more { color: var(--text-3); font-size: 11.5px; align-self: center; }
+
+/* ---------------------------------------------------- 跨平台并排对照 */
+
+.cv-pairs { display: flex; flex-direction: column; gap: 14px; }
+
+.cv-pair {
+  border: 1px solid var(--border-solid);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.cv-pair-q {
+  padding: 10px 14px;
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.cv-pair-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+}
+.cv-pair-col { background: var(--surface); padding: 11px 13px 13px; min-width: 0; }
+.cv-pair-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.cv-pair-col .cv-answer { max-height: 20rem; font-size: 13px; }
+.cv-pair-foot { margin-top: 9px; font-size: 11.5px; color: var(--text-3); }
+
+/* 单列：窄屏下并排会挤成两栏细缝，此时改为上下堆叠。 */
+@media (max-width: 900px) {
+  .cv-pair-cols { grid-template-columns: 1fr; }
+}
 `;

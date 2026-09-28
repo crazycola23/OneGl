@@ -104,6 +104,30 @@
           }
         }
       },
+      "InternalError": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Unexpected server-side failure. Integrity checks (report_snapshot_integrity_error, report_artifact_integrity_error) surface here, and a corrupted snapshot makes the whole listing fail because every entry is hash-verified on read.",
+        "headers": {
+          "X-OneGl-Request-Id": {
+            "$ref": "#/components/headers/OneGlRequestId"
+          },
+          "X-RateLimit-Limit": {
+            "$ref": "#/components/headers/OneGlRateLimitLimit"
+          },
+          "X-RateLimit-Remaining": {
+            "$ref": "#/components/headers/OneGlRateLimitRemaining"
+          },
+          "X-RateLimit-Reset": {
+            "$ref": "#/components/headers/OneGlRateLimitReset"
+          }
+        }
+      },
       "NotFound": {
         "content": {
           "application/json": {
@@ -583,6 +607,172 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "AnswerSampleAnswer": {
+        "additionalProperties": true,
+        "properties": {
+          "answer": {
+            "description": "AI answer text, safe-sliced to avoid splitting surrogate pairs.",
+            "type": "string"
+          },
+          "answer_chars": {
+            "description": "Full length before slicing.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "answer_truncated": {
+            "description": "The platform itself appeared to be cut off mid-answer.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "batch_id": {
+            "type": "integer"
+          },
+          "citation_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "platform": {
+            "enum": [
+              "doubao",
+              "qianwen",
+              "wenxin",
+              "zhipu"
+            ],
+            "type": "string"
+          },
+          "question": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "truncated_by_length": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run_id",
+          "batch_id",
+          "platform",
+          "question",
+          "answer",
+          "answer_chars"
+        ],
+        "type": "object"
+      },
+      "AnswerSampleResource": {
+        "additionalProperties": true,
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/AnswerSampleAnswer"
+            },
+            "type": "array"
+          },
+          "by_platform": {
+            "additionalProperties": {
+              "properties": {
+                "available": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "returned": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "sampled": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "available",
+                "sampled",
+                "returned"
+              ],
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "interpretation": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "properties": {
+              "has_more": {
+                "type": "boolean"
+              },
+              "next_cursor": {
+                "description": "Pass back as after_id to continue. Null when the page is the last one.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "has_more",
+              "next_cursor"
+            ],
+            "type": "object"
+          },
+          "returned": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sample_ratio": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "sampled": {
+            "type": "boolean"
+          },
+          "scan_cap": {
+            "description": "Hard ceiling on candidates examined in one call. Reaching it means results are truncated.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "scanned": {
+            "description": "Candidates examined after applying filters; capped by scan_cap.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "seed": {
+            "description": "Same seed always selects the same answers, so a model-derived brand list can be reproduced.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total_available": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sampled",
+          "scanned",
+          "scan_cap",
+          "total_available",
+          "returned",
+          "by_platform",
+          "meta",
+          "answers",
+          "interpretation"
+        ],
         "type": "object"
       },
       "ApiClientResource": {
@@ -1177,6 +1367,41 @@
         "required": [
           "id",
           "status"
+        ],
+        "type": "object"
+      },
+      "BrandMentionsResource": {
+        "additionalProperties": true,
+        "properties": {
+          "answer_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "basis": {
+            "const": "mentioned_answers_over_valid_answers",
+            "type": "string"
+          },
+          "brand_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "brands": {
+            "items": {
+              "$ref": "#/components/schemas/GeoReportBrandSummary"
+            },
+            "type": "array"
+          },
+          "interpretation": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "answer_count",
+          "brand_count",
+          "basis",
+          "brands",
+          "interpretation"
         ],
         "type": "object"
       },
@@ -2476,7 +2701,16 @@
       },
       "GeoCustomerReportCreate": {
         "additionalProperties": false,
+        "description": "Target brand is NOT accepted here. Brand metrics read runs.brand_mentioned, which is fixed at collection time; passing a brand to this endpoint would label the report with a name the numbers were never measured against. To change the measured brand, configure it on the project/task and collect again.",
         "properties": {
+          "brands": {
+            "description": "Brands to measure mention rate for. Supply your own list: read a stratified answer sample with GET /v1/answers, have your model extract the high-frequency brands, then pass them here. OneGl never guesses entity names and keeps no brand library. Omitting this field skips brand analysis entirely rather than guessing.",
+            "items": {
+              "$ref": "#/components/schemas/ReportBrandInput"
+            },
+            "maxItems": 50,
+            "type": "array"
+          },
           "format": {
             "const": "html",
             "default": "html",
@@ -2534,6 +2768,52 @@
       "GeoCustomerReportResource": {
         "additionalProperties": true,
         "properties": {
+          "brand_mentions": {
+            "description": "Per-platform mention statistics. Deterministic and reproducible; contains no conclusions.",
+            "items": {
+              "additionalProperties": true,
+              "properties": {
+                "answer_count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "brands": {
+                  "items": {
+                    "$ref": "#/components/schemas/GeoReportBrandSummary"
+                  },
+                  "type": "array"
+                },
+                "period_key": {
+                  "type": "string"
+                },
+                "platform": {
+                  "enum": [
+                    "doubao",
+                    "qianwen",
+                    "wenxin",
+                    "zhipu"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "period_key",
+                "platform",
+                "answer_count",
+                "brands"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "brands": {
+            "description": "Brands this report measured, echoed from the request. Empty when none were supplied.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
           "content_hash": {
             "pattern": "^[a-f0-9]{64}$",
             "type": "string"
@@ -2545,6 +2825,18 @@
           "generated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "pattern": "^grp_[a-f0-9]{32}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when scope_kind is 'group'; null otherwise."
           },
           "html_url": {
             "type": "string"
@@ -2577,13 +2869,24 @@
           "report_url": {
             "type": "string"
           },
+          "scope_kind": {
+            "description": "'task' for a single collection task; 'group' for a cross-platform report covering every platform in the task group.",
+            "enum": [
+              "task",
+              "group"
+            ],
+            "type": "string"
+          },
           "status": {
             "const": "ready",
             "type": "string"
           },
           "task_id": {
-            "pattern": "^tsk_[a-f0-9]{32}$",
-            "type": "string"
+            "description": "Set when scope_kind is 'task'; null otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "title": {
             "type": "string"
@@ -2591,7 +2894,7 @@
         },
         "required": [
           "report_id",
-          "task_id",
+          "scope_kind",
           "status",
           "format",
           "title",
@@ -2609,6 +2912,19 @@
         "additionalProperties": true,
         "description": "Immutable report snapshot and fixed-format customer HTML source data.",
         "properties": {
+          "brand_mentions": {
+            "description": "One entry per platform, in the same order as scope.platforms. Empty when no brands were supplied.",
+            "items": {
+              "$ref": "#/components/schemas/BrandMentionsResource"
+            },
+            "type": "array"
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "methodology": {
             "additionalProperties": {
               "type": "string"
@@ -2617,8 +2933,7 @@
           },
           "periods": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/GeoReportPeriodNode"
             },
             "type": "array"
           },
@@ -2637,13 +2952,22 @@
             "additionalProperties": true,
             "type": "object"
           },
+          "scope_kind": {
+            "enum": [
+              "task",
+              "group"
+            ],
+            "type": "string"
+          },
           "target": {
             "additionalProperties": true,
             "type": "object"
           },
           "task_id": {
-            "pattern": "^tsk_[a-f0-9]{32}$",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "warnings": {
             "items": {
@@ -2654,7 +2978,7 @@
         },
         "required": [
           "report_id",
-          "task_id",
+          "scope_kind",
           "schema_version",
           "target",
           "profile",
@@ -2662,6 +2986,475 @@
           "periods",
           "methodology",
           "warnings"
+        ],
+        "type": "object"
+      },
+      "GeoReportBrandSummary": {
+        "additionalProperties": true,
+        "properties": {
+          "average_first_position": {
+            "description": "Mean character offset of the first mention. Lower means the platform raised it earlier — a weak signal for emphasis, not a substitute for reading the text.",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "by_platform": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "examples": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "match_terms": {
+            "description": "Terms actually matched, for verification.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mention_count": {
+            "description": "Total mentions; one answer mentioning a brand twice counts twice.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mention_rate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "mentioned_answers": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "platform_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "platforms": {
+            "items": {
+              "enum": [
+                "doubao",
+                "qianwen",
+                "wenxin",
+                "zhipu"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "role": {
+            "enum": [
+              "own",
+              "competitor",
+              "unspecified"
+            ],
+            "type": "string"
+          },
+          "valid_answers": {
+            "description": "Answers with text on this platform; the mention-rate denominator.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "role",
+          "valid_answers",
+          "mentioned_answers",
+          "mention_count",
+          "by_platform"
+        ],
+        "type": "object"
+      },
+      "GeoReportCitationMetrics": {
+        "additionalProperties": true,
+        "properties": {
+          "citation_valid_runs": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "content_citations": {
+            "description": "Excludes icon/CDN references.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "icon_citations": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "top_articles": {
+            "items": {
+              "additionalProperties": true,
+              "properties": {
+                "canonical_url": {
+                  "format": "uri",
+                  "type": "string"
+                },
+                "citations": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "covered_runs": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "domain": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "canonical_url"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "top_domains": {
+            "items": {
+              "additionalProperties": true,
+              "properties": {
+                "articles": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "citations": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "covered_run_rate": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "covered_runs": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "domain": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "domain",
+                "citations",
+                "covered_runs"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "tracked_content": {
+            "$ref": "#/components/schemas/GeoReportTrackedContent"
+          },
+          "unique_articles": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unique_domains": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "visible_citations": {
+            "description": "source_type='visible' and visible_to_user=true.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "citation_valid_runs",
+          "visible_citations",
+          "content_citations",
+          "unique_articles",
+          "unique_domains",
+          "tracked_content"
+        ],
+        "type": "object"
+      },
+      "GeoReportCompareDomain": {
+        "properties": {
+          "citations": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "covered_runs": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "domain",
+          "citations",
+          "covered_runs"
+        ],
+        "type": "object"
+      },
+      "GeoReportComparePlatform": {
+        "additionalProperties": true,
+        "description": "Per-platform comparison. Aligned by platform, not by period key: period keys are caller-supplied strings and will not match between two reports, so using them as an alignment key silently yields zero comparable rows. When a report holds several periods, the one closest in time is used.",
+        "properties": {
+          "base_period_from": {
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "base_period_key": {
+            "description": "Period key taken from the base report; usually differs from period_key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "base_period_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "base_period_to": {
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "citations": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "period_from": {
+            "format": "date",
+            "type": "string"
+          },
+          "period_key": {
+            "description": "Caller-supplied key of the period taken from the target report.",
+            "type": "string"
+          },
+          "period_label": {
+            "type": "string"
+          },
+          "period_to": {
+            "format": "date",
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "doubao",
+              "qianwen",
+              "wenxin",
+              "zhipu"
+            ],
+            "type": "string"
+          },
+          "present_in_both": {
+            "description": "False means the platform is missing from one side; deltas are null, not 0.",
+            "type": "boolean"
+          },
+          "present_in_target": {
+            "type": "boolean"
+          },
+          "removed_since_base": {
+            "type": "boolean"
+          },
+          "runs": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "top_domains": {
+            "additionalProperties": true,
+            "properties": {
+              "current": {
+                "items": {
+                  "$ref": "#/components/schemas/GeoReportCompareDomain"
+                },
+                "type": "array"
+              },
+              "entered": {
+                "description": "Domains present in target but absent from base.",
+                "items": {
+                  "$ref": "#/components/schemas/GeoReportCompareDomain"
+                },
+                "type": "array"
+              },
+              "exited": {
+                "description": "Domains present in base but absent from target.",
+                "items": {
+                  "$ref": "#/components/schemas/GeoReportCompareDomain"
+                },
+                "type": "array"
+              },
+              "previous": {
+                "items": {
+                  "$ref": "#/components/schemas/GeoReportCompareDomain"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "tracked_content": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "platform",
+          "present_in_both"
+        ],
+        "type": "object"
+      },
+      "GeoReportCompareResource": {
+        "additionalProperties": true,
+        "description": "Structured deltas between two immutable report snapshots. This endpoint deliberately returns numbers only: missing metrics are null (never 0) so a caller can tell a real drop from a missing period. Natural-language conclusions are not produced here.",
+        "properties": {
+          "base": {
+            "$ref": "#/components/schemas/GeoReportCompareSide"
+          },
+          "interpretation": {
+            "additionalProperties": true,
+            "properties": {
+              "conclusion": {
+                "description": "Always null. Interpretation belongs to the caller's own model.",
+                "type": "null"
+              },
+              "guidance": {
+                "type": "string"
+              },
+              "provided_by": {
+                "const": "onegl",
+                "type": "string"
+              }
+            },
+            "required": [
+              "provided_by",
+              "conclusion",
+              "guidance"
+            ],
+            "type": "object"
+          },
+          "notes": {
+            "description": "Caveats that make some deltas unsafe to read, e.g. tracked-article configuration changed between reports.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "platforms": {
+            "items": {
+              "$ref": "#/components/schemas/GeoReportComparePlatform"
+            },
+            "type": "array"
+          },
+          "target": {
+            "$ref": "#/components/schemas/GeoReportCompareSide"
+          }
+        },
+        "required": [
+          "base",
+          "target",
+          "platforms",
+          "notes",
+          "interpretation"
+        ],
+        "type": "object"
+      },
+      "GeoReportCompareSide": {
+        "additionalProperties": true,
+        "properties": {
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "periods": {
+            "items": {
+              "$ref": "#/components/schemas/GeoReportPeriodSummary"
+            },
+            "type": "array"
+          },
+          "platforms": {
+            "items": {
+              "enum": [
+                "doubao",
+                "qianwen",
+                "wenxin",
+                "zhipu"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "report_id": {
+            "pattern": "^rpt_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "scope_kind": {
+            "enum": [
+              "task",
+              "group"
+            ],
+            "type": "string"
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "report_id",
+          "scope_kind",
+          "generated_at",
+          "platforms",
+          "periods"
         ],
         "type": "object"
       },
@@ -2700,6 +3493,58 @@
         ],
         "type": "object"
       },
+      "GeoReportPeriodNode": {
+        "additionalProperties": true,
+        "properties": {
+          "excluded_batches": {
+            "description": "Batches that started inside this period but never finished; excluded from metrics.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "from": {
+            "format": "date",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "platforms": {
+            "items": {
+              "$ref": "#/components/schemas/GeoReportPlatformNode"
+            },
+            "type": "array"
+          },
+          "source_batches": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "time_zone": {
+            "type": "string"
+          },
+          "to": {
+            "format": "date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "from",
+          "to",
+          "time_zone",
+          "platforms"
+        ],
+        "type": "object"
+      },
       "GeoReportPeriodSummary": {
         "additionalProperties": false,
         "properties": {
@@ -2727,6 +3572,197 @@
           "from",
           "to",
           "time_zone"
+        ],
+        "type": "object"
+      },
+      "GeoReportPlatformNode": {
+        "additionalProperties": true,
+        "properties": {
+          "brand_mentions": {
+            "$ref": "#/components/schemas/BrandMentionsResource"
+          },
+          "citations": {
+            "$ref": "#/components/schemas/GeoReportCitationMetrics"
+          },
+          "color": {
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "doubao",
+              "qianwen",
+              "wenxin",
+              "zhipu"
+            ],
+            "type": "string"
+          },
+          "questions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "runs": {
+            "$ref": "#/components/schemas/GeoReportRunMetrics"
+          }
+        },
+        "required": [
+          "platform",
+          "runs",
+          "citations"
+        ],
+        "type": "object"
+      },
+      "GeoReportRunMetrics": {
+        "additionalProperties": true,
+        "description": "Run-level counts for one platform in one period.",
+        "properties": {
+          "answers_with_text": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "assignments": {
+            "description": "Platform assignments inside this period; unrun ones stay in the denominator.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "average_answer_characters": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "brand_mention_rate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "brand_mentioned_runs": {
+            "description": "Null when no target brand is configured; do not read 0 as 'not mentioned'.",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "citation_valid_runs": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "failed_runs": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "partial_runs": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reset_unconfirmed_runs": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "runs": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "success_rate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "valid_runs": {
+            "description": "status in (success, partial) and conversation_reset_confirmed.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "valid_runs",
+          "runs",
+          "assignments",
+          "success_rate"
+        ],
+        "type": "object"
+      },
+      "GeoReportTrackedContent": {
+        "additionalProperties": true,
+        "description": "Coverage of the caller's tracked (target) articles. All rates are null until articles are configured.",
+        "properties": {
+          "article_coverage_rate": {
+            "description": "Tracked articles that were cited at least once / configured articles.",
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "articles": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "citations": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cited_articles": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "configured_articles": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "coverage_delta_percentage_points": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "coverage_rate": {
+            "description": "Answers that cited any tracked article / citation-valid answers.",
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "covered_runs": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "previous_period_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "configured",
+          "configured_articles"
         ],
         "type": "object"
       },
@@ -3748,6 +4784,59 @@
           "status",
           "generation",
           "stale"
+        ],
+        "type": "object"
+      },
+      "ReportBrandInput": {
+        "additionalProperties": false,
+        "properties": {
+          "aliases": {
+            "description": "Alternate spellings. The name itself is always matched, so listing it again is harmless.",
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "type": "array"
+          },
+          "exclude_patterns": {
+            "description": "Regular expressions masking contexts where an alias means something else.",
+            "items": {
+              "maxLength": 200,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "product_aliases": {
+            "description": "Product or full-store-name variants, e.g. a brand written as 「思邈棠中式养生」 in answers but 「思邈棠」 elsewhere.",
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "type": "array"
+          },
+          "role": {
+            "default": "unspecified",
+            "description": "Label only; it is passed through to the report for grouping and does not change any metric.",
+            "enum": [
+              "own",
+              "competitor",
+              "unspecified"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
         ],
         "type": "object"
       },
@@ -7290,6 +8379,206 @@
         ],
         "type": "object"
       },
+      "TaskGroupCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "external_id": {
+            "description": "Caller-owned key. Unique per tenant; use it to link snapshots of the same customer task over time.",
+            "pattern": "^[A-Za-z0-9._:-]{1,200}$",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 50,
+            "type": "array"
+          },
+          "task_ids": {
+            "description": "Collection Tasks to group. A task may belong to at most one group.",
+            "items": {
+              "pattern": "^tsk_[a-f0-9]{32}$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "TaskGroupMemberInput": {
+        "additionalProperties": false,
+        "properties": {
+          "task_ids": {
+            "items": {
+              "pattern": "^tsk_[a-f0-9]{32}$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "task_ids"
+        ],
+        "type": "object"
+      },
+      "TaskGroupMemberTask": {
+        "properties": {
+          "batch_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "platforms": {
+            "items": {
+              "enum": [
+                "doubao",
+                "qianwen",
+                "wenxin",
+                "zhipu"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "state": {
+            "type": "string"
+          },
+          "task_id": {
+            "pattern": "^tsk_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "name",
+          "platforms",
+          "state",
+          "batch_count"
+        ],
+        "type": "object"
+      },
+      "TaskGroupPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "external_id": {
+            "pattern": "^[A-Za-z0-9._:-]{1,200}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 50,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "TaskGroupResource": {
+        "additionalProperties": true,
+        "properties": {
+          "batch_count": {
+            "description": "Terminal collection batches across member tasks.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "brand": {
+            "description": "Target brand when all member projects agree; null when they differ, in which case pass brand explicitly when creating a report.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "external_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "pattern": "^grp_[a-f0-9]{32}$",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "platforms": {
+            "items": {
+              "enum": [
+                "doubao",
+                "qianwen",
+                "wenxin",
+                "zhipu"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "run_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "task_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskGroupMemberTask"
+            },
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "group_id",
+          "name",
+          "platforms",
+          "task_count",
+          "tasks",
+          "batch_count",
+          "run_count"
+        ],
+        "type": "object"
+      },
       "TaskPatch": {
         "additionalProperties": false,
         "description": "Partial Task update. Execution-shaping fields are rejected at runtime after the task has execution history; clone the task instead.",
@@ -8193,6 +9482,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -8292,6 +9584,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -8379,6 +9674,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -8523,6 +9821,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -8610,6 +9911,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -8722,6 +10026,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -8809,6 +10116,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -8910,6 +10220,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -9006,6 +10319,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -9096,6 +10412,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -9208,6 +10527,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -9295,6 +10617,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -9406,6 +10731,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -9488,6 +10816,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -9608,6 +10939,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -9710,6 +11044,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -9797,6 +11134,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -9898,6 +11238,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -9997,6 +11340,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -10100,6 +11446,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -10216,6 +11565,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -10319,6 +11671,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -10403,6 +11758,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -10507,6 +11865,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -10639,6 +12000,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -10758,6 +12122,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -10862,6 +12229,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -10961,6 +12331,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -11105,6 +12478,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -11236,6 +12612,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -11243,6 +12622,141 @@
         "summary": "Resume only unfinished work",
         "tags": [
           "Executions"
+        ]
+      }
+    },
+    "/v1/geo-reports/compare": {
+      "get": {
+        "description": "Aligns two immutable snapshots by period and platform and returns per-metric deltas plus source-structure changes. Returns numbers only: a missing metric is null rather than 0, so callers can distinguish a real drop from a period or platform that was not collected. Natural-language conclusions are intentionally not produced — generate them with your own model from these deltas.",
+        "operationId": "getGeoReportsCompare",
+        "parameters": [
+          {
+            "description": "Earlier snapshot.",
+            "in": "query",
+            "name": "base_report_id",
+            "required": true,
+            "schema": {
+              "pattern": "^rpt_[a-f0-9]{32}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Later snapshot to measure against the base.",
+            "in": "query",
+            "name": "target_report_id",
+            "required": true,
+            "schema": {
+              "pattern": "^rpt_[a-f0-9]{32}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/GeoReportCompareResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Structured per-platform deltas and interpretation boundary",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Compare two GEO report snapshots",
+        "tags": [
+          "Reports"
         ]
       }
     },
@@ -11339,6 +12853,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -11442,6 +12959,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -11542,6 +13062,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -11627,6 +13150,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -11742,6 +13268,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -11832,6 +13361,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -11943,6 +13475,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -12039,6 +13574,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -12126,6 +13664,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -12229,6 +13770,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -12341,6 +13885,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -12428,6 +13975,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -12538,6 +14088,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -12653,6 +14206,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -12764,6 +14320,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -12854,6 +14413,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -12969,6 +14531,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -13056,6 +14621,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -13161,6 +14729,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -13260,6 +14831,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -13387,6 +14961,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -13535,6 +15112,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -13747,6 +15327,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -13879,6 +15462,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -14020,6 +15606,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -14119,6 +15708,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -14235,6 +15827,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -14336,6 +15931,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -14463,6 +16061,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -14595,6 +16196,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -14616,6 +16220,1478 @@
           }
         }
       ]
+    },
+    "/v1/task-groups": {
+      "get": {
+        "description": "Task groups are the cross-platform task abstraction: one customer task, one collection task per platform.",
+        "operationId": "getTaskGroups",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/TaskGroupResource"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Task groups visible to this tenant",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "List task groups",
+        "tags": [
+          "Observability"
+        ]
+      },
+      "post": {
+        "description": "Create a task group",
+        "operationId": "createTaskGroups",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskGroupCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TaskGroupResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created task group",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/SaasConflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Create a task group",
+        "tags": [
+          "Observability"
+        ]
+      }
+    },
+    "/v1/task-groups/{groupId}": {
+      "delete": {
+        "description": "Removes the group and its membership rows. Member collection tasks and their reports are not deleted.",
+        "operationId": "deleteTaskGroupsByGroupId",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/DeletedResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Deletion confirmation",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Delete a task group",
+        "tags": [
+          "Observability"
+        ]
+      },
+      "get": {
+        "description": "Get a task group",
+        "operationId": "getTaskGroupsByGroupId",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TaskGroupResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Task group with member tasks and platform union",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Get a task group",
+        "tags": [
+          "Observability"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "groupId",
+          "required": true,
+          "schema": {
+            "example": "grp_0123456789abcdef0123456789abcdef",
+            "pattern": "^grp_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "description": "Update task group metadata",
+        "operationId": "updateTaskGroupsByGroupId",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskGroupPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TaskGroupResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Updated task group",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/SaasConflict"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Update task group metadata",
+        "tags": [
+          "Observability"
+        ]
+      }
+    },
+    "/v1/task-groups/{groupId}/answers": {
+      "get": {
+        "description": "Returns AI answer text so a caller can run its own model over a sample to discover which brands the answers mention, then pass that list back via the reports' brands parameter. OneGl does not extract entity names: deciding what counts as a business name is a semantic judgement, and a suffix word list would break on every new industry. Sampling is stratified per platform because platform volumes differ widely; a pooled sample would leave the smaller platform with too few answers to discover its own brands.",
+        "operationId": "getTaskGroupsByGroupIdAnswers",
+        "parameters": [
+          {
+            "description": "Fraction of answers to keep per platform. 0.1 is a practical default: measured on a 122-answer sample, brands above 15% mention rate were still discovered 93–100% of the time.",
+            "in": "query",
+            "name": "sample_ratio",
+            "schema": {
+              "default": 1,
+              "exclusiveMinimum": 0,
+              "maximum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Restrict to specific platforms. Repeat the parameter for more than one.",
+            "explode": true,
+            "in": "query",
+            "name": "platform",
+            "schema": {
+              "items": {
+                "enum": [
+                  "doubao",
+                  "qianwen",
+                  "wenxin",
+                  "zhipu"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "description": "Batch local start date, inclusive.",
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "format": "date",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Batch local start date, inclusive.",
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "format": "date",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque-ish cursor: pass meta.next_cursor from the previous page to continue. Answers are ordered by internal run id, so pages never overlap or skip. Combine with sample_ratio only on the first page — resampling a later page would not correspond to the first.",
+            "in": "query",
+            "name": "after_id",
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Sampling seed. The same seed always yields the same answers.",
+            "in": "query",
+            "name": "seed",
+            "schema": {
+              "maxLength": 64,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AnswerSampleResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Answer page with coverage counts per platform and a continuation cursor",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Read AI answers for a task group, optionally stratified-sampled",
+        "tags": [
+          "Observability"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "groupId",
+          "required": true,
+          "schema": {
+            "example": "grp_0123456789abcdef0123456789abcdef",
+            "pattern": "^grp_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/v1/task-groups/{groupId}/geo-reports": {
+      "get": {
+        "description": "Every snapshot generated for this group, newest first. Use this to pick the reports to compare.",
+        "operationId": "getTaskGroupsByGroupIdGeoReports",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque next_cursor returned by the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/GeoCustomerReportResource"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/PageMeta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Report history with opaque cursor pagination",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "List report history for a task group",
+        "tags": [
+          "Observability"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "groupId",
+          "required": true,
+          "schema": {
+            "example": "grp_0123456789abcdef0123456789abcdef",
+            "pattern": "^grp_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "description": "Covers every platform configured across the group's member tasks, laid out side by side. Defaults platforms to the union of member platforms, so a 千问 + 豆包 group produces one report with both platforms compared in the same table. Only terminal batches whose started_at falls within each inclusive local date period are included. Repeating an Idempotency-Key replays the first created report.",
+        "operationId": "createTaskGroupsByGroupIdGeoReports",
+        "parameters": [
+          {
+            "description": "Recommended for create/execute requests. Reusing the same key with the same request replays the first response; reusing it with a different body returns idempotency_conflict.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "brands": [
+                  {
+                    "aliases": [
+                      "别名"
+                    ],
+                    "name": "某竞品",
+                    "product_aliases": [
+                      "某竞品旗舰店"
+                    ],
+                    "role": "competitor"
+                  }
+                ],
+                "format": "html",
+                "periods": [
+                  {
+                    "from": "2026-09-01",
+                    "key": "baseline",
+                    "label": "基线阶段",
+                    "time_zone": "Asia/Shanghai",
+                    "to": "2026-09-07"
+                  },
+                  {
+                    "from": "2026-09-22",
+                    "key": "follow-up",
+                    "label": "优化后",
+                    "time_zone": "Asia/Shanghai",
+                    "to": "2026-09-28"
+                  }
+                ],
+                "platforms": [
+                  "qianwen",
+                  "doubao"
+                ]
+              },
+              "schema": {
+                "$ref": "#/components/schemas/GeoCustomerReportCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/GeoCustomerReportResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Generated report resource and download URLs",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/SaasConflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Generate a cross-platform GEO customer report for a task group",
+        "tags": [
+          "Observability"
+        ]
+      }
+    },
+    "/v1/task-groups/{groupId}/members": {
+      "delete": {
+        "description": "Detach a collection task from a task group",
+        "operationId": "deleteTaskGroupsByGroupIdMembers",
+        "parameters": [
+          {
+            "description": "Internal task id from the members listing.",
+            "in": "query",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "removed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Detach confirmation",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Detach a collection task from a task group",
+        "tags": [
+          "Observability"
+        ]
+      },
+      "get": {
+        "description": "List member collection tasks of a task group",
+        "operationId": "getTaskGroupsByGroupIdMembers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/TaskGroupMemberTask"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Member collection tasks",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "List member collection tasks of a task group",
+        "tags": [
+          "Observability"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "groupId",
+          "required": true,
+          "schema": {
+            "example": "grp_0123456789abcdef0123456789abcdef",
+            "pattern": "^grp_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "description": "Idempotent for tasks already in this group. A task may belong to at most one group.",
+        "operationId": "createTaskGroupsByGroupIdMembers",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskGroupMemberInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TaskGroupResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Task group after attaching",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Attach collection tasks to a task group",
+        "tags": [
+          "Observability"
+        ]
+      }
     },
     "/v1/tasks": {
       "get": {
@@ -14734,6 +17810,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -14883,6 +17962,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -14987,6 +18069,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -15088,6 +18173,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -15219,6 +18307,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -15228,6 +18319,204 @@
           "Tasks"
         ]
       }
+    },
+    "/v1/tasks/{taskId}/answers": {
+      "get": {
+        "description": "Same contract as the task-group variant, scoped to one collection task.",
+        "operationId": "getTasksByTaskIdAnswers",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "sample_ratio",
+            "schema": {
+              "default": 1,
+              "exclusiveMinimum": 0,
+              "maximum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "explode": true,
+            "in": "query",
+            "name": "platform",
+            "schema": {
+              "items": {
+                "enum": [
+                  "doubao",
+                  "qianwen",
+                  "wenxin",
+                  "zhipu"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "format": "date",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "format": "date",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation cursor from meta.next_cursor of the previous page.",
+            "in": "query",
+            "name": "after_id",
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "seed",
+            "schema": {
+              "maxLength": 64,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AnswerSampleResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Answer sample with coverage counts per platform",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Read AI answers for a single collection task",
+        "tags": [
+          "Tasks"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "taskId",
+          "required": true,
+          "schema": {
+            "example": "tsk_0123456789abcdef0123456789abcdef",
+            "pattern": "^tsk_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ]
     },
     "/v1/tasks/{taskId}/clone": {
       "parameters": [
@@ -15365,6 +18654,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -15477,6 +18769,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -15619,6 +18914,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -15768,6 +19066,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -15898,6 +19199,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -16069,6 +19373,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -16199,6 +19506,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -16342,6 +19652,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -16502,6 +19815,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -16590,6 +19906,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -16677,6 +19996,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -16777,6 +20099,9 @@
               }
             }
           },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
           }
@@ -16861,6 +20186,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"
@@ -16949,6 +20277,9 @@
                 "$ref": "#/components/headers/OneGlRateLimitReset"
               }
             }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"

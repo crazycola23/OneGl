@@ -518,6 +518,12 @@ function attachCoreSuccessSchemas(document) {
 
 function attachCommonErrors(document) {
   document.components.responses.ServiceUnavailable = jsonResponse("Service dependency unavailable", ref("Error"));
+  document.components.responses.InternalError = jsonResponse(
+    "Unexpected server-side failure. Integrity checks (report_snapshot_integrity_error, " +
+      "report_artifact_integrity_error) surface here, and a corrupted snapshot makes the whole listing fail " +
+      "because every entry is hash-verified on read.",
+    ref("Error"),
+  );
 
   for (const [pathname, pathItem] of Object.entries(document.paths ?? {})) {
     if (!pathname.startsWith("/v1")) continue;
@@ -528,6 +534,9 @@ function attachCommonErrors(document) {
       operation.responses["401"] ??= { $ref: "#/components/responses/Unauthorized" };
       operation.responses["403"] ??= { $ref: "#/components/responses/Forbidden" };
       operation.responses["503"] ??= { $ref: "#/components/responses/ServiceUnavailable" };
+      // 之前完全没有 500 声明，但实现里 integrity 校验失败会显式抛 500 ——
+      // 客户端无从预期，只能把它当「接口不稳定」。统一补上。
+      operation.responses["500"] ??= { $ref: "#/components/responses/InternalError" };
       if (operation.requestBody && ["post", "put", "patch"].includes(method)) {
         operation.responses["400"] ??= { $ref: "#/components/responses/BadRequest" };
       }

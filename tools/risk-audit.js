@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { pathToFileURL } from "node:url";
+
 import { safetyConfig } from "../src/accounts/safety.js";
 import { loadConfig } from "../src/config.js";
 import { auditOperationRisk } from "../src/operation-risk.js";
@@ -25,7 +27,10 @@ function print(report) {
   );
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// pathToFileURL 而不是 `file://${process.argv[1]}`：后者在 Windows 上得到
+// file://D:\a\b.js，与 import.meta.url 的 file:///D:/a/b.js 永不相等，
+// 工具会静默什么都不做还返回退出码 0。
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const report = auditOperationRisk({ app: loadConfig(), safety: safetyConfig() });
   if (process.argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
   else print(report);

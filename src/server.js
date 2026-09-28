@@ -8,7 +8,10 @@ import { RunStore } from "./store.js";
 import { createPool, isDatabaseConfigured } from "./db/pool.js";
 import {
   batchDetail,
+  bestComparisonPair,
+  conversationBatchSummary,
   countOverview,
+  countRuns,
   createProject,
   databaseReady,
   getProject,
@@ -17,6 +20,7 @@ import {
   listAccounts,
   listActiveBatches,
   listBatches,
+  listConversations,
   listProjects,
   listRuns,
   poolByCategory,
@@ -63,6 +67,12 @@ import {
   sourcesPage,
   systemPage,
 } from "./ui/pages.js";
+import { conversationsPage } from "./ui/conversations.js";
+import {
+  conversationsCsv,
+  conversationsHtml,
+  conversationsJson,
+} from "./ui/conversations-export.js";
 import { statusLabel } from "./ui/format.js";
 
 /**
@@ -204,8 +214,8 @@ function normalizeLocalCitations(citations) {
 
 /* ---------------------------------------------------------------- 传输 */
 
-function send(res, status, content, type = "text/html; charset=utf-8") {
-  res.writeHead(status, { "content-type": type, "cache-control": "no-store" });
+function send(res, status, content, type = "text/html; charset=utf-8", headers = {}) {
+  res.writeHead(status, { "content-type": type, "cache-control": "no-store", ...headers });
   res.end(content);
 }
 
@@ -413,6 +423,8 @@ async function handleRuns(searchParams, system) {
     batchId: searchParams.get("batch"),
     account: searchParams.get("account"),
     errorCode: searchParams.get("error"),
+    provider: searchParams.get("provider"),
+    query: searchParams.get("q"),
   };
 
   if (!dbState.ready) {
@@ -433,6 +445,8 @@ async function handleRuns(searchParams, system) {
       batchId: filters.batchId ?? null,
       accountKey: filters.account ?? null,
       errorCode: filters.errorCode ?? null,
+      provider: filters.provider ?? null,
+      query: filters.query ?? null,
       limit: 150,
     }),
     listProjects(pool),
@@ -474,6 +488,148 @@ async function handleRun(runId, system) {
     : await store.listRootArtifacts(runId).catch(() => []);
 
   return runPage({ db: dbState, system, run, citations, localRun, attempts, rootArtifacts, runId });
+}
+
+/* ------------------------------------------------------------ 对话档案 */
+
+const CONVERSATIONS_PAGE_SIZE = 60;
+
+/**
+ * 把两个不同平台的批次按问题文本配对。
+ *
+ * 配对键是问题文本本身：两个批次来自同一个问题池，文本完全一致，
+ * 所以不需要任何人工映射表。取每个批次内最新的一条作为展示对象 ——
+ * 同一问题在千问侧跑多次时，操作者关心的是最近那次的口径。
+ */
+function pairByPrompt(leftRows, rightRows) {
+  const left = new Map();
+  for (const row of leftRows) {
+    if (!left.has(row.prompt)) left.set(row.prompt, row);
+  }
+  const pairs = [];
+  for (const row of rightRows) {
+    const match = left.get(row.prompt);
+    if (match && match.provider !== row.provider) {
+      pairs.push({ prompt: row.prompt, left: match, right: row });
+    }
+  }
+  return pairs;
+}
+
+async function handleConversations(searchParams, system) {
+  const filters = {
+    query: searchParams.get("q"),
+    projectId: searchParams.get("project"),
+    batchId: searchParams.get("batch"),
+    provider: searchParams.get("provider"),
+  };
+  const offset = Math.max(0, Number(searchParams.get("offset") ?? 0) || 0);
+
+  if (!dbState.ready) {
+    return conversationsPage({ db: dbState, system, filters, totals: { hit: 0, shown: 0 } });
+  }
+
+  const projectId = filters.projectId ?? null;
+
+  const [summaries, projects, batches, items, hit] = await Promise.all([
+    conversationBatchSummary(pool, { projectId }),
+    listProjects(pool),
+    listBatches(pool, { limit: 60 }),
+    listConversations(pool, {
+      projectId,
+      batchId: filters.batchId ?? null,
+      provider: filters.provider ?? null,
+      query: filters.query ?? null,
+      limit: CONVERSATIONS_PAGE_SIZE,
+      offset,
+    }),
+    countRuns(pool, {
+      projectId,
+      batchId: filters.batchId ?? null,
+      provider: filters.provider ?? null,
+      query: filters.query ?? null,
+    }),
+  ]);
+
+  // 并排对照只在没有显式收窄到单个批次时才有意义：选定一个批次就没得对照了。
+  //
+  // 选哪两个批次不能只看「最新两个不同平台」—— 最近的一批 zhipu 冒烟测试
+  // 与千问批次没有任何共享问题，凑出来就是 0 对。这里直接让数据库回答
+  // 「哪两个批次的重叠问题最多」，拿真实重叠数排序。
+  let pairs = [];
+  let comparePair = null;
+  if (!filters.batchId && !filters.query && !filters.provider) {
+    const best = await bestComparisonPair(pool, { projectId });
+    if (best) {
+      comparePair = best;
+      const [leftRows, rightRows] = await Promise.all([
+        listConversations(pool, { batchId: best.leftBatch, limit: 300 }),
+        listConversations(pool, { batchId: best.rightBatch, limit: 300 }),
+      ]);
+      pairs = pairByPrompt(leftRows, rightRows);
+    }
+  }
+
+  return conversationsPage({
+    db: dbState,
+    system,
+    summaries,
+    pairs,
+    comparePair,
+    items,
+    projects,
+    batches,
+    filters,
+    totals: { hit, shown: items.length },
+  });
+}
+
+async function handleRunsExport(searchParams) {
+  if (!dbState.ready) {
+    return { status: 503, type: "application/json; charset=utf-8", body: JSON.stringify({ error: "数据库未连接" }) };
+  }
+  const format = searchParams.get("format") ?? "json";
+  const query = searchParams.get("q");
+  const projectId = searchParams.get("project");
+  const batchId = searchParams.get("batch");
+  const provider = searchParams.get("provider");
+
+  // 导出按筛选条件全量取，不受页面 size 限制 ——
+  // 导一半数据比不导出更危险，收件人不会知道少了什么。
+  const rows = await listConversations(pool, {
+    projectId,
+    batchId,
+    provider,
+    query,
+    limit: 2000,
+    offset: 0,
+  });
+
+  const meta = { filters: { q: query ?? "", project: projectId ?? "", batch: batchId ?? "", provider: provider ?? "" } };
+  const stamp = new Date().toISOString().slice(0, 10);
+
+  if (format === "html") {
+    return {
+      status: 200,
+      type: "text/html; charset=utf-8",
+      body: conversationsHtml(rows, meta),
+      disposition: `attachment; filename="onegl-conversations-${stamp}.html"`,
+    };
+  }
+  if (format === "csv") {
+    return {
+      status: 200,
+      type: "text/csv; charset=utf-8",
+      body: conversationsCsv(rows, meta),
+      disposition: `attachment; filename="onegl-conversations-${stamp}.csv"`,
+    };
+  }
+  return {
+    status: 200,
+    type: "application/json; charset=utf-8",
+    body: conversationsJson(rows, meta),
+    disposition: `attachment; filename="onegl-conversations-${stamp}.json"`,
+  };
 }
 
 async function handleSources(searchParams, system) {
@@ -845,12 +1001,15 @@ async function serveArtifact(res, runId, rawRest) {
 /* ------------------------------------------------------------------ 服务器 */
 
 const server = http.createServer(async (req, res) => {
+  // pathname 提到 try 外面：错误分支要能报出是哪个 URL 挂的，
+  // 而 url 的解析本身也在 try 里，失败时只能退回到原始 req.url。
+  let pathname = req.url ?? "(unknown)";
   try {
     await refreshDatabaseState();
     const system = await ensureSystemStatus();
 
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-    const pathname = url.pathname;
+    pathname = url.pathname;
     const searchParams = url.searchParams;
 
     if (req.method === "POST") return handlePost(req, res, pathname);
@@ -870,6 +1029,10 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/runs") return send(res, 200, await handleRuns(searchParams, system));
     const runMatch = pathname.match(/^\/runs\/(run_[A-Za-z0-9_-]+)$/);
     if (runMatch) return send(res, 200, await handleRun(runMatch[1], system));
+
+    if (pathname === "/conversations") {
+      return send(res, 200, await handleConversations(searchParams, system));
+    }
 
     if (pathname === "/sources") return send(res, 200, await handleSources(searchParams, system));
 
@@ -939,9 +1102,24 @@ const server = http.createServer(async (req, res) => {
       );
     }
 
+    if (pathname === "/api/runs/export") {
+      const result = await handleRunsExport(searchParams);
+      return send(
+        res,
+        result.status,
+        result.body,
+        result.type,
+        result.disposition ? { "content-disposition": result.disposition } : {},
+      );
+    }
+
     send(res, 404, notFoundPage(pathname));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // 页面只展示 message，堆栈必须落到进程输出：否则 500 只剩一句话，
+    // 定位不到具体是哪一行抛的。日志写到 stdout，服务以数据库模式运行时可见。
+    console.error(`[500] ${pathname} ${message}`);
+    if (error instanceof Error && error.stack) console.error(error.stack);
     send(res, 500, errorPage(message));
   }
 });

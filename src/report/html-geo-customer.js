@@ -122,9 +122,154 @@ function findingsSection(payload, rows) {
     "<p class=\"muted\">发现只总结本报告实际观测；不将同一回答里的品牌提及和来源引用解释为因果关系。</p></section>";
 }
 
-function institutionSection() {
-  return "<section id=\"sec-03\"><h2>3. 机构推荐榜</h2>" +
-    "<div class=\"empty\">当前报告配置未包含机构名称与排除规则，因此不生成机构排名，避免把普通文本匹配误当成推荐结果。</div></section>";
+/**
+ * 竞品跨平台对照表。
+ *
+ * 分平台各自的排名只能告诉你「在千问里谁排第一」，但竞品分析真正要回答的是
+ * 「哪个平台更偏爱哪个竞品」——那需要把同一个竞品在两边的提及率并排放，
+ * 按差值排序。差值为正 = 千问侧更受偏好，为负 = 豆包侧更受偏好。
+ *
+ * 缺失一律显示 N/A 而不是 0：某个平台没提到某竞品是「0%」，
+ * 但那个平台压根没有有效样本时是「N/A」，两者含义完全不同。
+ */
+function crossPlatformBrandTable(payload, rows) {
+  if (rows.length < 2) return "";
+
+  const byPlatform = new Map();
+  for (const { period, platform } of rows) {
+    const stats = platform.brand_mentions ?? { brands: [] };
+    if (!byPlatform.has(platform.platform)) byPlatform.set(platform.platform, new Map());
+    const map = byPlatform.get(platform.platform);
+    for (const b of stats.brands) map.set(b.name, b);
+  }
+
+  const platformIds = [...byPlatform.keys()];
+  const names = new Set();
+  for (const map of byPlatform.values()) for (const name of map.keys()) names.add(name);
+
+  const cells = [...names].map((name) => {
+    const per = platformIds.map((id) => byPlatform.get(id).get(name) ?? null);
+    const rates = per.map((b) => (b ? b.mention_rate : null)).filter((r) => r != null);
+    // 只有两边都有有效样本时才给差值；否则差值无意义
+    const gap = rates.length === platformIds.length
+      ? (rates[0] - rates[1]) * 100
+      : null;
+    return { name, per, gap };
+  });
+
+  // 排序：先按差值绝对值（差异最悬殊的排前面），再按两边的平均提及率
+  cells.sort((a, b) => {
+    const ga = a.gap == null ? -1 : Math.abs(a.gap);
+    const gb = b.gap == null ? -1 : Math.abs(b.gap);
+    if (ga !== gb) return gb - ga;
+    const avg = (c) => {
+      const rs = c.per.map((x) => (x ? x.mention_rate : null)).filter((r) => r != null);
+      return rs.length ? rs.reduce((s, r) => s + r, 0) / rs.length : -1;
+    };
+    return avg(b) - avg(a);
+  });
+
+  const header = ["竞品", ...platformIds.map((id) => id + " 提及率"), "差值(百分点)"];
+  const body = cells.map((cell) => [
+    escapeHtml(cell.name) + roleTag(cell.per.find(Boolean)?.role),
+    ...cell.per.map((b) => {
+      if (!b) return "<span class=\"muted\">N/A</span>";
+      return "<span class=\"num\">" + percentage(b.mention_rate) +
+        " <span class=\"muted\">(" + numberText(b.mentioned_answers) + "/" + numberText(b.valid_answers) + ")</span></span>";
+    }),
+    cell.gap == null
+      ? "<span class=\"muted\">N/A</span>"
+      : "<span class=\"num " + (cell.gap > 0 ? "risky" : "safe") + "\">" +
+        (cell.gap > 0 ? "+" : "") + cell.gap.toFixed(1) + "</span>",
+  ]);
+
+  return table(header, body);
+}
+
+/**
+ * 品牌提及对比。
+ *
+ * 分工写在这一节里，因为它决定了读者怎么用这份数据：
+ *   - 品牌由调用方在报告请求里传入（brands 参数），OneGl 不预设、不猜测
+ *   - 提及率是可复现的统计口径，同一份品牌列表跑两次数字完全一样
+ *   - 「被提及」不等于「被推荐」，推荐强度与应对策略由调用方的模型分析
+ *
+ * OneGl 不做实体抽取：早期试过用机构后缀词表猜名字，换行业即失效，
+ * 而用户不会为了跑 GEO 去维护那张表。现在由调用方按平台分层抽样回答、
+ * 交给自己的模型读一遍拿到高频品牌，再用 brands 传回。
+ *
+ * 多平台时先给跨平台对照表：竞品分析要先看「哪个平台偏爱哪个竞品」，
+ * 那是这一节最直接可用的结论；分平台明细作为支撑放在后面。
+ */
+function institutionSection(payload, rows) {
+  const hasBrands = rows.some(({ platform }) => (platform.brand_mentions?.brands ?? []).length);
+  if (!hasBrands) {
+    return "<section id=\"sec-03\"><h2>3. 品牌提及对比</h2>" +
+      "<div class=\"empty\">未传 brands 参数，不做品牌提及统计。<br>" +
+      "品牌列表可先按平台分层抽样 AI 回答、交给模型读出高频品牌，再用 brands 参数生成报告。" +
+      "</div></section>";
+  }
+
+  const cross = crossPlatformBrandTable(payload, rows);
+  const blocks = rows.map(({ period, platform }) => {
+    const stats = platform.brand_mentions ?? { brands: [] };
+    const mentionRows = stats.brands.map((item, index) => [
+      "<span class=\"num\">" + numberText(index + 1) + "</span>",
+      escapeHtml(item.name) + roleTag(item.role),
+      "<span class=\"num\">" + numberText(item.mentioned_answers) + " / " + numberText(item.valid_answers) + "</span>",
+      "<span class=\"num\">" + percentage(item.mention_rate) + "</span>",
+      "<span class=\"num\">" + numberText(item.mention_count) + "</span>",
+      "<span class=\"num\">" + numberText(item.average_first_position) + "</span>",
+      Object.keys(item.by_platform ?? {}).map((p) =>
+        platformTag(p, payload) + " " + numberText(item.by_platform[p].mentioned_answers) + "/" +
+        numberText(item.by_platform[p].valid_answers)
+      ).join(" "),
+    ]);
+    const examples = stats.brands
+      .filter((item) => item.examples?.length)
+      .slice(0, 6)
+      .map((item) => {
+        const sample = item.examples[0];
+        return "<li><b>" + escapeHtml(item.name) + "</b> · 命中 " +
+          escapeHtml((sample.matched_terms ?? []).join("、")) + " · " + escapeHtml(sample.run_id) +
+          "<div class=\"quote\">" + escapeHtml(sample.context) + "</div></li>";
+      })
+      .join("");
+
+    return "<div class=\"subpanel\"><h3>" + escapeHtml(period.label) + " · " +
+      platformTag(platform.platform, payload) + "</h3>" +
+      table(["#", "品牌", "提及回答", "提及率", "提及次数", "首现位置均值", "分平台"], mentionRows) +
+      note(
+        "基于 " + numberText(stats.answer_count) + " 条有正文的回答。",
+        "提及率 = 提及该品牌的回答数 ÷ 有正文的回答数。匹配用调用方传入的 match_terms（品牌名+别名+产品名），子串匹配。" +
+        "首现位置均值越小说明 AI 越早提到它。",
+        "这是提及统计，不是推荐排序。哪个更值得投入、被提及是主动推荐还是顺带列举，" +
+        "请结合下方原文用模型分析。") +
+      (examples ? "<h4>原文出处</h4><ul class=\"quotes\">" + examples + "</ul>" : "") +
+      "</div>";
+  });
+
+  return "<section id=\"sec-03\"><h2>3. 品牌提及对比</h2>" +
+    (cross
+      ? "<h4>跨平台对照</h4>" + cross +
+        note(
+          "同一竞品在两个平台上的提及率与差值，按差值绝对值降序。",
+          "差值为正表示千问侧提及率更高，为负表示豆包侧更高。某平台无有效样本时显示 N/A，" +
+          "不参与差值计算 —— 0% 与「没样本」不是一回事。",
+          "这张表回答「哪个平台偏爱哪个竞品」。具体推荐强度、以及该往哪边投放，需要读原文后用模型判断。")
+      : "") +
+    "<h4>分平台明细</h4>" +
+    blocks.join("") +
+    "<div class=\"callout\"><b>这一节提供数据，不提供结论。</b>" +
+    "提及率是确定性统计，可复现、可核对；但「被提及」不等于「被推荐」——" +
+    "判断推荐强度排序、渠道差异、以及该不该投放，需要阅读原文后用你自己的模型分析。" +
+    "品牌列表由报告请求的 brands 参数传入，OneGl 不预设品牌、不猜机构名。</div></section>";
+}
+
+function roleTag(role) {
+  if (role === "own") return " <span class=\"tag-muted\">我方</span>";
+  if (role === "competitor") return " <span class=\"tag-muted\">竞品</span>";
+  return "";
 }
 
 function sourcesSection(payload, rows) {
@@ -281,6 +426,8 @@ function dataNotesSection(payload, rows) {
     ["内容来源", payload.methodology.content_sources],
     ["目标文章匹配", payload.methodology.tracked_articles],
     ["批次筛选", payload.methodology.report_batch_scope],
+    ["品牌提及", payload.methodology.brand_mentions],
+    ["回答正文", payload.methodology.answer_text],
     ["归因边界", payload.methodology.attribution],
   ].map(([label, value]) => [escapeHtml(label), escapeHtml(value)]);
   const batchRows = [];
@@ -341,6 +488,11 @@ const CSS = [
   ".toclist{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:14px}.toclist a{text-decoration:none;font-size:12px}",
   "details{border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:12px 0}summary{cursor:pointer;font-weight:650;color:var(--accent)}details ol{padding-left:24px}details li{margin:8px 0}",
   ".warnings{background:#fff8eb;border:1px solid #f3d5a4;border-radius:9px;padding:12px 12px 12px 32px;color:#7a4d0b}",
+  // 排名节：callout 提示需要模型分析，quotes 是给 agent 判断用的原文出处片段
+  ".callout{border:1px solid #c7d7f0;background:#f4f8fe;border-left:4px solid var(--accent);border-radius:8px;padding:12px 14px;margin:14px 0;font-size:13px;line-height:1.75}",
+  ".quotes{list-style:none;padding:0!important;margin:10px 0 0}.quotes li{border-top:1px solid var(--line);padding:9px 0;margin:0!important;font-size:12.5px}",
+  ".quote{margin-top:5px;padding:8px 11px;background:#f8fafc;border-left:2px solid #cbd2dc;border-radius:0 6px 6px 0;color:var(--muted);line-height:1.8;word-break:break-word}",
+  ".tag-muted{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:500;color:var(--muted);background:#eef1f5;white-space:nowrap}",
   ".actions li{margin:10px 0}.subpanel .tag{vertical-align:middle}",
   "footer{color:var(--muted);font-size:12px;text-align:center;padding:20px}",
   "@media(max-width:760px){main{padding:16px 12px 40px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.grid2,.guide-grid{grid-template-columns:1fr}section{padding:16px}.hero{padding:20px!important}}",
@@ -363,7 +515,7 @@ export function buildGeoCustomerReportHtml(payload) {
   const sectionHtml = [
     overviewSection(payload, rows),
     findingsSection(payload, rows),
-    institutionSection(),
+    institutionSection(payload, rows),
     sourcesSection(payload, rows),
     regionsSection(),
     trackedSection(payload, rows),
@@ -375,12 +527,14 @@ export function buildGeoCustomerReportHtml(payload) {
   ].join("");
   const guides = [
     ["只有 1 分钟", "从最重要的发现和行动建议开始。", "#sec-02"],
-    ["要决定渠道", "查看来源强度与来源层级。", "#sec-04"],
+    // 指向第 3 节（品牌提及对比）而不是第 9 节：来源层级一节当前是空占位，
+    // 引导过去只会让人扑空。
+    ["要决定渠道", "看竞品在各平台的提及差异，再看来源强度。", "#sec-03"],
     ["要核对证据", "打开来源文章链接逐条核对。", "#sec-04"],
     ["要调整内容", "先看目标文章覆盖，再看问题范围。", "#sec-06"],
   ];
   const toc = [
-    "执行概览", "最重要的发现", "机构推荐榜", "来源链接与引用强度",
+    "执行概览", "最重要的发现", "品牌提及对比", "来源链接与引用强度",
     "地域需求分布", "内容要素覆盖", "检测的问题范围", "AI 评判维度与价格带",
     "来源层级与机会点", "结论与行动建议", "数据说明",
   ].map((title, index) => "<a href=\"#sec-" + String(index + 1).padStart(2, "0") + "\">" +
