@@ -24,6 +24,7 @@ const NAV = [
     ["/runs", "运行记录", "runs"],
   ]},
   { group: "观测", items: [
+    ["/conversations", "对话档案", "conversations"],
     ["/sources", "引用来源", "sources"],
     ["/accounts", "账号", "accounts"],
     ["/system", "系统", "system"],

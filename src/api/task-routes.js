@@ -27,6 +27,17 @@ import {
   getGeoCustomerReportHtml,
   listGeoCustomerReports,
 } from "../reporting/geo-customer-reports.js";
+import { compareGeoCustomerReports } from "../reporting/geo-report-compare.js";
+import { listAnswers } from "../analysis/answer-sample.js";
+import {
+  attachTaskGroupMembers,
+  createTaskGroup,
+  deleteTaskGroup,
+  detachTaskGroupMember,
+  getTaskGroup,
+  listTaskGroups,
+  updateTaskGroup,
+} from "../tasks/groups.js";
 import {
   buildLiveReportContract,
   createReportRevision,
@@ -433,13 +444,140 @@ export async function createScheduleResource(db, tenant, taskId, raw) {
 export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
   const pathname = url.pathname;
 
+  /* ------------------------------------------------------------ 回答抽样 */
+
+  /**
+   * 读取 AI 回答（支持按平台分层抽样）。
+   *
+   * 这条链路的用途很具体：调用方按 sample_ratio 抽 1/10，把回答交给自己的模型
+   * 读出高频品牌，再用 brands 生成报告。OneGl 不抽取实体、不猜机构名。
+   *
+   * 放在 task 与 task-group 两个版本下，因为批次归属二者之一。
+   */
+  const answerScope = pathname.match(
+    /^\/v1\/(?:tasks\/(tsk_[a-f0-9]+)|task-groups\/(grp_[a-f0-9]+))\/answers$/,
+  );
+  if (answerScope && req.method === "GET") {
+    requireScope(auth, "reports:read");
+    const taskId = answerScope[1] ?? null;
+    const groupId = answerScope[2] ?? null;
+    const data = await listAnswers(db, {
+      tenantId: tenant.id,
+      taskId,
+      groupId,
+      platforms: url.searchParams.getAll("platform"),
+      from: url.searchParams.get("from"),
+      to: url.searchParams.get("to"),
+      sampleRatio: url.searchParams.get("sample_ratio"),
+      limit: positiveLimit(url.searchParams.get("limit"), 100, 500),
+      afterId: url.searchParams.get("after_id"),
+      seed: url.searchParams.get("seed") ?? undefined,
+    });
+    return sendJson(res, 200, { data });
+  }
+
+  /* ------------------------------------------------------------ 任务组 */
+
+  // 任务组 = 用户视角的一个任务，内部按平台拆成多个采集 task。
+  // 报告与横向对比都挂在组上，平台维度由组内成员 task 的 platforms 决定。
+  if (pathname === "/v1/task-groups") {
+    if (req.method === "GET") {
+      requireScope(auth, "projects:read");
+      return sendJson(res, 200, {
+        data: await listTaskGroups(db, {
+          tenantId: tenant.id,
+          limit: positiveLimit(url.searchParams.get("limit"), 50, 200),
+        }),
+      });
+    }
+    if (req.method === "POST") {
+      requireScope(auth, "projects:write");
+      const body = await readJsonBody(req);
+      const group = await createTaskGroup(db, {
+        tenantId: tenant.id,
+        name: body.name,
+        externalId: body.external_id ?? null,
+        tags: body.tags ?? [],
+        taskIds: Array.isArray(body.task_ids) ? body.task_ids : [],
+      });
+      return sendJson(res, 201, { data: group });
+    }
+  }
+
+  const groupMembers = pathname.match(/^\/v1\/task-groups\/(grp_[a-f0-9]+)\/members$/);
+  if (groupMembers) {
+    if (req.method === "GET") {
+      requireScope(auth, "projects:read");
+      const group = await getTaskGroup(db, { tenantId: tenant.id, publicId: groupMembers[1] });
+      if (!group) throw new ApiHttpError(404, "group_not_found", "task group was not found");
+      return sendJson(res, 200, { data: group.tasks });
+    }
+    if (req.method === "POST") {
+      requireScope(auth, "projects:write");
+      const body = await readJsonBody(req);
+      if (!Array.isArray(body.task_ids) || body.task_ids.length === 0) {
+        throw new ApiHttpError(400, "invalid_request", "task_ids must be a non-empty array");
+      }
+      const group = await attachTaskGroupMembers(db, {
+        tenantId: tenant.id,
+        publicId: groupMembers[1],
+        taskIds: body.task_ids,
+      });
+      return sendJson(res, 200, { data: group });
+    }
+    if (req.method === "DELETE") {
+      requireScope(auth, "projects:write");
+      const taskId = url.searchParams.get("task_id");
+      if (!taskId) throw new ApiHttpError(400, "invalid_request", "task_id is required");
+      const removed = await detachTaskGroupMember(db, {
+        tenantId: tenant.id,
+        publicId: groupMembers[1],
+        taskId: positiveId(taskId, "task_id"),
+      });
+      if (!removed) throw new ApiHttpError(404, "group_member_not_found", "task is not a member of this group");
+      return sendJson(res, 200, { data: { removed: true } });
+    }
+  }
+
+  const groupRoute = pathname.match(/^\/v1\/task-groups\/(grp_[a-f0-9]+)$/);
+  if (groupRoute) {
+    const groupId = groupRoute[1];
+    if (req.method === "GET") {
+      requireScope(auth, "projects:read");
+      const group = await getTaskGroup(db, { tenantId: tenant.id, publicId: groupId });
+      if (!group) throw new ApiHttpError(404, "group_not_found", "task group was not found");
+      return sendJson(res, 200, { data: group });
+    }
+    if (req.method === "PATCH") {
+      requireScope(auth, "projects:write");
+      const body = await readJsonBody(req);
+      return sendJson(res, 200, {
+        data: await updateTaskGroup(db, {
+          tenantId: tenant.id,
+          publicId: groupId,
+          patch: {
+            name: body.name,
+            externalId: body.external_id,
+            tags: body.tags,
+          },
+        }),
+      });
+    }
+    if (req.method === "DELETE") {
+      requireScope(auth, "projects:write");
+      const removed = await deleteTaskGroup(db, { tenantId: tenant.id, publicId: groupId });
+      if (!removed) throw new ApiHttpError(404, "group_not_found", "task group was not found");
+      return sendJson(res, 200, { data: { deleted: true } });
+    }
+  }
+
   const taskGeoReports = pathname.match(/^\/v1\/tasks\/(tsk_[a-f0-9]+)\/geo-reports$/);
   if (taskGeoReports) {
     requireScope(auth, "reports:read");
     if (req.method === "POST") {
       const summary = await createGeoCustomerReport(db, {
         tenantId: tenant.id,
-        taskPublicId: taskGeoReports[1],
+        taskId: taskGeoReports[1],
         input: await readJsonBody(req),
       });
       return sendJson(res, 201, { data: summary });
@@ -447,12 +585,57 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
     if (req.method === "GET") {
       const page = await listGeoCustomerReports(db, {
         tenantId: tenant.id,
-        taskPublicId: taskGeoReports[1],
+        taskId: taskGeoReports[1],
         limit: positiveLimit(url.searchParams.get("limit"), 100, 500),
         cursor: url.searchParams.get("cursor"),
       });
       return sendJson(res, 200, page);
     }
+  }
+
+  // 任务组口径：一个用户任务横跨多个平台采集，报告与历史都挂在组下。
+  // 路径与 task 版本平行，调用方按「这是一个跨平台任务」选哪条即可。
+  const groupGeoReports = pathname.match(/^\/v1\/task-groups\/(grp_[a-f0-9]+)\/geo-reports$/);
+  if (groupGeoReports) {
+    requireScope(auth, "reports:read");
+    if (req.method === "POST") {
+      const summary = await createGeoCustomerReport(db, {
+        tenantId: tenant.id,
+        groupId: groupGeoReports[1],
+        input: await readJsonBody(req),
+      });
+      return sendJson(res, 201, { data: summary });
+    }
+    if (req.method === "GET") {
+      const page = await listGeoCustomerReports(db, {
+        tenantId: tenant.id,
+        groupId: groupGeoReports[1],
+        limit: positiveLimit(url.searchParams.get("limit"), 100, 500),
+        cursor: url.searchParams.get("cursor"),
+      });
+      return sendJson(res, 200, page);
+    }
+  }
+
+  /**
+   * 两份报告的横向对比。
+   *
+   * 用查询参数而不是路径嵌套，是因为对比的是「两个平级报告」而不是「某报告的子资源」。
+   * 只返回同口径差值与来源结构变化，不含自然语言结论 —— 解读由调用方的模型做。
+   */
+  if (pathname === "/v1/geo-reports/compare" && req.method === "GET") {
+    requireScope(auth, "reports:read");
+    const base = url.searchParams.get("base_report_id");
+    const target = url.searchParams.get("target_report_id");
+    if (!base || !target) {
+      throw new ApiHttpError(400, "invalid_request", "base_report_id and target_report_id are required");
+    }
+    const data = await compareGeoCustomerReports(db, {
+      tenantId: tenant.id,
+      baseReportId: base,
+      targetReportId: target,
+    });
+    return sendJson(res, 200, { data });
   }
 
   const geoReportHtml = pathname.match(/^\/v1\/geo-reports\/(rpt_[a-f0-9]+)\/html$/);

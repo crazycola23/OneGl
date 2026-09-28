@@ -10,6 +10,9 @@ const IDEMPOTENT_POST_PATHS = [
   /^\/v1\/tasks\/tsk_[a-f0-9]+\/geo-reports$/,
   /^\/v1\/tasks\/tsk_[a-f0-9]+\/schedules$/,
   /^\/v1\/reports\/rpt_[a-f0-9]+\/revisions$/,
+  // 任务组版报告生成与 task 版语义完全相同（每次生成新快照，不会改写旧报告），
+  // 缺了它会造成不对称：网关超时重发时 task 版不会重复生成，group 版会。
+  /^\/v1\/task-groups\/grp_[a-f0-9]+\/geo-reports$/,
 ];
 
 function canonicalize(value) {
