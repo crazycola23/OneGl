@@ -527,6 +527,38 @@ test("wenxin profile carries the measured selectors, not plausible-looking ones"
   assert.ok(wenxinWebProfile.citation.blockSelectors.some((sel) => /reference-item/.test(sel)));
 });
 
+test("wenxin's citation scan is scoped to one turn, never the whole page", () => {
+  const driver = readFileSync(new URL("../src/wenxin.js", import.meta.url), "utf8");
+
+  // 探针 21 实测：同一会话连问 6 句同一问题，全页扫描采到的引用数是
+  // 25 → 50 → 85 → 115 → 150 → 178，而平台自陈数**始终是 25**。
+  // 参考列表在 DOM 里属于思考块，与答案块是并列的兄弟节点 ——
+  // `document.querySelectorAll(referenceItem)` 会把每一轮的历史引用都算进来。
+  //
+  // 断言「不出现全页扫描」而不是断言具体实现：将来换容器也不该被这条卡住。
+  //
+  // 先剥掉注释再匹配：这段 driver 的注释里**故意引用了旧的错误写法**
+  // （`document.querySelectorAll(referenceItem)`）来说明它曾经错在哪 ——
+  // 直接在源码上匹配会把注释当成代码，把修好的实现判成未修。
+  const code = driver
+    .split("\n")
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .join("\n");
+
+  assert.doesNotMatch(
+    code,
+    /document\.querySelectorAll\(referenceItem\)/,
+    "不得从 document 全页扫描参考条目：会把历史轮次的引用全部计入"
+      + "（docs/WENXIN_PHASE0.md §3.3）",
+  );
+
+  // 必须按轮次定位思考块再取引用。
+  assert.match(code, /findTurnThinking/,
+    "引用必须从本轮的思考块里取，而不是全页");
+  assert.match(code, /refScope/,
+    "引用扫描需要一个明确的范围容器");
+});
+
 test("the wenxin adapter is wired to the real driver, not a stub", async () => {
   assert.equal(typeof wenxinWebProvider.openPage, "function");
   assert.equal(typeof wenxinWebProvider.run, "function");

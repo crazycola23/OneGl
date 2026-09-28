@@ -749,6 +749,34 @@ async function readAnswer(page) {
       return r.width > 0 && r.height > 0;
     });
 
+    /**
+     * 找出**本轮**的思考块。
+     *
+     * 参考条目在 DOM 里属于思考块，而思考块与答案块是并列的兄弟节点
+     * （实测：思考 942 字符、答案 155 字符）。所以要从答案块往上走，
+     * 停在**最近的那个**思考块上，而不是取全页最后一个 ——
+     * 同一会话里多轮时，"最后一个"是本轮的，"第一个"是上一轮的，
+     * 而"全页扫描"会把每一轮的都算进来（探针 21 实测引用数累积到 178）。
+     *
+     * 页面侧的闭包看不到模块作用域，所以选择器通过参数传进来（见 readAnswer 顶部注释）。
+     */
+    const findTurnThinking = (from) => {
+      let node = from;
+      for (let i = 0; i < 4 && node; i += 1) {
+        // 先在同一层里找兄弟思考块：实测思考块与答案块同父。
+        const sibling = node.parentElement
+          ? [...node.parentElement.children].find(
+              (el) => el.matches?.(thinking) && el !== from)
+          : null;
+        if (sibling) return sibling;
+        // 否则上溯一层再找（改版可能多包一层）。
+        node = node.parentElement;
+        const found = node && node.querySelector ? node.querySelector(thinking) : null;
+        if (found) return found;
+      }
+      return null;
+    };
+
     // 只取**最后一个**答案块：同一会话里若有历史轮，取第一个会读到上一题。
     const answers = [...document.querySelectorAll(answer)].filter(vis);
     if (!answers.length) {
@@ -762,6 +790,30 @@ async function readAnswer(page) {
     clone.querySelectorAll(thinking).forEach((el) => el.remove());
     clone.querySelectorAll(userBubble).forEach((el) => el.remove());
 
+    // ⚠️ 引用必须**按轮次取**，不能扫全页。
+    //
+    // 实测（探针 21）：同一浏览器会话里连问 6 句同一问题，采到的引用数是
+    // 25 → 50 → 85 → 115 → 150 → 178 —— 每轮都把**上一轮的全部引用**又数了一遍。
+    // 而平台自陈数始终是「共参考25篇资料」，说明这一轮真的只有 25 篇。
+    //
+    // 根因：参考资料列表在 DOM 里属于**思考块**（`ai-thinking-steps`），而思考块是
+    // 与答案块并列的兄弟节点。曾经用 `document.querySelectorAll(referenceItem)` 全页扫描，
+    // 于是同一会话里的历史轮次全部计入。
+    //
+    // 后果是静默的数据损坏：引用数虚高到 178，而自陈数是 25 ——
+    // 差额不会报错，只会让引用率虚高数倍。
+    //
+    // 修法：从答案块往上找**本轮的思考块**，只在它里面取引用。
+    // 参考列表实测在思考块内（探针 6：思考块文本以「搜索3个关键词 共参考22篇资料」开头，
+    // 参考条目紧随其后），所以这个容器就是正确的取用范围。
+    const turnThinking = findTurnThinking(node);
+    const refScope = turnThinking ?? node;
+    const references = [...refScope.querySelectorAll(referenceItem)].filter(vis).map((li) => ({
+      // 真实链接只在这个 data 属性里；DOM 上没有 <a>，也没有 href。
+      extInfo: li.getAttribute("data-long-press-ext-info"),
+      text: (li.innerText || "").trim(),
+    }));
+
     return {
       answerText: clone.innerText || "",
       promptAcknowledged: acknowledged,
@@ -771,11 +823,7 @@ async function readAnswer(page) {
         const r = el.getBoundingClientRect();
         return r.width > 0 && r.height > 0;
       }),
-      // 真实链接只在这个 data 属性里；DOM 上没有 <a>，也没有 href。
-      references: [...document.querySelectorAll(referenceItem)].filter(vis).map((li) => ({
-        extInfo: li.getAttribute("data-long-press-ext-info"),
-        text: (li.innerText || "").trim(),
-      })),
+      references,
       bodyText: document.body?.innerText || "",
     };
   }, {
