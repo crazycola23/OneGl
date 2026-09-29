@@ -473,12 +473,12 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
    * 放在 task 与 task-group 两个版本下，因为批次归属二者之一。
    */
   const answerScope = pathname.match(
-    /^\/v1\/(?:tasks\/(tsk_[a-f0-9]+)|task-groups\/(grp_[a-f0-9]+))\/answers$/,
+    /^\/v1\/(?:tasks\/(?<taskId>tsk_[a-f0-9]+)|task-groups\/(?<groupId>grp_[a-f0-9]+))\/answers$/,
   );
   if (answerScope && req.method === "GET") {
     requireScope(auth, "reports:read");
-    const taskId = answerScope[1] ?? null;
-    const groupId = answerScope[2] ?? null;
+    const taskId = answerScope.groups.taskId ?? null;
+    const groupId = answerScope.groups.groupId ?? null;
     const data = await listAnswers(db, {
       tenantId: tenant.id,
       taskId,
@@ -502,14 +502,21 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
    * 回答（约 35 万 token）丢给模型，只取命中的那几十条。
    */
   const answerSearch = pathname.match(
-    /^\/v1\/(tasks\/(tsk_[a-f0-9]+)|task-groups\/(grp_[a-f0-9]+))\/answers\/search$/,
+    /^\/v1\/(?:tasks\/(?<taskId>tsk_[a-f0-9]+)|task-groups\/(?<groupId>grp_[a-f0-9]+))\/answers\/search$/,
   );
   if (answerSearch && req.method === "GET") {
     requireScope(auth, "reports:read");
+    // 命名捕获组，不用位置索引。
+    //
+    // 位置索引在这里是个陷阱：`(tasks\/(x)|task-groups\/(y))` 这种写法下
+    // group 形态的 match[2] 是 undefined、id 落在 match[3]，而 task 形态的
+    // match[2] 才是 id —— 取决于内层有没有捕获组，没有硬规则可循。
+    // 实际踩过：早期写成 `match[1] ?? null` 时把 "task-groups/grp_…" 整段
+    // 当成 task id 传下去，group 请求全部 500。单测直接调服务层测不到。
     const data = await searchAnswers(db, {
       tenantId: tenant.id,
-      taskId: answerSearch[1] ?? null,
-      groupId: answerSearch[2] ?? null,
+      taskId: answerSearch.groups.taskId ?? null,
+      groupId: answerSearch.groups.groupId ?? null,
       q: url.searchParams.get("q"),
       brands: parseBrandQuery(url.searchParams.getAll("brand")),
       platforms: url.searchParams.getAll("platform"),
@@ -526,16 +533,16 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
    * 检索默认不返回 answer（几十条时体积太大），需要逐条细看时走这里。
    */
   const answerOne = pathname.match(
-    /^\/v1\/(tasks\/(tsk_[a-f0-9]+)|task-groups\/(grp_[a-f0-9]+))\/answers\/(run_[A-Za-z0-9_-]+)$/,
+    /^\/v1\/(?:tasks\/(?<taskId>tsk_[a-f0-9]+)|task-groups\/(?<groupId>grp_[a-f0-9]+))\/answers\/(?<runId>run_[A-Za-z0-9_-]+)$/,
   );
   if (answerOne && req.method === "GET") {
     requireScope(auth, "reports:read");
-    const isGroup = answerOne[1].startsWith("task-groups");
+    // 命名捕获组，理由同 answerSearch
     const data = await getAnswerByRunId(db, {
       tenantId: tenant.id,
-      taskId: isGroup ? null : answerOne[2],
-      groupId: isGroup ? answerOne[2] : null,
-      runId: answerOne[3],
+      taskId: answerOne.groups.taskId ?? null,
+      groupId: answerOne.groups.groupId ?? null,
+      runId: answerOne.groups.runId,
     });
     return sendJson(res, 200, { data });
   }
