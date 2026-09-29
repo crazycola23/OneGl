@@ -57,7 +57,14 @@ function emptyPage({ tenantId, taskId, groupId, platforms, limit, afterId, ratio
         "这是正常状态 —— 先发起采集，产出的回答会出现在这里。" +
         (platforms?.length ? `（当前按 ${platforms.join("、")} 过滤）` : ""),
       scope: { task_id: taskId ?? null, group_id: groupId ?? null, tenant_id: tenantId },
-      requested: { limit, after_id: afterId ?? null },
+      // 原样回显请求参数：空结果时调用方更需要知道「我要的是什么」，
+      // 否则无法区分「请求写错了」和「确实还没有数据」。
+      requested: {
+        limit,
+        after_id: afterId ?? null,
+        sample_ratio: ratio ?? null,
+        platforms: platforms ?? null,
+      },
     },
   };
 }
