@@ -777,6 +777,18 @@ async function submitPrompt(page, prompt) {
  */
 const DOUBAO_FIRST_TOKEN_MS_DEFAULT = 180_000;
 
+/**
+ * 答案的最小可信长度。
+ *
+ * 平台开始流式输出时，DOM 里先出现的是「The」这种还没成句的片段。
+ * 早先没有任何长度判据，于是 3 个字符的片段被当成完整答案 —— 状态判 success，
+ * 品牌提及与引用统计全算在它头上。
+ *
+ * 阈值取 12：短于它的几乎都是流式开头的残片。实测正常豆包答案最短也有
+ * 几十字符（"Paris is the capital of France." = 31），远高于 12。
+ */
+const MIN_ANSWER_CHARS = 12;
+
 async function waitForAnswer(page, baselineAnswers, config) {
   const baseline = new Set(baselineAnswers.map(normalizeText));
   // 计时起点是 submitPrompt 刚返回的时刻：提交动作已经完成，前面的页面准备与随机延迟都不占这条预算。
@@ -814,7 +826,19 @@ async function waitForAnswer(page, baselineAnswers, config) {
         !baseline.has(normalizeText(item.text)) &&
         !PLACEHOLDER_ANSWERS.has(normalizeText(item.text)),
     );
-    const current = usable.map((item) => normalizeText(item.text));
+  // 过短的片段不是答案。
+  //
+  // 实测（2026-09-29，匿名面）：问「What is the boiling point of water…」之后
+  // 只读到 3 个字符的 "The"，而 status 被判为 success。
+  // 它通过了上面所有过滤（不是用户气泡、不在基线里、不是占位符），
+  // 于是被当成完整答案 —— 品牌提及、引用统计、报告里的回答数全算在这 3 个字符上。
+  //
+  // 这与 ANSWER_NOT_FOUND 是同一类问题的近亲：那边是「一个字都没有」，
+  // 这里是「有字但明显没写完」。两者都不该进库。
+  const substantive = usable.filter(
+    (item) => normalizeText(item.text).length >= MIN_ANSWER_CHARS,
+  );
+  const current = substantive.map((item) => normalizeText(item.text));
     const answer = current.at(-1) || "";
     const running = usable.some((item) => item.streaming) || (await isGenerating(page));
 
