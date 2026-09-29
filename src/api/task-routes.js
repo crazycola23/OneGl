@@ -25,6 +25,7 @@ import {
   createGeoCustomerReport,
   getGeoCustomerReport,
   getGeoCustomerReportHtml,
+  getLatestGeoCustomerReport,
   listGeoCustomerReports,
 } from "../reporting/geo-customer-reports.js";
 import { compareGeoCustomerReports } from "../reporting/geo-report-compare.js";
@@ -626,13 +627,43 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
    *
    * 用查询参数而不是路径嵌套，是因为对比的是「两个平级报告」而不是「某报告的子资源」。
    * 只返回同口径差值与来源结构变化，不含自然语言结论 —— 解读由调用方的模型做。
+   *
+   * 两侧各接受两种定位方式，因为实际用法有两种：
+   *   - 报告 id：调用方已经知道要对比哪两份（比如它自己刚生成过）
+   *   - 任务/任务组 id：调用方手上是两个任务，自动取各自最新一份 ——
+   *     这才是「选甲任务和乙任务对比」的直接形态，否则 report_id 这个
+   *     生成时才产生的内部标识会泄漏成调用方的负担，也容易挑错报告。
    */
   if (pathname === "/v1/geo-reports/compare" && req.method === "GET") {
     requireScope(auth, "reports:read");
-    const base = url.searchParams.get("base_report_id");
-    const target = url.searchParams.get("target_report_id");
+    const q = url.searchParams;
+    const resolveSide = async (side) => {
+      const reportId = q.get(`${side}_report_id`);
+      if (reportId) return reportId;
+      const groupId = q.get(`${side}_group_id`);
+      const taskId = q.get(`${side}_task_id`);
+      if (groupId || taskId) {
+        const resolved = await getLatestGeoCustomerReport(db, {
+          tenantId: tenant.id,
+          groupId: groupId ?? null,
+          taskId: taskId ?? null,
+        });
+        if (!resolved) {
+          throw new ApiHttpError(404, "no_report_for_scope", `no ${side} report found for the given scope`);
+        }
+        return resolved;
+      }
+      return null;
+    };
+    const base = await resolveSide("base");
+    const target = await resolveSide("target");
     if (!base || !target) {
-      throw new ApiHttpError(400, "invalid_request", "base_report_id and target_report_id are required");
+      throw new ApiHttpError(
+        400,
+        "invalid_request",
+        "each side needs report_id, group_id or task_id " +
+          "(e.g. base_group_id=grp_…&target_group_id=grp_… to compare the latest report of two tasks)",
+      );
     }
     const data = await compareGeoCustomerReports(db, {
       tenantId: tenant.id,

@@ -943,6 +943,44 @@ function assertSnapshotIntegrity(payload, hash) {
   }
 }
 
+/**
+ * 取某个范围（任务组或单任务）下最新的一份报告。
+ *
+ * 「选甲任务和乙任务对比」这个用法里，调用方手上是两个任务/任务组，
+ * 而不是两个 report_id —— report_id 是生成报告时才产生的。让调用方先查历史、
+ * 再从列表里挑 id、手工配对，是把 OneGl 内部的 ID 泄漏成了调用方的负担，
+ * 而且很容易挑错（挑到别的任务组的报告）。
+ *
+ * 入参是 public_id（grp_…/tsk_…），与对外契约一致；先解析成内部主键再查，
+ * 不能拿 public_id 直接去比内部 bigint 列。
+ */
+export async function getLatestGeoCustomerReport(pool, { tenantId, taskId = null, groupId = null }) {
+  if (!taskId && !groupId) fail("task_id or group_id is required");
+  // public_id → 内部主键。与对外契约一致的是 public_id，
+  // 而 reports 表存的是内部 bigint，两者不能直接比较。
+  const { rows: scope } = await pool.query(
+    `SELECT
+       (SELECT id FROM service_tasks      WHERE tenant_id = $1 AND public_id = $2) AS task_db_id,
+       (SELECT id FROM service_task_groups WHERE tenant_id = $1 AND public_id = $3) AS group_db_id`,
+    [tenantId, taskId, groupId],
+  );
+  const taskDbId = scope[0]?.task_db_id ?? null;
+  const groupDbId = scope[0]?.group_db_id ?? null;
+  if (!taskDbId && !groupDbId) return null;
+
+  const { rows } = await pool.query(
+    `SELECT r.public_id
+       FROM service_geo_reports r
+      WHERE r.tenant_id = $1
+        AND (($2::bigint IS NOT NULL AND r.task_id = $2)
+          OR ($3::bigint IS NOT NULL AND r.group_id = $3))
+      ORDER BY r.id DESC
+      LIMIT 1`,
+    [tenantId, taskDbId, groupDbId],
+  );
+  return rows[0]?.public_id ?? null;
+}
+
 export async function getGeoCustomerReport(pool, { tenantId, reportPublicId }) {
   // task_id / group_id 必须都是 LEFT JOIN：跨平台报告的 task_id 是空的（归属在组上），
   // 用 INNER JOIN 会把整类组报告静默过滤掉，表现为「刚生成的报告立刻查不到」。

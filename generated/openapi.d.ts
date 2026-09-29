@@ -666,7 +666,9 @@ export interface paths {
         };
         /**
          * Compare two GEO report snapshots
-         * @description Aligns two immutable snapshots by period and platform and returns per-metric deltas plus source-structure changes. Returns numbers only: a missing metric is null rather than 0, so callers can distinguish a real drop from a period or platform that was not collected. Natural-language conclusions are intentionally not produced — generate them with your own model from these deltas.
+         * @description Aligns two immutable snapshots by period and platform and returns per-metric deltas, competitor mention movement, and source-structure changes. Returns numbers only: a missing metric is null rather than 0, so callers can distinguish a real drop from a period or platform that was not collected. Natural-language conclusions are intentionally not produced — generate them with your own model from these deltas.
+         *
+         *     Each side is located in one of three ways, checked in this order: *_report_id, then *_group_id, then *_task_id. The group/task forms resolve to that scope's most recent report, which is what you want when comparing two tasks rather than two specific snapshots.
          */
         get: operations["getGeoReportsCompare"];
         put?: never;
@@ -1876,14 +1878,20 @@ export interface components {
             answer: string;
             /** @description Full length before slicing. */
             answer_chars: number;
-            /** @description The platform itself appeared to be cut off mid-answer. */
-            answer_truncated?: boolean | null;
+            /**
+             * @description How the end of the answer was decided. Null on old rows; treat as untrusted only for the two explicitly untrusted values.
+             * @enum {string|null}
+             */
+            answer_completion?: "follow-up-chips" | "length-stability-fallback" | "timeout" | "unknown" | null;
+            /** @description The platform appears to have stopped mid-answer. Untrusted answers are already excluded from this endpoint, so this is informational. */
+            answer_truncated?: boolean;
             batch_id: number;
             citation_count?: number;
             /** @enum {string} */
             platform: "doubao" | "qianwen" | "wenxin" | "zhipu";
             question: string | null;
             run_id: string;
+            /** @description The response text was cut at MAX answer length for transport. */
             truncated_by_length?: boolean;
         } & {
             [key: string]: unknown;
@@ -1901,8 +1909,10 @@ export interface components {
                 [key: string]: unknown;
             };
             meta: {
+                /** @constant */
+                cursor_basis?: "scan_window_end";
                 has_more: boolean;
-                /** @description Pass back as after_id to continue. Null when the page is the last one. */
+                /** @description Pass back as after_id to continue. Null when the scan window reached the end. This is the window end, not the last returned id, so answers skipped by sample_ratio inside the window stay reachable. */
                 next_cursor: string | null;
             } & {
                 [key: string]: unknown;
@@ -1910,12 +1920,15 @@ export interface components {
             returned: number;
             sample_ratio?: number | null;
             sampled: boolean;
-            /** @description Hard ceiling on candidates examined in one call. Reaching it means results are truncated. */
+            /** @description Hard ceiling on candidates examined in one call. */
             scan_cap: number;
+            /** @description True when scan_cap was hit, meaning more answers exist beyond the current window. */
+            scan_truncated?: boolean;
             /** @description Candidates examined after applying filters; capped by scan_cap. */
             scanned: number;
             /** @description Same seed always selects the same answers, so a model-derived brand list can be reproduced. */
             seed?: string | null;
+            /** @description Same as scanned: candidates in the current window, NOT the full table count. */
             total_available: number;
         } & {
             [key: string]: unknown;
@@ -2063,14 +2076,23 @@ export interface components {
             [key: string]: unknown;
         };
         BrandMentionsResource: {
+            /** @description Answers that count toward mention-rate denominators. */
             answer_count: number;
+            /** @description False when no brand analysis was performed (no brands supplied, or no usable answers). Distinguishes 'not measured' from 'measured and not mentioned', whose brand list is empty but available is true. */
+            available: boolean;
             /** @constant */
             basis: "mentioned_answers_over_valid_answers";
             brand_count: number;
             brands: components["schemas"]["GeoReportBrandSummary"][];
+            /** @description Answers dropped before counting: blank, shorter than the minimum usable length (platform UI text such as '找到 1 篇资料'), or flagged as truncated by the platform. Reported so the denominator is auditable. */
+            excluded_answers: number;
             interpretation: {
                 [key: string]: unknown;
             };
+            /** @description Caveats affecting how the numbers above should be read. */
+            notes?: string[];
+            /** @description True when the answer count exceeded the per-report statistics limit; mention rates were computed on the earliest answers only. */
+            truncated: boolean;
         } & {
             [key: string]: unknown;
         };
@@ -2493,6 +2515,38 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** @description One competitor's mention movement between the two reports. Null on either side means the brand was not measured in that report — not that it scored zero. */
+        GeoReportCompareBrandDelta: {
+            base: {
+                [key: string]: unknown;
+            } | null;
+            comparable: boolean;
+            current: {
+                [key: string]: unknown;
+            } | null;
+            mention_count_delta?: number | null;
+            mention_rate_delta_percentage_points?: number | null;
+            name: string;
+            present_in_base: boolean;
+            present_in_current: boolean;
+            /** @enum {string} */
+            role?: "own" | "competitor" | "unspecified";
+        } & {
+            [key: string]: unknown;
+        };
+        /** @description Competitor mention comparison. Deterministic deltas only; interpretation is left to the caller's model. */
+        GeoReportCompareBrandMentions: {
+            available: boolean;
+            base_answer_count?: number | null;
+            brands: components["schemas"]["GeoReportCompareBrandDelta"][];
+            /** @description Valid answers on the target side; the mention-rate denominator. */
+            current_answer_count?: number | null;
+            /** @description True when the two periods used different denominators, so a rate change may reflect sampling rather than brand performance. */
+            denominator_changed?: boolean | null;
+            reason?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         GeoReportCompareDomain: {
             citations: number | null;
             covered_runs: number | null;
@@ -2507,25 +2561,25 @@ export interface components {
             base_period_label?: string | null;
             /** Format: date */
             base_period_to?: string | null;
-            citations?: {
+            brand_mentions: components["schemas"]["GeoReportCompareBrandMentions"];
+            citations: {
                 [key: string]: unknown;
-            };
+            } | null;
             /** Format: date */
-            period_from?: string;
-            /** @description Caller-supplied key of the period taken from the target report. */
-            period_key?: string;
-            period_label?: string;
+            period_from?: string | null;
+            period_key?: string | null;
+            period_label?: string | null;
             /** Format: date */
-            period_to?: string;
+            period_to?: string | null;
             /** @enum {string} */
             platform: "doubao" | "qianwen" | "wenxin" | "zhipu";
-            /** @description False means the platform is missing from one side; deltas are null, not 0. */
+            /** @description False means the platform is missing from one side; metrics are null, not 0. */
             present_in_both: boolean;
-            present_in_target?: boolean;
-            removed_since_base?: boolean;
-            runs?: {
+            present_in_target: boolean;
+            removed_since_base: boolean;
+            runs: {
                 [key: string]: unknown;
-            };
+            } | null;
             top_domains?: {
                 current?: components["schemas"]["GeoReportCompareDomain"][];
                 /** @description Domains present in target but absent from base. */
@@ -2536,9 +2590,9 @@ export interface components {
             } & {
                 [key: string]: unknown;
             };
-            tracked_content?: {
+            tracked_content: {
                 [key: string]: unknown;
-            };
+            } | null;
         } & {
             [key: string]: unknown;
         };
@@ -5779,11 +5833,19 @@ export interface operations {
     };
     getGeoReportsCompare: {
         parameters: {
-            query: {
-                /** @description Earlier snapshot. */
-                base_report_id: string;
-                /** @description Later snapshot to measure against the base. */
-                target_report_id: string;
+            query?: {
+                /** @description Earlier snapshot. Mutually exclusive with base_group_id / base_task_id. */
+                base_report_id?: string;
+                /** @description Later snapshot to measure against the base. Mutually exclusive with target_group_id / target_task_id. */
+                target_report_id?: string;
+                /** @description Compare the most recent report of this task group against the target. Use this to compare two tasks directly. */
+                base_group_id?: string;
+                /** @description Most recent report of this task group acts as the target. */
+                target_group_id?: string;
+                /** @description Same as base_group_id but for a single collection task. */
+                base_task_id?: string;
+                /** @description Same as target_group_id but for a single collection task. */
+                target_task_id?: string;
             };
             header?: never;
             path?: never;
@@ -7693,7 +7755,7 @@ export interface operations {
                 /** @description Batch local start date, inclusive. */
                 to?: string;
                 limit?: number;
-                /** @description Opaque-ish cursor: pass meta.next_cursor from the previous page to continue. Answers are ordered by internal run id, so pages never overlap or skip. Combine with sample_ratio only on the first page — resampling a later page would not correspond to the first. */
+                /** @description Continuation cursor from meta.next_cursor of the previous page. The cursor is the end of the SCAN window, not of the returned page: answers filtered out by sample_ratio inside a window remain reachable on later pages, so no answer is skipped. It equals runs.id ordering. */
                 after_id?: number;
                 /** @description Sampling seed. The same seed always yields the same answers. */
                 seed?: string;

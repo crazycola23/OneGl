@@ -12808,26 +12808,60 @@
     },
     "/v1/geo-reports/compare": {
       "get": {
-        "description": "Aligns two immutable snapshots by period and platform and returns per-metric deltas plus source-structure changes. Returns numbers only: a missing metric is null rather than 0, so callers can distinguish a real drop from a period or platform that was not collected. Natural-language conclusions are intentionally not produced — generate them with your own model from these deltas.",
+        "description": "Aligns two immutable snapshots by period and platform and returns per-metric deltas, competitor mention movement, and source-structure changes. Returns numbers only: a missing metric is null rather than 0, so callers can distinguish a real drop from a period or platform that was not collected. Natural-language conclusions are intentionally not produced — generate them with your own model from these deltas.\n\nEach side is located in one of three ways, checked in this order: *_report_id, then *_group_id, then *_task_id. The group/task forms resolve to that scope's most recent report, which is what you want when comparing two tasks rather than two specific snapshots.",
         "operationId": "getGeoReportsCompare",
         "parameters": [
           {
-            "description": "Earlier snapshot.",
+            "description": "Earlier snapshot. Mutually exclusive with base_group_id / base_task_id.",
             "in": "query",
             "name": "base_report_id",
-            "required": true,
             "schema": {
               "pattern": "^rpt_[a-f0-9]{32}$",
               "type": "string"
             }
           },
           {
-            "description": "Later snapshot to measure against the base.",
+            "description": "Later snapshot to measure against the base. Mutually exclusive with target_group_id / target_task_id.",
             "in": "query",
             "name": "target_report_id",
-            "required": true,
             "schema": {
               "pattern": "^rpt_[a-f0-9]{32}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Compare the most recent report of this task group against the target. Use this to compare two tasks directly.",
+            "in": "query",
+            "name": "base_group_id",
+            "schema": {
+              "pattern": "^grp_[a-f0-9]{32}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Most recent report of this task group acts as the target.",
+            "in": "query",
+            "name": "target_group_id",
+            "schema": {
+              "pattern": "^grp_[a-f0-9]{32}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Same as base_group_id but for a single collection task.",
+            "in": "query",
+            "name": "base_task_id",
+            "schema": {
+              "pattern": "^tsk_[a-f0-9]{32}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Same as target_group_id but for a single collection task.",
+            "in": "query",
+            "name": "target_task_id",
+            "schema": {
+              "pattern": "^tsk_[a-f0-9]{32}$",
               "type": "string"
             }
           }

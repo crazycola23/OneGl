@@ -1327,24 +1327,50 @@ export function applySaasOpenApi(document) {
       get: {
         summary: "Compare two GEO report snapshots",
         description:
-          "Aligns two immutable snapshots by period and platform and returns per-metric deltas plus source-structure " +
-          "changes. Returns numbers only: a missing metric is null rather than 0, so callers can distinguish a real " +
-          "drop from a period or platform that was not collected. Natural-language conclusions are intentionally not " +
-          "produced — generate them with your own model from these deltas.",
+          "Aligns two immutable snapshots by period and platform and returns per-metric deltas, competitor mention " +
+          "movement, and source-structure changes. Returns numbers only: a missing metric is null rather than 0, " +
+          "so callers can distinguish a real drop from a period or platform that was not collected. " +
+          "Natural-language conclusions are intentionally not produced — generate them with your own model from " +
+          "these deltas.\n\n" +
+          "Each side is located in one of three ways, checked in this order: *_report_id, then *_group_id, then " +
+          "*_task_id. The group/task forms resolve to that scope's most recent report, which is what you want " +
+          "when comparing two tasks rather than two specific snapshots.",
         parameters: [
           {
             name: "base_report_id",
             in: "query",
-            required: true,
             schema: reportId,
-            description: "Earlier snapshot.",
+            description: "Earlier snapshot. Mutually exclusive with base_group_id / base_task_id.",
           },
           {
             name: "target_report_id",
             in: "query",
-            required: true,
             schema: reportId,
-            description: "Later snapshot to measure against the base.",
+            description: "Later snapshot to measure against the base. Mutually exclusive with target_group_id / target_task_id.",
+          },
+          {
+            name: "base_group_id",
+            in: "query",
+            schema: groupId,
+            description: "Compare the most recent report of this task group against the target. Use this to compare two tasks directly.",
+          },
+          {
+            name: "target_group_id",
+            in: "query",
+            schema: groupId,
+            description: "Most recent report of this task group acts as the target.",
+          },
+          {
+            name: "base_task_id",
+            in: "query",
+            schema: { type: "string", pattern: "^tsk_[a-f0-9]{32}$" },
+            description: "Same as base_group_id but for a single collection task.",
+          },
+          {
+            name: "target_task_id",
+            in: "query",
+            schema: { type: "string", pattern: "^tsk_[a-f0-9]{32}$" },
+            description: "Same as target_group_id but for a single collection task.",
           },
         ],
         responses: {
