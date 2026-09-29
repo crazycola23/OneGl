@@ -129,15 +129,35 @@ test("整体渲染：恶意 theme 不会在文档里留下可执行内容", () =
   // 浏览器真正会执行的是：**未转义的**标签与事件处理器属性。
   // 文本节点里的 "<script>" 字面量是安全的（显示为文字，不执行）。
   const styleBlock = html.slice(0, html.indexOf("</style>"));
+  // display:none 的检测必须区分「谁写的」。
+  // 渲染器自己的响应式规则里就有 display:none（窄屏时收起侧边栏的辅助区），
+  // 那是正常写法；恶意 theme 注入的 display:none 会让**正文**整段消失。
+  // 判据：正文容器（body / main / section / table / .hero）被隐藏才算注入。
+  // 早期版本只判 "有没有 display:none"，结果加个正常的响应式规则就被判失败。
+  const hideMainContent = /(?:^|[};{])\s*(?:body|main|section|table|\.hero)\s*\{[^}]*display\s*:\s*none/i
+    .test(styleBlock);
   const problems = [
     ["未转义的 script 标签", /<script[\s>]/i.test(html)],
     ["未转义的 iframe/object", /<(iframe|object|embed)[\s>]/i.test(html)],
     ["事件处理器属性", /\son(?:error|load|click|mouseover)\s*=/i.test(html)],
     ["javascript: 协议", /javascript:/i.test(html)],
-    ["style 里注入 display:none", /display\s*:\s*none/i.test(styleBlock)],
+    ["style 里隐藏正文", hideMainContent],
   ].filter(([, hit]) => hit);
 
   assert.deepEqual(problems, [], `发现可执行内容: ${problems.map(([n]) => n).join(", ")}`);
+});
+
+test("恶意 theme 的 accent 注入确实会被挡住（防止上面的检测被改成永远通过）", () => {
+  const evil = buildGeoCustomerReportHtml(payload({
+    colors: { accent: "}body{display:none" },
+  }));
+  const styleBlock = evil.slice(0, evil.indexOf("</style>"));
+  // 注入的原始形态应当在 CSS 里被截断或转义 —— 无论最终是「没有 display:none」
+  // 还是「theme 整段被丢弃」，都不能让 body 真的被隐藏。
+  assert.ok(
+    !/(?:^|[};{])\s*body\s*\{[^}]*display\s*:\s*none/i.test(styleBlock),
+    "accent 里的 }body{display:none 不得生效",
+  );
 });
 
 test("页脚里的 script 字面量以文本形式呈现而非被执行", () => {

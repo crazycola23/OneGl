@@ -72,20 +72,26 @@ function overviewSection(payload, rows) {
     ["目标内容配置", payload.target.tracked_articles_configured ? numberText(payload.target.tracked_articles_count) + " 篇" : "未配置"],
   ].map(([label, value]) => "<div class=\"card\"><div class=\"muted\">" + escapeHtml(label) +
     "</div><strong class=\"num\">" + escapeHtml(value) + "</strong></div>").join("");
-  const summaryRows = rows.map(({ period, platform }) => [
-    escapeHtml(period.label),
-    platformTag(platform.platform, payload),
-    "<span class=\"num\">" + numberText(platform.runs.assignments) + "</span>",
-    "<span class=\"num\">" + numberText(platform.runs.valid_runs) + "</span>",
-    "<span class=\"num\">" + percentage(platform.runs.success_rate) + "</span>",
-    "<span class=\"num\">" + numberText(platform.runs.partial_runs) + "</span>",
-    "<span class=\"num\">" + numberText(platform.runs.failed_runs) + "</span>",
-    "<span class=\"num\">" + numberText(platform.runs.average_answer_characters) + "</span>",
-    "<span class=\"num\">" + (platform.runs.brand_mention_rate == null
-      ? "N/A" : percentage(platform.runs.brand_mention_rate) + " (" + numberText(platform.runs.brand_mentioned_runs) + ")") + "</span>",
-    "<span class=\"num\">" + numberText(platform.citations.citation_valid_runs) + "</span>",
-    "<span class=\"num\">" + numberText(platform.citations.visible_citations) + "</span>",
-  ]);
+  // 概览按平台分块，而不是一张「阶段 × 平台」交叉表。
+  // 交叉表在两个平台、两个阶段时就已经要跨行读数；平台一多就没法看了。
+  const platformTables = groupBlocksByPlatform(rows).map((group) =>
+    "<h4>" + platformTag(group.platform, payload) + "</h4>" +
+    table(["阶段", "分配数", "有效回答", "采集完成率", "部分回答", "失败", "平均答长",
+      "项目品牌提及率", "可计引用回答", "可见引用"],
+      group.items.map(({ period, platform }) => [
+        escapeHtml(period.label),
+        "<span class=\"num\">" + numberText(platform.runs.assignments) + "</span>",
+        "<span class=\"num\">" + numberText(platform.runs.valid_runs) + "</span>",
+        "<span class=\"num\">" + percentage(platform.runs.success_rate) + "</span>",
+        "<span class=\"num\">" + numberText(platform.runs.partial_runs) + "</span>",
+        "<span class=\"num\">" + numberText(platform.runs.failed_runs) + "</span>",
+        "<span class=\"num\">" + numberText(platform.runs.average_answer_characters) + "</span>",
+        "<span class=\"num\">" + (platform.runs.brand_mention_rate == null
+          ? "N/A" : percentage(platform.runs.brand_mention_rate) + " (" + numberText(platform.runs.brand_mentioned_runs) + ")") + "</span>",
+        "<span class=\"num\">" + numberText(platform.citations.citation_valid_runs) + "</span>",
+        "<span class=\"num\">" + numberText(platform.citations.visible_citations) + "</span>",
+      ]))).join("");
+
   return "<section id=\"sec-01\"><h2>1. 执行概览</h2>" +
     "<p>目标：" + escapeHtml(payload.target.name) + (payload.target.brand ? " · 品牌：" + escapeHtml(payload.target.brand) : " · 品牌未配置") +
     "。报告生成于 " + escapeHtml(new Date(payload.generated_at).toLocaleString("zh-CN", { timeZone: reportTimeZone })) +
@@ -94,9 +100,8 @@ function overviewSection(payload, rows) {
     // 表头必须点明这是「采集期项目品牌」的口径。
     // 同一份报告第 3 节讲的是本次请求传入的竞品，两个都叫「品牌提及率」
     // 会让读者以为其中一处在算错。采集期那个值本身没错，只是另一批品牌。
-    table(["阶段", "平台", "分配数", "有效回答", "采集完成率", "部分回答", "失败", "平均答长",
-      "项目品牌提及率", "可计引用回答", "可见引用"], summaryRows) +
-    note("按阶段 × 平台列出；不合并不同阶段的重复采集。",
+    platformTables +
+    note("按平台分块，块内按阶段列出；不合并不同阶段的重复采集。",
       "分配数来自 sampling_batch_prompts；有效回答须为 success/partial 且确认新会话。" +
       "「采集完成率」= 有效回答 / 分配数，衡量的是采集是否跑完，不是回答内容质量；" +
       "未执行的分配仍计入分母，完成率偏低时该平台样本更小、指标更不稳定。" +
@@ -248,44 +253,6 @@ function institutionSection(payload, rows) {
   }
 
   const cross = crossPlatformBrandTable(payload, rows);
-  const blocks = rows.map(({ period, platform }) => {
-    const stats = platform.brand_mentions ?? { brands: [] };
-    const mentionRows = stats.brands.map((item, index) => [
-      "<span class=\"num\">" + numberText(index + 1) + "</span>",
-      escapeHtml(item.name) + roleTag(item.role),
-      "<span class=\"num\">" + numberText(item.mentioned_answers) + " / " + numberText(item.valid_answers) + "</span>",
-      "<span class=\"num\">" + percentage(item.mention_rate) + "</span>",
-      "<span class=\"num\">" + numberText(item.mention_count) + "</span>",
-      "<span class=\"num\">" + numberText(item.average_first_position) + "</span>",
-      Object.keys(item.by_platform ?? {}).map((p) =>
-        platformTag(p, payload) + " " + numberText(item.by_platform[p].mentioned_answers) + "/" +
-        numberText(item.by_platform[p].valid_answers)
-      ).join(" "),
-    ]);
-    const examples = stats.brands
-      .filter((item) => item.examples?.length)
-      .slice(0, 6)
-      .map((item) => {
-        const sample = item.examples[0];
-        return "<li><b>" + escapeHtml(item.name) + "</b> · 命中 " +
-          escapeHtml((sample.matched_terms ?? []).join("、")) + " · " + escapeHtml(sample.run_id) +
-          "<div class=\"quote\">" + escapeHtml(sample.context) + "</div></li>";
-      })
-      .join("");
-
-    return "<div class=\"subpanel\"><h3>" + escapeHtml(period.label) + " · " +
-      platformTag(platform.platform, payload) + "</h3>" +
-      table(["#", "品牌", "提及回答", "提及率", "提及次数", "首现位置均值", "分平台"], mentionRows) +
-      note(
-        "基于 " + numberText(stats.answer_count) + " 条有正文的回答。",
-        "提及率 = 提及该品牌的回答数 ÷ 有正文的回答数。匹配用调用方传入的 match_terms（品牌名+别名+产品名），子串匹配。" +
-        "首现位置均值越小说明 AI 越早提到它。",
-        "这是提及统计，不是推荐排序。哪个更值得投入、被提及是主动推荐还是顺带列举，" +
-        "请结合下方原文用模型分析。") +
-      (examples ? "<h4>原文出处</h4><ul class=\"quotes\">" + examples + "</ul>" : "") +
-      "</div>";
-  });
-
   return "<section id=\"sec-03\"><h2>3. 品牌提及对比</h2>" +
     (cross
       ? "<h4>跨平台对照</h4>" + cross +
@@ -295,12 +262,69 @@ function institutionSection(payload, rows) {
           "不参与差值计算 —— 0% 与「没样本」不是一回事。",
           "这张表回答「哪个平台偏爱哪个竞品」。具体推荐强度、以及该往哪边投放，需要读原文后用模型判断。")
       : "") +
+    // 分平台明细按平台分块，块与块之间不再共用一张表。
+    // 混在一张表里时，读的人得自己在脑子里做减法才知道每个平台的情况。
     "<h4>分平台明细</h4>" +
-    blocks.join("") +
+    groupBlocksByPlatform(rows).map((group) =>
+      "<div class=\"subpanel\"><h3>" + platformTag(group.platform, payload) +
+      " <span class=\"muted small\">共 " + numberText(group.items.length) + " 个阶段</span></h3>" +
+      group.items.map(({ period, platform }) => {
+        const stats = platform.brand_mentions ?? { brands: [] };
+        const mentionRows = stats.brands.map((item, index) => [
+          "<span class=\"num\">" + numberText(index + 1) + "</span>",
+          escapeHtml(item.name) + roleTag(item.role),
+          "<span class=\"num\">" + numberText(item.mentioned_answers) + " / " + numberText(item.valid_answers) + "</span>",
+          "<span class=\"num\">" + percentage(item.mention_rate) + "</span>",
+          "<span class=\"num\">" + numberText(item.mention_count) + "</span>",
+          "<span class=\"num\">" + numberText(item.average_first_position) + "</span>",
+        ]);
+        const examples = stats.brands
+          .filter((item) => item.examples?.length)
+          .slice(0, 6)
+          .map((item) => {
+            const sample = item.examples[0];
+            return "<li><b>" + escapeHtml(item.name) + "</b> · 命中 " +
+              escapeHtml((sample.matched_terms ?? []).join("、")) + " · " + escapeHtml(sample.run_id) +
+              "<div class=\"quote\">" + escapeHtml(sample.context) + "</div></li>";
+          })
+          .join("");
+
+        return "<h4>" + escapeHtml(period.label) + "</h4>" +
+          table(["#", "品牌", "提及回答", "提及率", "提及次数", "首现位置均值"], mentionRows) +
+          note(
+            "基于 " + numberText(stats.answer_count) + " 条有正文的回答。",
+            "提及率 = 提及该品牌的回答数 ÷ 有正文的回答数。匹配用调用方传入的 match_terms（品牌名+别名+产品名），子串匹配。" +
+            "首现位置均值越小说明 AI 越早提到它。",
+            "这是提及统计，不是推荐排序。哪个更值得投入、被提及是主动推荐还是顺带列举，" +
+            "请结合下方原文用模型分析。") +
+          (examples ? "<h5>原文出处</h5><ul class=\"quotes\">" + examples + "</ul>" : "");
+      }).join("") +
+      "</div>").join("") +
     "<div class=\"callout\"><b>这一节提供数据，不提供结论。</b>" +
     "提及率是确定性统计，可复现、可核对；但「被提及」不等于「被推荐」——" +
     "判断推荐强度排序、渠道差异、以及该不该投放，需要阅读原文后用你自己的模型分析。" +
     "品牌列表由报告请求的 brands 参数传入，OneGl 不预设品牌、不猜机构名。</div></section>";
+}
+
+/**
+ * 把 rows 按平台聚起来。
+ *
+ * 一份报告横跨多个平台时，同一个品牌在每个平台各有一行，中间还夹着阶段列 ——
+ * 读的人要自己在脑子里做减法才知道「千问这边到底谁排第一」。按平台分块之后，
+ * 每个平台自成一块，块内只有该平台的数据。
+ *
+ * 块内按平台出现顺序分组（Map 保序），组内保持原来的阶段顺序，
+ * 这样同平台跨阶段时读起来仍然是从早到晚。
+ */
+function groupBlocksByPlatform(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    if (!groups.has(row.platform.platform)) {
+      groups.set(row.platform.platform, { platform: row.platform.platform, items: [] });
+    }
+    groups.get(row.platform.platform).items.push(row);
+  }
+  return [...groups.values()];
 }
 
 function roleTag(role) {
@@ -310,38 +334,42 @@ function roleTag(role) {
 }
 
 function sourcesSection(payload, rows) {
-  const blocks = rows.map(({ period, platform }) => {
-    const domainRows = platform.citations.top_domains.map((item) => [
-      escapeHtml(item.domain),
-      "<span class=\"num\">" + numberText(item.citations) + "</span>",
-      "<span class=\"num\">" + numberText(item.unique_articles) + "</span>",
-      "<span class=\"num\">" + numberText(item.covered_runs) + "</span>",
-      "<span class=\"num\">" + percentage(item.covered_run_rate) + "</span>",
-    ]);
-    const articleRows = platform.citations.top_articles.map((item) => [
-      sourceLink(item.canonical_url, item.title || item.canonical_url),
-      escapeHtml(item.domain || "—"),
-      "<span class=\"num\">" + numberText(item.citations) + "</span>",
-      "<span class=\"num\">" + numberText(item.covered_runs) + "</span>",
-    ]);
-    const valid = platform.citations.citation_valid_runs;
-    return "<div class=\"subpanel\"><h3>" + escapeHtml(period.label) + " · " +
-      platformTag(platform.platform, payload) + "</h3><h4>来源域名</h4>" +
-      table(["域名", "引用数", "唯一文章", "覆盖回答", "覆盖率"], domainRows) +
-      note(numberText(valid) + " 条可计引用回答；" + numberText(platform.citations.content_citations) + " 条内容引用",
-        "按覆盖回答数降序，展示前 12 个域名；覆盖率分母为可计引用回答。",
-        "可优先核对被更多回答引用的来源内容与客户页面主题是否一致。") +
-      "<h4>来源文章</h4>" + table(["文章", "域名", "引用数", "覆盖回答"], articleRows) +
-      note(numberText(platform.citations.content_citations) + " 条内容引用；" + numberText(platform.citations.unique_articles) + " 个唯一文章",
-        "按覆盖回答数、引用数降序，展示前 12 个 URL；不是随机抽样。",
-        "链接便于逐条核对引用证据；重复覆盖只说明共同出现频次。") +
+  // 与概览、品牌提及一致：按平台分块。域名排行混在一起时，
+  // 「豆包引用最多的域名」和「千问引用最多的域名」会并排出现，读的人得自己分清哪行属于谁。
+  const blocks = groupBlocksByPlatform(rows).map((group) => {
+    const inner = group.items.map(({ period, platform }) => {
+      const domainRows = platform.citations.top_domains.map((item) => [
+        escapeHtml(item.domain),
+        "<span class=\"num\">" + numberText(item.citations) + "</span>",
+        "<span class=\"num\">" + numberText(item.unique_articles) + "</span>",
+        "<span class=\"num\">" + numberText(item.covered_runs) + "</span>",
+        "<span class=\"num\">" + percentage(item.covered_run_rate) + "</span>",
+      ]);
+      const articleRows = platform.citations.top_articles.map((item) => [
+        sourceLink(item.canonical_url, item.title || item.canonical_url),
+        escapeHtml(item.domain || "—"),
+        "<span class=\"num\">" + numberText(item.citations) + "</span>",
+        "<span class=\"num\">" + numberText(item.covered_runs) + "</span>",
+      ]);
+      return "<h4>" + escapeHtml(period.label) + "</h4><h5>来源域名</h5>" +
+        table(["域名", "引用数", "唯一文章", "覆盖回答", "覆盖率"], domainRows) +
+        note(numberText(platform.citations.citation_valid_runs) + " 条可计引用回答；" + numberText(platform.citations.content_citations) + " 条内容引用",
+          "按覆盖回答数降序，展示前 12 个域名；覆盖率分母为可计引用回答。",
+          "可优先核对被更多回答引用的来源内容与客户页面主题是否一致。") +
+        "<h5>来源文章</h5>" + table(["文章", "域名", "引用数", "覆盖回答"], articleRows) +
+        note(numberText(platform.citations.content_citations) + " 条内容引用；" + numberText(platform.citations.unique_articles) + " 个唯一文章",
+          "按覆盖回答数、引用数降序，展示前 12 个 URL；不是随机抽样。",
+          "链接便于逐条核对引用证据；重复覆盖只说明共同出现频次。");
+    }).join("");
+    const iconTotal = group.items.reduce((sum, row) => sum + row.platform.citations.icon_citations, 0);
+    return "<div class=\"subpanel\"><h3>" + platformTag(group.platform, payload) + "</h3>" + inner +
+      (iconTotal ? "<p class=\"muted small\">本平台图标引用 " + numberText(iconTotal) + " 条，不纳入内容来源排行。</p>" : "") +
       "</div>";
   });
   return "<section id=\"sec-04\"><h2>4. 来源链接与引用强度</h2>" +
     (blocks.join("") || "<div class=\"empty\">当前范围没有可计引用。来源引用仅计成功且引用解析有效的回答中的可见来源。</div>") +
      "<p class=\"muted\">来源图标域（canonical_url 主机名为 cdn.sm.cn 与 gw.alicdn.com，" +
-     "落库归一化为 sm.cn 与 alicdn.com）单独计数，不纳入内容来源排行。当前平台合计图标引用：" +
-    numberText(rows.reduce((sum, row) => sum + row.platform.citations.icon_citations, 0)) + "。</p></section>";
+     "落库归一化为 sm.cn 与 alicdn.com）单独计数，不纳入内容来源排行。各平台合计见上方分块。</p></section>";
 }
 
 function regionsSection() {
@@ -657,7 +685,9 @@ const CSS = [
   "*{box-sizing:border-box}",
   "html{scroll-behavior:smooth}",
   "body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.75 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif}",
-  "main{max-width:1060px;margin:0 auto;padding:32px 24px 64px}",
+  // 侧边目录常驻：左侧固定栏 + 右侧正文。栏宽 232px，正文限宽保证行长可读。
+  "body{display:grid;grid-template-columns:232px minmax(0,1fr);align-items:start}",
+  "main{max-width:900px;margin:0 auto;padding:32px 24px 64px;width:100%}",
   "header.hero{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:28px;margin-bottom:18px}",
   "h1{font-size:25px;line-height:1.35;margin:0 0 10px}h2{font-size:18px;margin:0 0 14px;scroll-margin-top:18px}h3{font-size:15px;margin:18px 0 10px}h4{font-size:14px;margin:14px 0 8px}",
   "p{margin:8px 0}a{color:var(--accent);overflow-wrap:anywhere}",
@@ -673,7 +703,37 @@ const CSS = [
   ".key{border-left:4px solid var(--accent);background:#f5f8ff;padding:14px 16px;border-radius:8px;margin:12px 0}.key-title{font-weight:700}.key p:last-child{margin-bottom:0}",
   ".empty{border:1px dashed #cbd2dc;background:#fbfcfd;padding:14px 16px;border-radius:10px;color:var(--muted)}",
   ".guide{padding:18px 20px;margin:18px 0}.guide-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.guide a{font-weight:600}",
-  ".toclist{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:14px}.toclist a{text-decoration:none;font-size:12px}",
+  // 侧边栏本体：sticky 顶到视口顶部，高度不超过视口，内部可滚动。
+  // top 留 0 而不是留 header 高度 —— 栏里不放 hero，滚到顶就贴边更省空间。
+  ".sidenav{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;border-right:1px solid var(--line);background:var(--surface);padding:22px 0}",
+  ".sidenav-inner{padding:0 16px}",
+  ".sidenav-title{font-size:13px;margin:0 0 12px;color:var(--muted);letter-spacing:.06em}",
+  // 目录改成竖排：横排的 flex 标签在侧边窄栏里会折成一团，竖排才像目录。
+  ".sidenav .toclist{display:flex;flex-direction:column;gap:2px;margin:0}",
+  ".sidenav .toclist a{display:block;text-decoration:none;font-size:12.5px;padding:5px 9px;border-radius:6px;color:var(--ink);border-left:2px solid transparent}",
+  ".sidenav .toclist a:hover{background:#f2f5fa}",
+  // 当前章节高亮：不用 JS。
+  //
+  // 报告的 artifact_html 是落库快照，完整性校验只保证哈希一致、不保证内容没被改过，
+  // 所以这份 HTML 里不能有可执行脚本 —— test/render-hardening.test.mjs 就是钉这一条。
+  // 纯 CSS 做不到「滚动到哪一节」，于是改用 :target：点目录项时对应 section 变成
+  // 目标，:has() 顺带把对应目录项高亮。拿不到滚动跟随，但零脚本、零注入面。
+  ".sidenav .toclist a:active{background:#eef3fb}",
+  "@supports selector(:has(*)){" +
+  "body:has(#sec-01:target) .toclist a[href='#sec-01']," +
+  "body:has(#sec-02:target) .toclist a[href='#sec-02']," +
+  "body:has(#sec-03:target) .toclist a[href='#sec-03']," +
+  "body:has(#sec-04:target) .toclist a[href='#sec-04']," +
+  "body:has(#sec-05:target) .toclist a[href='#sec-05']," +
+  "body:has(#sec-06:target) .toclist a[href='#sec-06']," +
+  "body:has(#sec-07:target) .toclist a[href='#sec-07']," +
+  "body:has(#sec-08:target) .toclist a[href='#sec-08']," +
+  "body:has(#sec-09:target) .toclist a[href='#sec-09']," +
+  "body:has(#sec-10:target) .toclist a[href='#sec-10']," +
+  "body:has(#sec-11:target) .toclist a[href='#sec-11']" +
+  "{background:color-mix(in srgb,var(--accent) 9%,white);border-left-color:var(--accent);font-weight:650}}",
+  ".sidenav-guides{display:block;margin-top:18px;padding-top:14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}",
+  ".sidenav-guides div{margin:8px 0}.sidenav-guides strong{color:var(--ink)}",
   "details{border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:12px 0}summary{cursor:pointer;font-weight:650;color:var(--accent)}details ol{padding-left:24px}details li{margin:8px 0}",
   ".warnings{background:#fff8eb;border:1px solid #f3d5a4;border-radius:9px;padding:12px 12px 12px 32px;color:#7a4d0b}",
   // 排名节：callout 提示需要模型分析，quotes 是给 agent 判断用的原文出处片段
@@ -692,8 +752,11 @@ const CSS = [
   ".facts ul{margin:0;padding-left:20px}.facts li{margin:4px 0}",
   // 目录里标出「本期未启用」的章节：不标的话读者会以为漏看了内容
   ".toc-pending{color:var(--muted)}.toc-tag{color:var(--faint);font-weight:400;margin-left:4px}",
-  "@media(max-width:760px){main{padding:16px 12px 40px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.grid2,.guide-grid{grid-template-columns:1fr}section{padding:16px}.hero{padding:20px!important}}",
-  "@media print{@page{margin:14mm}body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}main{max-width:none;padding:0}section,.subpanel,.card,.guide{box-shadow:none;break-inside:avoid;border-color:#d7dce3}a{color:inherit;text-decoration:none}details{break-inside:avoid}details>summary{list-style:none}details:not([open])>*:not(summary){display:block}.toclist a:after{content:''}header.hero{border-color:#d7dce3}.table-wrap{overflow:visible}table{min-width:0;font-size:11px}th,td{padding:6px}}",
+  // 窄屏：侧边栏退回到正文顶部的横排目录。侧栏常驻在小屏上没有意义 ——
+  // 它会把本来就窄的正文再切掉 232px。
+  "@media(max-width:900px){body{display:block}.sidenav{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);padding:16px 0}.sidenav .toclist{flex-direction:row;flex-wrap:wrap;gap:6px 12px}.sidenav .toclist a{padding:4px 8px;border-left:0;border-bottom:2px solid transparent}.sidenav-guides{display:none}main{padding:16px 12px 40px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.grid2,.guide-grid{grid-template-columns:1fr}section{padding:16px}.hero{padding:20px!important}}",
+  // 打印：侧边栏整条隐藏 —— 打印时每页都印一份目录毫无意义，还会挤掉正文。
+  "@media print{@page{margin:14mm}body{display:block;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}.sidenav{display:none}main{max-width:none;padding:0}section,.subpanel,.card{box-shadow:none;break-inside:avoid;border-color:#d7dce3}a{color:inherit;text-decoration:none}details{break-inside:avoid}details>summary{list-style:none}details:not([open])>*:not(summary){display:block}header.hero{border-color:#d7dce3}.table-wrap{overflow:visible}table{min-width:0;font-size:11px}th,td{padding:6px}}",
 ].join("\n");
 
 function platformStyle(payload) {
@@ -769,17 +832,23 @@ export function buildGeoCustomerReportHtml(payload) {
   return "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">" +
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
     "<meta name=\"referrer\" content=\"no-referrer\"><title>" + escapeHtml(payload.title) + "</title>" +
-    "<style>" + css + "</style></head><body><main>" +
+    "<style>" + css + "</style></head><body>" +
+    // 侧边目录常驻：滚动时靠 sticky 固定，读者随时知道自己在第几节、
+    // 下面还有没有内容。原先目录是正文顶部一块 flex 标签，滚下去就没了。
+    "<aside id=\"toc\" class=\"sidenav\"><div class=\"sidenav-inner\">" +
+    "<h2 class=\"sidenav-title\">目录</h2>" +
+    "<div class=\"toclist\">" + toc + "</div>" +
+    "<div class=\"guide-grid sidenav-guides\">" +
+    guides.map(([label, hint, href]) => "<div><strong>" + escapeHtml(label) + "：</strong>" +
+      escapeHtml(hint) + " <a href=\"" + href + "\">前往</a></div>").join("") +
+    "</div></div></aside>" +
+    "<main>" +
     "<header class=\"hero\">" + logoMarkup(theme) +
     "<h1>" + escapeHtml(payload.title) + "</h1>" +
     "<p class=\"muted\">目标：" + escapeHtml(payload.target.name) + " · 平台：" +
     payload.scope.platforms.map(escapeHtml).join("、") + "</p>" +
     "<p class=\"muted\">阶段：" + periodSummary + "</p><p class=\"small\">报告 ID " +
     escapeHtml(payload.report_id) + " · 固定快照版本 " + escapeHtml(payload.schema_version) + "</p></header>" +
-    "<nav id=\"toc\" class=\"guide\"><h2>目录与阅读指引</h2><div class=\"guide-grid\">" +
-    guides.map(([label, hint, href]) => "<div><strong>" + escapeHtml(label) + "：</strong>" +
-      escapeHtml(hint) + " <a href=\"" + href + "\">前往</a></div>").join("") +
-    "</div><div class=\"toclist\">" + toc + "</div></nav>" +
     sectionHtml +
     "<footer>" + escapeHtml(footerText(theme, "OneGl · GEO 客户报告")) + " · 快照 " +
     escapeHtml(payload.report_id) + " · 生成时间 " + escapeHtml(payload.generated_at) +
