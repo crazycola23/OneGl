@@ -4,6 +4,7 @@ import { ApiHttpError } from "../api/http.js";
 import { supportedProviderIds } from "../providers/index.js";
 import { buildGeoCustomerReportHtml } from "../report/html-geo-customer.js";
 import { BrandInputError, computeBrandMentions, normalizeBrands } from "../analysis/brand-mentions.js";
+import { normalizeTheme } from "../report/report-theme.js";
 import { resolveReportScope } from "../tasks/groups.js";
 import { CITATION_EVIDENCE_STATES, citationValidRunSql } from "../db/citation-validity.js";
 
@@ -91,7 +92,7 @@ function normalizePeriod(raw, index, seenKeys) {
 
 export function normalizeGeoCustomerReportRequest(input, taskPlatforms) {
   if (!input || typeof input !== "object" || Array.isArray(input)) fail("request body must be a JSON object");
-  onlyKeys(input, ["platforms", "periods", "format", "brands"], "request body");
+  onlyKeys(input, ["platforms", "periods", "format", "brands", "theme"], "request body");
   if (input.format != null && input.format !== "html") fail("format must be html");
   const supported = new Set(supportedProviderIds());
   const rawPlatforms = input.platforms ?? taskPlatforms;
@@ -117,7 +118,10 @@ export function normalizeGeoCustomerReportRequest(input, taskPlatforms) {
     if (error instanceof BrandInputError) fail(error.message, 422, "invalid_brands");
     throw error;
   }
-  return { platforms, periods, format: "html", brands };
+  // 主题：品牌色 / logo / 页脚署名。非法值由 normalizeTheme 静默丢弃而不是
+  // 让整份报告失败 —— 客户报告因为一个颜色写错就生成不出来，是很糟的体验。
+  const theme = normalizeTheme(input.theme);
+  return { platforms, periods, format: "html", brands, theme };
 }
 
 function stable(value) {
@@ -757,6 +761,8 @@ async function buildPayload(client, { tenantId, scope, input, createdAt }) {
       group_id: scope.kind === "group" ? scope.public_id : null,
       scope_kind: scope.kind,
       schema_version: REPORT_SCHEMA_VERSION,
+      // 主题进快照：报告是固定快照，事后改主题会导致 content_hash 对不上。
+      theme: request.theme ?? null,
       title: scope.name + " GEO 收录效果报告",
       generated_at: createdAt,
       target: {

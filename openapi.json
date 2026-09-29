@@ -2785,6 +2785,10 @@
             "minItems": 1,
             "type": "array",
             "uniqueItems": true
+          },
+          "theme": {
+            "$ref": "#/components/schemas/ReportTheme",
+            "description": "Optional customer branding applied to the generated HTML."
           }
         },
         "required": [
@@ -3014,6 +3018,14 @@
               "null"
             ]
           },
+          "theme": {
+            "additionalProperties": true,
+            "description": "Customer branding stored in this snapshot; null when the default theme was used.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "warnings": {
             "items": {
               "type": "string"
@@ -3025,6 +3037,7 @@
           "report_id",
           "scope_kind",
           "schema_version",
+          "theme",
           "target",
           "profile",
           "scope",
@@ -7688,6 +7701,81 @@
           "created_at",
           "artifact_urls"
         ],
+        "type": "object"
+      },
+      "ReportTheme": {
+        "additionalProperties": false,
+        "description": "Optional customer branding for the HTML report: accent colour, logo, footer attribution. Invalid values are dropped rather than failing report generation. The theme is stored in the snapshot, so the rendered HTML and its content_hash stay consistent.",
+        "properties": {
+          "colors": {
+            "additionalProperties": false,
+            "description": "Hex colours only. Anything else is ignored and the default is kept.",
+            "properties": {
+              "accent": {
+                "description": "Links, borders, highlights.",
+                "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+                "type": "string"
+              },
+              "bad": {
+                "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+                "type": "string"
+              },
+              "bg": {
+                "description": "Page background.",
+                "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+                "type": "string"
+              },
+              "ink": {
+                "description": "Body text.",
+                "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+                "type": "string"
+              },
+              "line": {
+                "description": "Borders and separators.",
+                "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+                "type": "string"
+              },
+              "ok": {
+                "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+                "type": "string"
+              },
+              "surface": {
+                "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+                "type": "string"
+              },
+              "warn": {
+                "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "footer_text": {
+            "description": "Footer attribution, e.g. the agency or platform name. Defaults to 'OneGl · GEO 客户报告'.",
+            "maxLength": 200,
+            "type": "string"
+          },
+          "logo_height": {
+            "default": 40,
+            "maximum": 64,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "logo_url": {
+            "description": "Customer logo, http(s) only. Rendered above the report title; ignored when the URL is not http(s).",
+            "maxLength": 2048,
+            "pattern": "^https?://",
+            "type": "string"
+          },
+          "logo_width": {
+            "maximum": 320,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "ReportVersions": {

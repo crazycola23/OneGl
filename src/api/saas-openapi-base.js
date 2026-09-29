@@ -320,6 +320,44 @@ export function applySaasOpenApi(document) {
       },
       additionalProperties: true,
     },
+    ReportTheme: {
+      type: "object",
+      additionalProperties: false,
+      description:
+        "Optional customer branding for the HTML report: accent colour, logo, footer attribution. Invalid " +
+        "values are dropped rather than failing report generation. The theme is stored in the snapshot, so the " +
+        "rendered HTML and its content_hash stay consistent.",
+      properties: {
+        colors: {
+          type: "object",
+          additionalProperties: false,
+          description: "Hex colours only. Anything else is ignored and the default is kept.",
+          properties: {
+            accent: { type: "string", pattern: "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$", description: "Links, borders, highlights." },
+            ink: { type: "string", pattern: "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$", description: "Body text." },
+            bg: { type: "string", pattern: "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$", description: "Page background." },
+            surface: { type: "string", pattern: "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$" },
+            line: { type: "string", pattern: "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$", description: "Borders and separators." },
+            ok: { type: "string", pattern: "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$" },
+            warn: { type: "string", pattern: "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$" },
+            bad: { type: "string", pattern: "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$" },
+          },
+        },
+        logo_url: {
+          type: "string",
+          maxLength: 2048,
+          pattern: "^https?://",
+          description: "Customer logo, http(s) only. Rendered above the report title; ignored when the URL is not http(s).",
+        },
+        logo_height: { type: "integer", minimum: 1, maximum: 64, default: 40 },
+        logo_width: { type: ["integer", "null"], minimum: 1, maximum: 320 },
+        footer_text: {
+          type: "string",
+          maxLength: 200,
+          description: "Footer attribution, e.g. the agency or platform name. Defaults to 'OneGl · GEO 客户报告'.",
+        },
+      },
+    },
     GeoCustomerReportCreate: {
       type: "object",
       additionalProperties: false,
@@ -341,6 +379,10 @@ export function applySaasOpenApi(document) {
           description: "Ordered stages. Supplying multiple stages stores comparable snapshots in one report.",
         },
         format: { type: "string", const: "html", default: "html" },
+        theme: {
+          $ref: "#/components/schemas/ReportTheme",
+          description: "Optional customer branding applied to the generated HTML.",
+        },
         brands: {
           type: "array",
           maxItems: 50,
@@ -544,13 +586,18 @@ export function applySaasOpenApi(document) {
     GeoCustomerReportSnapshot: {
       type: "object",
       description: "Immutable report snapshot and fixed-format customer HTML source data.",
-      required: ["report_id", "scope_kind", "schema_version", "target", "profile", "scope", "periods", "methodology", "warnings"],
+      required: ["report_id", "scope_kind", "schema_version", "theme", "target", "profile", "scope", "periods", "methodology", "warnings"],
       properties: {
         report_id: reportId,
         scope_kind: { type: "string", enum: ["task", "group"] },
         task_id: { type: ["string", "null"] },
         group_id: { type: ["string", "null"] },
         schema_version: { type: "string" },
+        theme: {
+          type: ["object", "null"],
+          additionalProperties: true,
+          description: "Customer branding stored in this snapshot; null when the default theme was used.",
+        },
         target: { type: "object", additionalProperties: true },
         profile: { type: "object", additionalProperties: true },
         scope: { type: "object", additionalProperties: true },

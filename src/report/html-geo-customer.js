@@ -1,3 +1,5 @@
+import { footerText, themeCss } from "./report-theme.js";
+
 const escapeHtml = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;")
@@ -495,6 +497,8 @@ const CSS = [
   ".tag-muted{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:500;color:var(--muted);background:#eef1f5;white-space:nowrap}",
   ".actions li{margin:10px 0}.subpanel .tag{vertical-align:middle}",
   "footer{color:var(--muted);font-size:12px;text-align:center;padding:20px}",
+  // 客户 logo：只在传了 theme.logo_url 时出现，否则这个标签不存在
+  ".brand-logo{display:block;max-width:100%;height:auto;margin:0 auto 12px;object-fit:contain}",
   "@media(max-width:760px){main{padding:16px 12px 40px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.grid2,.guide-grid{grid-template-columns:1fr}section{padding:16px}.hero{padding:20px!important}}",
   "@media print{@page{margin:14mm}body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}main{max-width:none;padding:0}section,.subpanel,.card,.guide{box-shadow:none;break-inside:avoid;border-color:#d7dce3}a{color:inherit;text-decoration:none}details{break-inside:avoid}details>summary{list-style:none}details:not([open])>*:not(summary){display:block}.toclist a:after{content:''}header.hero{border-color:#d7dce3}.table-wrap{overflow:visible}table{min-width:0;font-size:11px}th,td{padding:6px}}",
 ].join("\n");
@@ -508,6 +512,17 @@ function platformStyle(payload) {
   });
   return ":root{" + declarations.map((item) => item.variable).join(";") + "}" +
     declarations.map((item) => item.rule).join("");
+}
+
+/**
+ * logo 标记。URL 已在 normalizeTheme 里校验过是 http(s)，
+ * 这里只做尺寸与转义；任何异常都静默不渲染，不留破图。
+ */
+function logoMarkup(theme) {
+  if (!theme?.logo_url) return "";
+  const height = Math.min(theme.logo_height ?? 40, 64);
+  const width = theme.logo_width ? ` width="${Math.min(theme.logo_width, 320)}"` : "";
+  return `<img class="brand-logo" src="${escapeHtml(theme.logo_url)}" alt="" height="${height}"${width}>`;
 }
 
 export function buildGeoCustomerReportHtml(payload) {
@@ -541,12 +556,16 @@ export function buildGeoCustomerReportHtml(payload) {
     String(index + 1).padStart(2, "0") + " " + escapeHtml(title) + "</a>").join("");
   const periodSummary = payload.scope.periods.map((period) =>
     escapeHtml(period.label + " (" + period.from + " 至 " + period.to + ", " + period.time_zone + ")")).join("；");
-  const css = CSS + "\n" + platformStyle(payload);
+  // 主题覆盖放在最后，靠 CSS 层叠生效；platformStyle 必须先于它，
+  // 否则主题的 accent 会被平台色变量抢回去。
+  const theme = payload.theme ?? null;
+  const css = CSS + "\n" + platformStyle(payload) + "\n" + themeCss(theme);
   return "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">" +
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
     "<meta name=\"referrer\" content=\"no-referrer\"><title>" + escapeHtml(payload.title) + "</title>" +
     "<style>" + css + "</style></head><body><main>" +
-    "<header class=\"hero\"><h1>" + escapeHtml(payload.title) + "</h1>" +
+    "<header class=\"hero\">" + logoMarkup(theme) +
+    "<h1>" + escapeHtml(payload.title) + "</h1>" +
     "<p class=\"muted\">目标：" + escapeHtml(payload.target.name) + " · 平台：" +
     payload.scope.platforms.map(escapeHtml).join("、") + "</p>" +
     "<p class=\"muted\">阶段：" + periodSummary + "</p><p class=\"small\">报告 ID " +
@@ -556,6 +575,7 @@ export function buildGeoCustomerReportHtml(payload) {
       escapeHtml(hint) + " <a href=\"" + href + "\">前往</a></div>").join("") +
     "</div><div class=\"toclist\">" + toc + "</div></nav>" +
     sectionHtml +
-    "<footer>OneGl · GEO 客户报告 · 快照 " + escapeHtml(payload.report_id) +
-    " · 生成时间 " + escapeHtml(payload.generated_at) + "</footer></main></body></html>";
+    "<footer>" + escapeHtml(footerText(theme, "OneGl · GEO 客户报告")) + " · 快照 " +
+    escapeHtml(payload.report_id) + " · 生成时间 " + escapeHtml(payload.generated_at) +
+    "</footer></main></body></html>";
 }
