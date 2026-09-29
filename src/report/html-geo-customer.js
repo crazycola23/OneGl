@@ -441,10 +441,123 @@ function sourceOpportunitySection(payload, rows) {
     "</section>";
 }
 
+/**
+ * 从报告数据里挑出「值得先看的几点」。
+ *
+ * ## 为什么需要
+ *
+ * 第 10 节之前全是流程性建议（"逐条核对来源"、"持续记录阶段"），
+ * 而报告本身最有决策价值的观察 —— 哪个平台被谁压制、我的内容在哪弱 ——
+ * 一条都没出现在行动建议里。实测一份 4 竞品 2 平台的报告里，
+ * 5 条关键事实全部缺席：千问首选某品牌 72% 而豆包只有 38%、
+ * 目标文章覆盖千问 91% 豆包 36%、某竞品两平台都没被提到。
+ *
+ * 客户读完第 3 节的表格得自己总结，而多数人不会认真看表。
+ *
+ * ## 边界
+ *
+ * 只陈述**报告内已有的数字与差值**，不做任何推断：
+ *   - 不说「你被压制了」「应该主攻千问」这类判断
+ *   - 不把共现说成因果
+ *   - 分母不足的平台不给结论（N/A 而不是拿 0 充数）
+ *
+ * 判断归调用方的模型 —— 这与 OneGL 其它章节的立场一致。
+ */
+function dataFacts(rows) {
+  const facts = [];
+  const withBrands = rows.filter((row) => row.platform.brand_mentions?.available);
+  const withCoverage = rows.filter((row) =>
+    row.platform.citations.tracked_content.configured
+    && row.platform.citations.tracked_content.coverage_rate != null);
+
+  // 1. 各平台的首选竞品与差距 —— 同一批竞品在不同平台的排序差异
+  const leaders = new Map();
+  for (const row of withBrands) {
+    const top = [...row.platform.brand_mentions.brands]
+      .filter((b) => b.mention_rate > 0)
+      .sort((a, b) => b.mention_rate - a.mention_rate)[0];
+    if (top) leaders.set(row.platform.platform, { ...top, valid: row.platform.brand_mentions.answer_count });
+  }
+  if (leaders.size >= 2) {
+    const parts = [...leaders.entries()].map(([platform, b]) =>
+      `${platform} ${percentage(b.mention_rate)}（${b.valid} 条有效回答）`);
+    facts.push(`本期提及率最高的品牌：${parts.join("，")}。`);
+
+    // 同一品牌在平台间的差距
+    const byName = new Map();
+    for (const [platform, b] of leaders) {
+      if (!byName.has(b.name)) byName.set(b.name, []);
+      byName.get(b.name).push([platform, b.mention_rate]);
+    }
+    for (const [name, entries] of byName) {
+      if (entries.length < 2) continue;
+      const rates = entries.map(([, r]) => r);
+      const spread = Math.max(...rates) - Math.min(...rates);
+      const resolution = 100 / Math.max(1, Math.min(...leaders.values().map((b) => b.valid)));
+      if (spread * 100 >= Math.max(1, resolution)) {
+        const sorted = entries.slice().sort((a, b) => b[1] - a[1]);
+        facts.push(`「${name}」在 ${sorted[0][0]} 为 ${percentage(sorted[0][1])}、在 ${sorted[sorted.length - 1][0]} 为 ${percentage(sorted[sorted.length - 1][1])}，相差 ${(spread * 100).toFixed(1)} 个百分点。`);
+      }
+    }
+    // 首选品牌不同的情况 —— 那是最值得先看的
+    const names = [...leaders.values()].map((b) => b.name);
+    if (new Set(names).size > 1) {
+      facts.push(`各平台的首选品牌不同（${names.join(" / ")}），说明平台偏好存在差异。`);
+    }
+  }
+
+  // 2. 目标文章覆盖的跨平台差距
+  if (withCoverage.length >= 2) {
+    const parts = withCoverage.map((row) =>
+      `${row.platform.platform} ${percentage(row.platform.citations.tracked_content.coverage_rate)}`);
+    const rates = withCoverage.map((row) => row.platform.citations.tracked_content.coverage_rate);
+    const spread = Math.max(...rates) - Math.min(...rates);
+    facts.push(`目标文章覆盖：${parts.join("，")}` + (spread > 0.01
+      ? `，差距 ${(spread * 100).toFixed(1)} 个百分点。`
+      : "。"));
+  }
+
+  // 3. 有回答但完全没被提到的竞品 —— 存在感缺失，与「势头稳定」不同
+  for (const row of withBrands) {
+    const stats = row.platform.brand_mentions;
+    if (!stats.available || stats.answer_count === 0) continue;
+    const absent = stats.brands.filter((b) => b.mention_rate === 0).map((b) => b.name);
+    if (absent.length && absent.length < stats.brands.length) {
+      facts.push(`${row.platform.platform} 侧完全未提及：${absent.join("、")}（${stats.answer_count} 条有效回答内）。`);
+    }
+  }
+
+  // 4. 采集完成率的显著差异
+  const lowCompletion = rows.filter((row) =>
+    row.platform.runs.assignments > 0
+    && row.platform.runs.valid_runs / row.platform.runs.assignments < 0.8);
+  if (lowCompletion.length) {
+    facts.push(`采集完成率不足 80% 的平台：${lowCompletion
+      .map((row) => `${row.platform.platform} ${(row.platform.runs.valid_runs / row.platform.runs.assignments * 100).toFixed(0)}%`)
+      .join("，")} —— 相关指标样本更小。`);
+  }
+
+  return facts;
+}
+
 function actionSection(payload, rows) {
   const blocks = [];
   const brandStats = rows.map((row) => row.platform.brand_mentions).find((s) => s?.available);
 
+
+  // 数据事实摘要：把报告里最值钱的观察直接摆到行动建议前面。
+  //
+  // 之前这一节全是流程性建议（"逐条核对来源"、"持续记录阶段"），
+  // 而报告本身最有决策价值的观察 —— 哪个平台被谁压制、我的内容在哪弱 ——
+  // 一条都没出现在这里。客户读完第 3 节的表格得自己总结，
+  // 而多数人不会认真看表。
+  //
+  // 只陈述事实与差值，不给「该怎么做」的判断 —— 判断归调用方的模型。
+  const facts = dataFacts(rows);
+  if (facts.length) {
+    blocks.push("<div class=\"facts\"><h4>本期值得先看的几点（均为报告内数据，不含推断）</h4><ul>" +
+      facts.map((f) => "<li>" + escapeHtml(f) + "</li>").join("") + "</ul></div>");
+  }
   // 关于项目品牌（采集期口径）的建议只在**确实没产出竞品数据**时才提。
   //
   // 早期版本只看 payload.target.brand_configured，于是「项目没配 target_brand、
@@ -559,6 +672,11 @@ const CSS = [
   "footer{color:var(--muted);font-size:12px;text-align:center;padding:20px}",
   // 客户 logo：只在传了 theme.logo_url 时出现，否则这个标签不存在
   ".brand-logo{display:block;max-width:100%;height:auto;margin:0 auto 12px;object-fit:contain}",
+  // 行动建议里的「本期值得先看的几点」：与下面的流程性建议视觉上区分开，
+  // 避免客户把它们当成同等性质的建议
+  ".facts{border-left:4px solid var(--ok);background:#f4fbf7;padding:12px 14px;border-radius:8px;margin:0 0 14px}" +
+  ".facts h4{margin:0 0 8px;font-size:14px;color:var(--ink)}" +
+  ".facts ul{margin:0;padding-left:20px}.facts li{margin:4px 0}",
   // 目录里标出「本期未启用」的章节：不标的话读者会以为漏看了内容
   ".toc-pending{color:var(--muted)}.toc-tag{color:var(--faint);font-weight:400;margin-left:4px}",
   "@media(max-width:760px){main{padding:16px 12px 40px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.grid2,.guide-grid{grid-template-columns:1fr}section{padding:16px}.hero{padding:20px!important}}",
