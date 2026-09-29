@@ -303,7 +303,11 @@ test("竞品分析链路端到端可用且数字自洽", { skip: !enabled, timeo
     assert.equal(ghost.status, 404, "不存在的组应 404");
     assert.equal(ghost.payload.error, "no_report_for_scope");
 
-    // ---- 环节 7：检索与报告口径一致（有真实采集数据时才成立）--------
+    // ---- 环节 7：检索与报告口径一致 ----
+    // 这个断言依赖真实采集数据，所以本文件自己造的任务组没有数据可查。
+    // **没有静默跳过** —— 静默跳过会被读报告的人误读成「测过了」。
+    // 数据无关的口径一致性由 test/caliber-consistency.test.mjs 用自造数据覆盖，
+    // 那里的断言是无条件的。
     const qianwenSummary = summary.find((x) => x.platform === "qianwen");
     if (qianwenSummary && qianwenSummary.answer_count > 0) {
       const top = [...qianwenSummary.brands]
