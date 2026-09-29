@@ -436,6 +436,73 @@ export function looksSettled(answer) {
  * TIMEOUT instead of a success - that is the intended fail-closed direction, and it is what the
  * 2026-09-22 samples got wrong.
  */
+/**
+ * 读回编辑器当前内容。
+ *
+ * 千问的 composer 是 Slate（contenteditable），value 属性不可靠，要读 textContent。
+ */
+async function readComposerText(locator) {
+  return locator.evaluate((element) => element.textContent || "").catch(() => "");
+}
+
+/**
+ * 清空编辑器。
+ *
+ * 与豆包的 clearEditable 同理：先清空再输入。
+ * 千问用 pressSequentially / keyboard.type 逐字符输入，天然不会「整块替换失败」，
+ * 所以实测 100 问成功 97；但输入框若残留上一问，逐字符输入会把新问题
+ * **追加**到旧问题后面，发出去的是一道拼接题 —— 而原实现没有任何校验会拦住它。
+ *
+ * 那 3 次 ANSWER_NOT_FOUND（千问提交后 181s 无任何字符产出）很可能就是这类
+ * 情况的另一种表现：拼出来的题目触发了平台的静默丢弃。
+ */
+async function clearComposer(locator) {
+  await locator.evaluate((element) => {
+    const selection = element.ownerDocument.getSelection();
+    const range = element.ownerDocument.createRange();
+    range.selectNodeContents(element);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    element.textContent = "";
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+/** 归一化：与报告层的 normalizeText 同口径（折叠空白后比较）。 */
+const composerText = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+
+/**
+ * 填入并回读校验。
+ *
+ * 与豆包的 fillVerifiedPrompt 同一套判据：填完读回来对不上就重试，
+ * 全失败则抛 SUBMISSION_FAILED 且 promptSubmitted:false ——
+ * 提问从未送达，重试是安全的（见 accounts/safety.js 的 canRetryOutcome）。
+ */
+async function fillVerifiedPrompt(page, composer, prompt, attempts = 3) {
+  const expected = composerText(prompt);
+  let lastFailure = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await clearComposer(composer);
+      await composer.pressSequentially(prompt, { delay: 25 });
+      const actual = composerText(await readComposerText(composer));
+      if (actual === expected) return;
+      lastFailure = { reason: "verification-mismatch", expected, actual };
+    } catch (error) {
+      lastFailure = {
+        reason: "fill-failed",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (attempt < attempts) await page.waitForTimeout(1_000);
+  }
+  throw new DoubaoMvpError(
+    ErrorCode.SUBMISSION_FAILED,
+    "Prompt input verification failed; submission was stopped to avoid sending corrupted text.",
+    { stage: "fill", ...(lastFailure ?? {}), promptSubmitted: false },
+  );
+}
+
 async function submitAndWait(page, prompt, config, context) {
   // Long windows need long budgets. Rather than refuse a budget that cannot fund the target window,
   // take what the budget can pay for down to the floor: a deployment on a tighter timeout then
@@ -491,9 +558,20 @@ async function submitAndWait(page, prompt, config, context) {
   if (clickable.mode === "focus") {
     // Typed at the keyboard rather than through the locator: that is the path measured to work
     // when a pointer click cannot reach the editor at all.
+    // 两条路径都先清空再输入并回读校验：原实现两条都没有校验，输入框若残留
+    // 上一问，逐字符输入会把新问题追加到旧问题后面，发出拼接题而系统认为成功。
+    await clearComposer(composer);
     await page.keyboard.type(prompt, { delay: 25 });
+    const actual = composerText(await readComposerText(composer));
+    if (actual !== composerText(prompt)) {
+      throw new DoubaoMvpError(
+        ErrorCode.SUBMISSION_FAILED,
+        "千问输入框内容与提问不一致，已拦截未提交。",
+        { stage: "fill", reason: "verification-mismatch", expected: composerText(prompt), actual, promptSubmitted: false },
+      );
+    }
   } else {
-    await composer.pressSequentially(prompt, { delay: 25 });
+    await fillVerifiedPrompt(page, composer, prompt);
   }
 
   const afterTyping = await scanPage(page, context);
