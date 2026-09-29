@@ -98,17 +98,37 @@ export function normalizeTheme(input) {
  *
  * 只输出变量覆盖，不输出任何布局规则 —— 布局是 OneGl 的专业性所在。
  * 放在 CSS 常量之后注入，靠 CSS 层叠的「后者胜」生效。
+ *
+ * ## 这里为什么再校验一次
+ *
+ * 正常路径下 theme 已经过 normalizeTheme，但渲染层是最后一道防线：
+ *   - artifact_html 是生成时渲染并存进快照的，渲染时的 payload 来自数据库
+ *   - assertSnapshotIntegrity 只校验哈希，不校验字段取值是否合法
+ *   - 哈希一致但内容危险是可能的（有人直接改库后重算哈希）
+ *
+ * 所以这里不信任入参，重新跑一遍 normalizeTheme。
+ * 多一次字符串检查的成本，远低于把原始文本拼进 <style> 的后果。
  */
 export function themeCss(theme) {
-  if (!theme) return "";
+  const safe = normalizeTheme(theme);
+  if (!safe) return "";
   const declarations = [];
-  for (const [key, value] of Object.entries(theme.colors ?? {})) {
-    declarations.push(`--${key}:${value}`);
+  for (const [key, value] of Object.entries(safe.colors ?? {})) {
+    // 二次确认：normalizeTheme 已保证是白名单键 + hex 色，这里是防御性断言
+    if (!ALLOWED_COLOR_KEYS.includes(key)) continue;
+    if (!isHexColor(value)) continue;
+    declarations.push(`--${key}:${String(value).trim()}`);
   }
   return declarations.length ? `:root{${declarations.join(";")}}` : "";
 }
 
-/** 默认页脚署名。传了 footer_text 就用客户的，否则用 OneGl 的。 */
+/**
+ * 默认页脚署名。传了 footer_text 就用客户的，否则用 OneGl 的。
+ *
+ * 同样重新归一化：渲染层的入参来自数据库快照，不能因为「正常路径下
+ * 已经校验过」就省掉。调用方随后会做 escapeHtml，这里只保证取值合法。
+ */
 export function footerText(theme, defaultText) {
-  return theme?.footer_text ?? defaultText;
+  const safe = normalizeTheme(theme);
+  return safe?.footer_text ?? defaultText;
 }

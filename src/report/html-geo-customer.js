@@ -1,4 +1,4 @@
-import { footerText, themeCss } from "./report-theme.js";
+import { footerText, normalizeTheme, themeCss } from "./report-theme.js";
 
 const escapeHtml = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
@@ -524,14 +524,19 @@ function platformStyle(payload) {
 }
 
 /**
- * logo 标记。URL 已在 normalizeTheme 里校验过是 http(s)，
- * 这里只做尺寸与转义；任何异常都静默不渲染，不留破图。
+ * logo 标记。
+ *
+ * 渲染层重新跑一遍 normalizeTheme，而不是信任入参：artifact_html 是生成时
+ * 渲染后存进快照的，渲染时的 payload 来自数据库，且完整性校验只保证哈希一致、
+ * 不保证字段取值合法。escapeHtml 挡得住引号突破，挡不住 `javascript:` 这种
+ * 协议注入 —— 协议必须在这里再判一次。
  */
 function logoMarkup(theme) {
-  if (!theme?.logo_url) return "";
-  const height = Math.min(theme.logo_height ?? 40, 64);
-  const width = theme.logo_width ? ` width="${Math.min(theme.logo_width, 320)}"` : "";
-  return `<img class="brand-logo" src="${escapeHtml(theme.logo_url)}" alt="" height="${height}"${width}>`;
+  const safe = normalizeTheme(theme);
+  if (!safe?.logo_url) return "";
+  const height = Math.min(safe.logo_height ?? 40, 64);
+  const width = safe.logo_width ? ` width="${Math.min(safe.logo_width, 320)}"` : "";
+  return `<img class="brand-logo" src="${escapeHtml(safe.logo_url)}" alt="" height="${height}"${width}>`;
 }
 
 export function buildGeoCustomerReportHtml(payload) {
