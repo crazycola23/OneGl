@@ -638,6 +638,30 @@ function reportWarnings(periods, trackedArticles) {
       (Math.min(...counts) === 0 || Math.max(...counts) / Math.min(...counts) > 2)) {
       warnings.push("阶段“" + period.label + "”的平台有效样本量差异超过 2 倍，平台对比以比例和来源结构为主。");
     }
+
+    // 单个平台的采集失败率过高时必须提示。
+    //
+    // 之前只有「平台间差异」这一类警告，于是豆包 50% 失败率这种情形
+    // 在报告里没有任何提示 —— 客户只看到「有效率 50.0%」这一列，
+    // 容易理解成「一半回答内容有效」，而实际含义是「一半采集失败了」。
+    // 指标本身没错（methodology 说了未执行分配计入分母），
+    // 但读者需要一个显式提醒，否则低有效率会被当成低质量数据。
+    for (const item of period.platforms) {
+      const { assignments, valid_runs, failed_runs } = item.runs;
+      if (!assignments) continue;
+      const rate = valid_runs / assignments;
+      if (rate >= 0.8) continue;
+      const failedText = failed_runs > 0
+        ? `其中 ${failed_runs} 条采集失败`
+        : "其余分配未产出有效回答";
+      const severity = rate < 0.5 ? "不足一半" : "低于 80%";
+      warnings.push(
+        `阶段“${period.label}”·${item.platform}：${assignments} 条分配中仅 ${valid_runs} 条产出有效回答` +
+        `（采集完成率 ${(rate * 100).toFixed(0)}%，${severity}，${failedText}）。` +
+        "该平台的指标基于这部分样本，样本越小越不稳定；" +
+        "「采集完成率」衡量的是采集是否跑完，不是回答内容质量。",
+      );
+    }
   }
   return warnings;
 }
