@@ -524,6 +524,37 @@ async function readEditableValue(locator) {
   });
 }
 
+/**
+ * 清空输入框。
+ *
+ * fill() 之前必须显式清空：豆包的 composer 在上一问发送后仍可能保留文本
+ * （或渲染出上一问的幽灵节点），而 fill() 对选错的 contenteditable 会静默不生效，
+ * 于是「重试三次」其实是同样的三次失败。
+ *
+ * 两种形态都要处理：
+ *   - input/textarea：直接改 value 并派发 input 事件
+ *   - contenteditable：全选后 delete，并清掉可能残留的子节点
+ *
+ * 派发 input 事件是关键 —— 豆包的发送按钮靠 input 事件启用，
+ * 只改 value 不派发的话按钮仍是灰的。
+ */
+async function clearEditable(locator) {
+  await locator.evaluate((element) => {
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      element.value = "";
+    } else {
+      // contenteditable：全选 + 删除能触发浏览器的原生清空与 input 事件
+      const selection = element.ownerDocument.getSelection();
+      const range = element.ownerDocument.createRange();
+      range.selectNodeContents(element);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      element.textContent = "";
+    }
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 async function tryClickSend(page) {
   const selectors = [
     'button[data-testid="chat_input_send_button"]',
@@ -582,6 +613,18 @@ async function fillVerifiedPrompt(page, prompt, attempts = 3) {
       lastFailure = { reason: "chat-input-unavailable" };
     } else {
       try {
+        // 先显式清空再填。
+        //
+        // 实测：批次 69 里 i28 分配的题目是「越城区颈肩腰腿调理哪家手法好？」，
+        // 而输入框里回读到的是 i17 的题目「绍兴越城区的推拿店，手法和价格要怎么比较
+        // 才靠谱？」—— 两者都是本批次的合法题目，说明是**上一问的残留**，
+        // 不是平台判定的「损坏文本」。
+        //
+        // 而原来的重试是 `box.fill(prompt)` 重复三次：fill() 对 contenteditable
+        // 若选错元素会静默不生效，三次都是同样的旧文本，重试毫无意义 ——
+        // 于是这一问必然失败。实测该批次 50 问里 25 问失败，
+        // 其中 16 问是这条路径，失败率因此高达 50%。
+        await clearEditable(box);
         await box.fill(prompt);
         const actual = normalizeText(await readEditableValue(box));
         if (actual !== expected) {
@@ -590,7 +633,7 @@ async function fillVerifiedPrompt(page, prompt, attempts = 3) {
           await page.waitForTimeout(700);
           const settled = normalizeText(await readEditableValue(box).catch(() => ""));
           if (settled === expected) return box;
-          lastFailure = { reason: "text-lost-after-fill" };
+          lastFailure = { reason: "text-lost-after-fill", expected, settled };
         }
       } catch (error) {
         lastFailure = {
