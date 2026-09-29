@@ -17,9 +17,12 @@ import { getLatestGeoCustomerReport } from "../src/reporting/geo-customer-report
 function fakePool({ taskRow = null, groupRow = null, reportRows = [] } = {}) {
   const calls = [];
   const respond = (sql) => {
-    // 解析 scope 的那条 SQL 里有两个标量子查询，都返回单行
-    if (/AS task_db_id/.test(sql)) {
-      return [{ task_db_id: taskRow, group_db_id: groupRow }];
+    // 解析 scope 的那条 SQL 返回单行 scope_db_id。
+    // 早先用 AS task_db_id 匹配，后来实现改成单列 scope_db_id（同时传
+    // task 与 group 会被显式拒绝，不再用两个标量子查询 + OR），
+    // 这里的匹配必须跟着改 —— 否则解析查询返回空行，后面全崩。
+    if (/AS scope_db_id/.test(sql)) {
+      return [{ scope_db_id: taskRow ?? groupRow }];
     }
     if (/FROM service_geo_reports r/.test(sql)) return reportRows;
     return [];
@@ -34,6 +37,17 @@ function fakePool({ taskRow = null, groupRow = null, reportRows = [] } = {}) {
     },
   };
 }
+
+test("task 与 group 同时给会被显式拒绝", async () => {
+  // 原实现用 `(task_id = $2 OR group_id = $3)`，两边都传时返回 id 最大的那份 ——
+  // 调用方完全不知道自己拿到的是哪个范围，跨范围对比会拿错基准且无从察觉。
+  const pool = fakePool({ groupRow: 77, taskRow: 12 });
+  await assert.rejects(
+    () => getLatestGeoCustomerReport(pool, { tenantId: 1, taskId: "tsk_abc", groupId: "grp_abc" }),
+    /not both|ambiguous_scope/,
+  );
+  assert.equal(pool.calls.length, 0, "被拒绝时不该发出任何查询");
+});
 
 test("group public_id 解析成内部主键后再查报告", async () => {
   const pool = fakePool({ groupRow: 77, reportRows: [{ public_id: "rpt_x" }] });

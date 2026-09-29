@@ -966,17 +966,24 @@ function assertSnapshotIntegrity(payload, hash) {
  */
 export async function getLatestGeoCustomerReport(pool, { tenantId, taskId = null, groupId = null }) {
   if (!taskId && !groupId) fail("task_id or group_id is required");
+  // 两个同时给是调用方的错误，必须显式拒绝而不是悄悄用 OR 挑一个。
+  //
+  // 原实现用 `(task_id = $2 OR group_id = $3)`，两边都传时返回 id 最大的那份 ——
+  // 调用方完全不知道自己拿到的是哪个范围，跨范围对比会拿错基准且无从察觉。
+  if (taskId && groupId) {
+    fail("provide either task_id or group_id, not both", 422, "ambiguous_scope");
+  }
+
   // public_id → 内部主键。与对外契约一致的是 public_id，
   // 而 reports 表存的是内部 bigint，两者不能直接比较。
   const { rows: scope } = await pool.query(
-    `SELECT
-       (SELECT id FROM service_tasks      WHERE tenant_id = $1 AND public_id = $2) AS task_db_id,
-       (SELECT id FROM service_task_groups WHERE tenant_id = $1 AND public_id = $3) AS group_db_id`,
-    [tenantId, taskId, groupId],
+    groupId
+      ? "SELECT id AS scope_db_id FROM service_task_groups WHERE tenant_id = $1 AND public_id = $2"
+      : "SELECT id AS scope_db_id FROM service_tasks WHERE tenant_id = $1 AND public_id = $2",
+    groupId ? [tenantId, groupId] : [tenantId, taskId],
   );
-  const taskDbId = scope[0]?.task_db_id ?? null;
-  const groupDbId = scope[0]?.group_db_id ?? null;
-  if (!taskDbId && !groupDbId) return null;
+  const scopeDbId = scope[0]?.scope_db_id ?? null;
+  if (!scopeDbId) return null;
 
   const { rows } = await pool.query(
     `SELECT r.public_id
@@ -986,7 +993,7 @@ export async function getLatestGeoCustomerReport(pool, { tenantId, taskId = null
           OR ($3::bigint IS NOT NULL AND r.group_id = $3))
       ORDER BY r.id DESC
       LIMIT 1`,
-    [tenantId, taskDbId, groupDbId],
+    [tenantId, groupId ? null : scopeDbId, groupId ? scopeDbId : null],
   );
   return rows[0]?.public_id ?? null;
 }
