@@ -402,9 +402,22 @@ function questionSection(payload) {
       const questionRows = platform.questions.map((item) => "<li><span class=\"muted\">" +
         escapeHtml(item.category) + " · " + numberText(item.assignments) + " 次</span><br>" +
         escapeHtml(item.question) + "</li>").join("");
+      // 全部问题都在 uncategorized 时，「问题分类」表只有一行、零信息量，
+      // 却占掉整张表的位置。改为一句话说明未配置分类，把版面让给完整问题清单。
+      //
+      // 实测：当前库 174 条分配全部是 uncategorized（prompts.category 未配置），
+      // 于是每份报告都出现一张「uncategorized=50」的表，客户会以为
+      // 「我们只检测了一类问题」—— 而真相是根本没有配置分类。
+      // 判据用 byCategory 的原始键，不用 escapeHtml 之后的字符串 ——
+      // "uncategorized" 是纯 ASCII，转义后恰好不变，能工作纯属巧合。
+      const onlyUncategorized = byCategory.size === 1 && byCategory.has("uncategorized");
+      const categoryBlock = onlyUncategorized
+        ? "<p class=\"muted\">本阶段问题未配置分类，全部计入「uncategorized」；" +
+          "配置 prompts.category 后可按「品牌识别 / 价格 / 服务」等维度分组看覆盖范围。</p>"
+        : table(["问题分类", "分配次数"], categoryRows);
       blocks.push("<div class=\"subpanel\"><h3>" + escapeHtml(period.label) + " · " +
         platformTag(platform.platform, payload) + "</h3>" +
-        table(["问题分类", "分配次数"], categoryRows) +
+        categoryBlock +
         note(numberText(platform.runs.assignments) + " 次分配；列出 " + numberText(platform.questions.length) + " 个问题",
           "分类来自采集时保存的问题分类；重复分配按次数计数。",
           "用于理解本期检测覆盖范围，不代表市场总体需求占比。") +
