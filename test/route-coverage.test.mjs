@@ -203,12 +203,11 @@ test("契约里每个 v1 端点都有可用的路由实现", { timeout: 120_000 
   }
 });
 
-test("检测逻辑本身能抓到死端点（自检）", { timeout: 60_000 }, async () => {
+test("检测逻辑本身能抓到死端点（自检）", { skip: !process.env.DATABASE_URL, timeout: 60_000 }, async () => {
   // 一个永远绿的测试没有价值。这里起**有库**的 API，用真 id 走一遍：
   // 存在的实体 → 200，格式合法但不存在的实体 → 404。
   // 无库时所有请求都是 503，区分不出「路由通了」和「路由没匹配」，
   // 所以自检必须显式传 DATABASE_URL 给子进程（startApi 默认清空它）。
-  if (!process.env.DATABASE_URL) return; // 无库跳过
   const port = 38100 + (process.pid % 100);
   const proc = startApi(port, true);
 
@@ -243,7 +242,7 @@ test("检测逻辑本身能抓到死端点（自检）", { timeout: 60_000 }, as
   }
 });
 
-test("答案端点用真实存在的组与任务访问，不得返回 500", { timeout: 120_000 }, async () => {
+test("答案端点用真实存在的组与任务访问，不得返回 500", { skip: !process.env.DATABASE_URL, timeout: 120_000 }, async (t) => {
   // 上一轮那个 bug 的正确检测方式。
   //
   // 用假 id 探测时它被掩盖了：假组查不到 → 走「组不存在」分支 → 404，
@@ -251,7 +250,6 @@ test("答案端点用真实存在的组与任务访问，不得返回 500", { ti
   // scope 查询才会成功、handler 才会真正跑起来，然后暴露出 id 传错的问题。
   //
   // 实测：bug 存在时 task 与 group 两种形态都返回 500。
-  if (!process.env.DATABASE_URL) return;
 
   const { createPool } = await import("../src/db/pool.js");
   const pool = createPool();
@@ -267,7 +265,11 @@ test("答案端点用真实存在的组与任务访问，不得返回 500", { ti
         JOIN service_task_group_members m ON m.group_id = g.id
         JOIN service_tasks t ON t.id = m.task_id
        WHERE g.tenant_id = 1 ORDER BY g.id LIMIT 1`);
-    if (!rows.length) return; // 没有可用数据，跳过
+    if (!rows.length) {
+      // 没有可用数据时明确标记为跳过，而不是静默返回后报 PASS
+      t.skip("库里没有带采集数据的任务组，无法验证真实 id 下的端点行为");
+      return;
+    }
     groupId = rows[0].group_id;
     taskId = rows[0].task_id;
 

@@ -95,7 +95,7 @@ function compare(label, schema, actual, problems) {
   }
 }
 
-test("读端点的响应形状与 openapi.json 声明一致", { skip: !enabled, timeout: 120_000 }, async () => {
+test("读端点的响应形状与 openapi.json 声明一致", { skip: !enabled, timeout: 120_000 }, async (t) => {
   const pool = createPool();
   const { rows } = await pool.query(`
     SELECT g.public_id AS group_id, t.public_id AS task_id
@@ -105,7 +105,10 @@ test("读端点的响应形状与 openapi.json 声明一致", { skip: !enabled, 
      WHERE g.tenant_id = 1 ORDER BY g.id LIMIT 1`);
   if (!rows.length) {
     await pool.end();
-    return; // 没有数据可验，明确说明而不是假装通过
+    // 显式跳过而不是静默返回 —— 静默 return 会报 PASS，
+    // 让人以为「验证过」而实际一行没跑
+    t.skip("库里没有带采集数据的任务组，无法验证响应形状");
+    return;
   }
   const { group_id: groupId, task_id: taskId } = rows[0];
 

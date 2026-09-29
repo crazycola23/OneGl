@@ -44,6 +44,7 @@
     "batch:stop": "node src/cli.js batch-stop",
     "worker": "node src/worker-entry.js",
     "risk:audit": "node tools/risk-audit.js",
+    "check:no-db": "node tools/check-no-db-env.mjs",
     "saas:backfill": "node tools/backfill-saas-results.mjs",
     "page:capture": "node tools/page-evidence-capture.js",
     "source:intelligence": "node tools/source-intelligence-capture.js",
