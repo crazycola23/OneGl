@@ -79,12 +79,22 @@ test("clearEditable 处理 input/textarea 与 contenteditable 两种形态", () 
 test("text-lost-after-fill 记下 expected/settled 便于排查", () => {
   // 原来只记 { reason }，看不出「填进去的是什么、变成了什么」。
   // 那次排查 i28 花了很久，就是因为日志里没有这两项。
-  assert.match(src, /reason: "text-lost-after-fill", expected, settled/,
-    "应记录期望值与实际稳定值");
+  //
+  // 断言写成语义检查而非逐字匹配：诊断对象的写法改过两次
+  // （加 normalizeForLog），逐字匹配在实现演进时会误报。
+  const body = functionBody("fillVerifiedPrompt");
+  assert.match(body, /reason: "text-lost-after-fill"/);
+  assert.match(body, /expected:/, "诊断要含 expected");
+  assert.match(body, /settled:/, "诊断要含 settled");
 });
 
 test("校验失败时保留 expected/actual 诊断", () => {
   // 实测能从库里读出 i28 的 expected/actual，这是定位到「输入框残留」
   // 而非「平台限流」的关键依据。删掉它下次又只能靠猜。
-  assert.match(src, /reason: "verification-mismatch", expected, actual/);
+  //
+  // 同样改成语义检查 —— 逐字匹配在诊断写法演进时会误报。
+  const body = functionBody("fillVerifiedPrompt");
+  assert.match(body, /reason: "verification-mismatch"/);
+  assert.match(body, /expected:/);
+  assert.match(body, /actual:/);
 });

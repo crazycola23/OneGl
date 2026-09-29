@@ -515,6 +515,29 @@ async function detectProviderError(page) {
   return null;
 }
 
+/**
+ * 回读校验专用的归一化：**删除所有空白**。
+ *
+ * 为什么不能直接用 normalizeText：它被两处语义不同的用途共用。
+ *   - 回读校验（fillVerifiedPrompt）：要容忍编辑器排版
+ *   - 比对回答是否新增（waitForSubmissionConfirmation）：必须严格，
+ *     回答里的换行是有意义的段落分隔，抹掉会把两段回答误判成同一段
+ * 所以校验走这个独立的函数，normalizeText 保持原样。
+ *
+ * 豆包的 composer 可能是 `div[role="textbox"]` 或 `[contenteditable="true"]`
+ * （选择器链第 4、5 位），而 readEditableValue 对它们读 textContent ——
+ * 富文本渲染长文本时会插入换行节点，这些节点会进入 textContent。
+ * 于是回读拿到 "A\nB" 而期望值是 "AB"，用 normalizeText 会误判失败。
+ *
+ * 千问已经因为同类问题踩过一次（Slate 插软换行 → 折叠成空格 → 多一个空格）。
+ * 判定只该关心「输入框里是不是我那句话」，不关心排版；
+ * 真填错内容仍会被抓住 —— 错的文字删空白删不掉。
+ */
+const normalizeForVerification = (value) => String(value ?? "").replace(/\s+/g, "");
+
+/** 诊断用：保留单行可读形式，不参与判定。 */
+const normalizeForLog = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+
 async function readEditableValue(locator) {
   return locator.evaluate((element) => {
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
@@ -604,7 +627,8 @@ async function waitForSubmissionConfirmation(page, prompt, baselineAnswers) {
 }
 
 async function fillVerifiedPrompt(page, prompt, attempts = 3) {
-  const expected = normalizeText(prompt);
+  // expected 与 actual 必须用同一个归一化，否则一边删空白一边不删 → 永远不相等 → 100% 误判
+  const expected = normalizeForVerification(prompt);
   let lastFailure = null;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -626,14 +650,22 @@ async function fillVerifiedPrompt(page, prompt, attempts = 3) {
         // 其中 16 问是这条路径，失败率因此高达 50%。
         await clearEditable(box);
         await box.fill(prompt);
-        const actual = normalizeText(await readEditableValue(box));
+        const actual = normalizeForVerification(await readEditableValue(box));
         if (actual !== expected) {
-          lastFailure = { reason: "verification-mismatch", expected, actual };
+          lastFailure = {
+            reason: "verification-mismatch",
+            expected: normalizeForLog(prompt),
+            actual: normalizeForLog(await readEditableValue(box).catch(() => "")),
+          };
         } else {
           await page.waitForTimeout(700);
-          const settled = normalizeText(await readEditableValue(box).catch(() => ""));
+          const settled = normalizeForVerification(await readEditableValue(box).catch(() => ""));
           if (settled === expected) return box;
-          lastFailure = { reason: "text-lost-after-fill", expected, settled };
+          lastFailure = {
+            reason: "text-lost-after-fill",
+            expected: normalizeForLog(prompt),
+            settled: normalizeForLog(await readEditableValue(box).catch(() => "")),
+          };
         }
       } catch (error) {
         lastFailure = {
