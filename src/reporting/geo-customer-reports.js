@@ -23,7 +23,26 @@ const MAX_PERIODS = 8;
 const MAX_PERIOD_DAYS = 366;
 const HISTORY_MAX_LIMIT = 500;
 const TERMINAL_BATCH_STATUSES = new Set(["completed", "partial", "failed", "aborted"]);
-const ICON_DOMAINS = ["cdn.sm.cn", "gw.alicdn.com"];
+/**
+ * 图标域（favicon 代理，不承载内容来源）。
+ *
+ * **必须写归一化后的域名，不能写 URL 里的主机名。**
+ *
+ * 落库时 canonical_url 是 `https://cdn.sm.cn/temp/xxx.png`，但 articles 存的
+ * `normalized_domain` 是 `sm.cn` —— 归一化会剥掉子域。于是早期版本
+ * `ICON_DOMAINS = ["cdn.sm.cn", "gw.alicdn.com"]` 拿去比 normalized_domain，
+ * 永远匹配不到：
+ *   - icon_citations 恒为 0（第 9 节那张卡片永远是 0）
+ *   - 143 次 cdn.sm.cn + 23 次 gw.alicdn.com 引用混进了「内容来源排行」，
+ *     客户会以为 `sm.cn` 是个内容站点
+ *
+ * 实测：千问批次 68 里 sm.cn 占 143 次引用、排进来源域名前列。
+ */
+const ICON_DOMAINS = Object.freeze(["sm.cn", "alicdn.com"]);
+/** 给报告文案用的说明：这里写 URL 主机名，因为那是采集器实际看到的形态。 */
+const ICON_DOMAIN_HOSTS = Object.freeze(["cdn.sm.cn", "gw.alicdn.com"]);
+/** SQL 里用的字面量列表，由 ICON_DOMAINS 生成 —— 避免两处各写一份又对不上。 */
+const ICON_SQL_LIST = ICON_DOMAINS.map((d) => `'${d}'`).join(', ');
 const PLATFORM_COLORS = [
   "#2563eb", "#7c3aed", "#0e9f6e", "#d97706", "#0891b2",
   "#db2777", "#4f46e5", "#65a30d", "#dc2626", "#0f766e",
@@ -273,8 +292,7 @@ function citationSourceSql() {
     " SELECT c.id AS citation_id, c.run_id, a.id AS article_id, a.canonical_url, a.title, " +
     "        a.normalized_domain AS domain, " +
     "        CASE WHEN EXISTS (SELECT 1 FROM unnest($3::text[]) AS icon_domain(value) " +
-    "          WHERE lower(COALESCE(a.normalized_domain, '')) = icon_domain.value " +
-    "             OR lower(COALESCE(a.normalized_domain, '')) LIKE '%.' || icon_domain.value) " +
+    "          WHERE lower(COALESCE(a.normalized_domain, '')) = icon_domain.value) " +
     "        THEN TRUE ELSE FALSE END AS is_icon, " +
     "        (SELECT t.id FROM tracked_articles t WHERE t.project_id = ANY($2::bigint[]) AND t.enabled IS TRUE " +
     "          AND (t.id = c.tracked_article_id OR (c.tracked_article_id IS NULL AND t.canonical_url = a.canonical_url)) " +
@@ -376,9 +394,8 @@ async function queryTrackedArticleDetails(client, batchIds, projectIds) {
       " WHERE (c.tracked_article_id = t.id OR (c.tracked_article_id IS NULL AND a.canonical_url = t.canonical_url)) " +
       "   AND r.sampling_batch_id = ANY($2::bigint[]) AND r.status = 'success' " +
       `   AND r.conversation_reset_confirmed IS TRUE AND r.citation_state IN (${CITATION_STATE_LIST}) ` +
-      "   AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['cdn.sm.cn', 'gw.alicdn.com']::text[]) AS icon_domain(value) " +
-      "     WHERE lower(COALESCE(a.normalized_domain, '')) = icon_domain.value " +
-      "        OR lower(COALESCE(a.normalized_domain, '')) LIKE '%.' || icon_domain.value) " +
+      `   AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY[${ICON_SQL_LIST}]::text[]) AS icon_domain(value) ` +
+       "     WHERE lower(COALESCE(a.normalized_domain, '')) = icon_domain.value) " +
       "   AND c.source_type = 'visible' AND c.visible_to_user IS TRUE" +
       ") c ON TRUE " +
       "GROUP BY t.canonical_url ORDER BY covered_runs DESC, citations DESC, t.canonical_url LIMIT 200",

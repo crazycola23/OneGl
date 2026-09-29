@@ -337,7 +337,8 @@ function sourcesSection(payload, rows) {
   });
   return "<section id=\"sec-04\"><h2>4. 来源链接与引用强度</h2>" +
     (blocks.join("") || "<div class=\"empty\">当前范围没有可计引用。来源引用仅计成功且引用解析有效的回答中的可见来源。</div>") +
-    "<p class=\"muted\">来源图标域 cdn.sm.cn 与 gw.alicdn.com 单独计数，不纳入内容来源排行。当前平台合计图标引用：" +
+     "<p class=\"muted\">来源图标域（canonical_url 主机名为 cdn.sm.cn 与 gw.alicdn.com，" +
+     "落库归一化为 sm.cn 与 alicdn.com）单独计数，不纳入内容来源排行。当前平台合计图标引用：" +
     numberText(rows.reduce((sum, row) => sum + row.platform.citations.icon_citations, 0)) + "。</p></section>";
 }
 
