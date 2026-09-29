@@ -70,11 +70,50 @@ test("豆包原有的两条路径标记仍然正确", () => {
     "可能已提交的场景不能标记为未提交，否则会造成重复提问");
 });
 
-test("千问的 ANSWER_NOT_FOUND 现状：可重试但无标记", () => {
-  // 那 3 次 ANSWER_NOT_FOUND 不在 RESUBMIT_UNSAFE_CODES 里，
-  // 所以默认可重试 —— 但没有 promptSubmitted 标记，
-  // 意味着重试时无法区分「平台静默丢弃」与「已提交但没等到回答」。
-  // 这是已知的待改进项，不在本轮修复范围。
-  assert.ok(RETRYABLE_CODES.has("ANSWER_NOT_FOUND") || !RESUBMIT_UNSAFE_CODES.has("ANSWER_NOT_FOUND"),
-    "ANSWER_NOT_FOUND 不应被当成高危码");
+test("ANSWER_NOT_FOUND 显式列入高危集合，不靠「忘了加」才安全", () => {
+  // 三处抛出点（豆包 804/846、千问 657）都标了 promptSubmitted: true，
+  // 承认提问很可能已送达。
+  //
+  // 之前它不在 RESUBMIT_UNSAFE_CODES 里，靠「不在 RETRYABLE_CODES → false」
+  // 那条路恰好不重试。结论对但理由错 —— 任何人「让超时也能重试」时把它加进
+  // RETRYABLE_CODES，就会立刻变成重复提问。
+  assert.ok(RESUBMIT_UNSAFE_CODES.has("ANSWER_NOT_FOUND"),
+    "应显式列入高危集合，让语义与实现一致");
+
+  // 现状行为不变：不重试。
+  assert.equal(isRetryable("ANSWER_NOT_FOUND"), false,
+    "它不在 RETRYABLE_CODES 里，所以第一道检查就返回 false");
+  assert.equal(canRetryOutcome("ANSWER_NOT_FOUND", { promptSubmitted: true }), false);
+  assert.equal(canRetryOutcome("ANSWER_NOT_FOUND", { promptSubmitted: false }), false,
+    "同样不重试 —— 第一道 RETRYABLE_CODES 检查就拦下了，promptSubmitted 是第二道");
+});
+
+test("若将来把 ANSWER_NOT_FOUND 加进可重试集合，标记仍能拦住重复提问", () => {
+  // 这是本次改动的真正价值：让第二道检查（promptSubmitted）成为可靠防线，
+  // 而不是让第一道检查的「遗漏」来兜底。
+  //
+  // 用一个等价场景验证第二道检查本身是有效的。
+  assert.equal(canRetryOutcome("DOUBAO_SUBMISSION_FAILED", { promptSubmitted: true }), false,
+    "高危码 + 已送达 → 拦下（第二道检查有效）");
+  assert.equal(canRetryOutcome("DOUBAO_SUBMISSION_FAILED", { promptSubmitted: false }), true,
+    "高危码 + 未送达 → 放行");
+  assert.equal(canRetryOutcome("ANSWER_NOT_FOUND", { promptSubmitted: true }), false,
+    "ANSWER_NOT_FOUND 现在也在高危集合里，标记语义被尊重");
+});
+
+test("三个抛出点都显式标注了 promptSubmitted", () => {
+  const doubao = readFileSync(new URL("../src/doubao.js", import.meta.url), "utf8");
+  const qianwen = readFileSync(new URL("../src/qianwen.js", import.meta.url), "utf8");
+  let checked = 0;
+  for (const [name, source] of [["豆包", doubao], ["千问", qianwen]]) {
+    const lines = source.split("\n");
+    for (const [i, line] of lines.entries()) {
+      if (!line.includes("ErrorCode.ANSWER_NOT_FOUND")) continue;
+      checked += 1;
+      const ctx = lines.slice(Math.max(0, i - 6), i + 8).join("\n");
+      assert.match(ctx, /promptSubmitted:\s*true/,
+        `${name}:${i + 1} 的 ANSWER_NOT_FOUND 应标注 promptSubmitted:true`);
+    }
+  }
+  assert.ok(checked >= 3, `应检查到至少 3 个抛出点，实际 ${checked}`);
 });

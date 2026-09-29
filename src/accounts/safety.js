@@ -282,6 +282,17 @@ export const RESUBMIT_UNSAFE_CODES = new Set([
   "NETWORK_ERROR",
   "DOUBAO_SUBMISSION_FAILED",
   "PAGE_CHANGED",
+  // 提交后等不到任何回答 —— 提问很可能**已经送达**（豆包 804/846、千问 657
+  // 三处都显式标了 promptSubmitted: true）。
+  //
+  // 之前它不在这个集合里，于是 canRetryOutcome 走「不在 RETRYABLE_CODES → false」
+  // 那条路而恰好不重试。**结论对，理由错**：它靠「忘了加进 RETRYABLE_CODES」
+  // 才安全，而那看起来很像是遗漏 —— 任何人想「让超时也能重试」时把它加进
+  // RETRYABLE_CODES，就会立刻变成重复提问。
+  //
+  // 显式放进这个集合后，语义与实现一致：它在 RETRYABLE_CODES 里，
+  // 但因 promptSubmitted 为 true 而被拦下。
+  "ANSWER_NOT_FOUND",
 ]);
 
 export function isRetryable(code) {
