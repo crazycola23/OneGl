@@ -440,8 +440,17 @@ function sourceOpportunitySection(payload, rows) {
 
 function actionSection(payload, rows) {
   const blocks = [];
-  if (!payload.target.brand_configured) {
-    blocks.push("<li><strong>完善品牌配置：</strong>当前品牌提及指标为 N/A；补充目标品牌后再解读提及表现。</li>");
+  const brandStats = rows.map((row) => row.platform.brand_mentions).find((s) => s?.available);
+
+  // 关于项目品牌（采集期口径）的建议只在**确实没产出竞品数据**时才提。
+  //
+  // 早期版本只看 payload.target.brand_configured，于是「项目没配 target_brand、
+  // 但本次传了竞品」时会同时出现：第 3 节展示思邈棠 71.8%，第 10 节却说
+  // 「当前品牌提及指标为 N/A；补充目标品牌后再解读提及表现」—— 客户刚看到
+  // 竞品数据就被告知没有品牌数据，只能认为其中一处在算错。
+  if (!payload.target.brand_configured && !brandStats) {
+    blocks.push("<li><strong>完善项目品牌配置：</strong>项目未配置目标品牌，采集期口径的品牌提及指标为 N/A。" +
+      "该指标与本次传入的竞品列表是两回事，配置后重采集才能得到。</li>");
   }
   if (!payload.target.tracked_articles_configured) {
     blocks.push("<li><strong>配置目标内容：</strong>当前无法衡量自有文章的收录覆盖；添加要跟踪的 canonical URL 后，可按平台和阶段比较。</li>");
@@ -452,6 +461,14 @@ function actionSection(payload, rows) {
   }
   if (rows.some((row) => row.platform.citations.top_domains.length > 0)) {
     blocks.push("<li><strong>逐条核对来源：</strong>从覆盖回答较多的域名与 URL 开始，验证公开页面是否能支持对应内容主题。</li>");
+  }
+  // 有竞品数据时，给出针对竞品口径的下一步 —— 之前无论有没有数据都只谈项目品牌
+  if (brandStats) {
+    const names = brandStats.brands.slice(0, 3).map((b) => b.name).join("、");
+    const more = brandStats.brands.length > 3 ? ` 等 ${brandStats.brands.length} 个` : "";
+    blocks.push("<li><strong>针对竞品口径复核：</strong>第 3 节的竞品提及率按本次传入的 " +
+      brandStats.brands.length + " 个品牌计算（" + escapeHtml(names + more) + "）；" +
+      "需要换一批竞品时重新提交 brands 参数生成新快照，历史快照不会自动改。</li>");
   }
   if (payload.periods.length > 1) {
     blocks.push("<li><strong>持续记录阶段：</strong>沿用相同 Task、平台、时区和跟踪文章配置生成下一阶段；样本口径变化时单独注明。</li>");
