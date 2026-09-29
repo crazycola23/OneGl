@@ -609,6 +609,63 @@
         },
         "type": "object"
       },
+      "AnswerDetailResource": {
+        "additionalProperties": true,
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "answer_chars": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "answer_completion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "answer_truncated": {
+            "type": "boolean"
+          },
+          "batch_id": {
+            "type": "integer"
+          },
+          "citation_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "platform": {
+            "enum": [
+              "doubao",
+              "qianwen",
+              "wenxin",
+              "zhipu"
+            ],
+            "type": "string"
+          },
+          "question": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "schema": {
+            "const": "answer-detail.v1",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "platform",
+          "answer",
+          "answer_chars"
+        ],
+        "type": "object"
+      },
       "AnswerSampleAnswer": {
         "additionalProperties": true,
         "properties": {
@@ -791,6 +848,188 @@
           "returned",
           "by_platform",
           "meta",
+          "answers",
+          "interpretation"
+        ],
+        "type": "object"
+      },
+      "AnswerSearchBrandMatch": {
+        "additionalProperties": true,
+        "properties": {
+          "context": {
+            "description": "Text around the first mention, enough to tell a recommendation from a passing mention.",
+            "type": "string"
+          },
+          "first_position": {
+            "description": "Character offset of the first mention; lower means the platform raised it earlier.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "matched_terms": {
+            "description": "Which alias or product name actually matched.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mention_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "mention_count",
+          "first_position",
+          "matched_terms",
+          "context"
+        ],
+        "type": "object"
+      },
+      "AnswerSearchItem": {
+        "additionalProperties": true,
+        "properties": {
+          "answer": {
+            "description": "Full answer text. Present only when include_answer=true.",
+            "type": "string"
+          },
+          "answer_chars": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "answer_completion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "answer_truncated": {
+            "type": "boolean"
+          },
+          "batch_id": {
+            "type": "integer"
+          },
+          "brand_matches": {
+            "items": {
+              "$ref": "#/components/schemas/AnswerSearchBrandMatch"
+            },
+            "type": "array"
+          },
+          "citation_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "platform": {
+            "enum": [
+              "doubao",
+              "qianwen",
+              "wenxin",
+              "zhipu"
+            ],
+            "type": "string"
+          },
+          "question": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "term_position": {
+            "description": "Character offset of the keyword hit, or null when q was not used.",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "run_id",
+          "batch_id",
+          "platform",
+          "question",
+          "answer_chars",
+          "brand_matches"
+        ],
+        "type": "object"
+      },
+      "AnswerSearchResource": {
+        "additionalProperties": true,
+        "description": "Answers matching a keyword, a set of brands, or both. When brands are supplied, only answers that actually mention at least one of them are returned, and the totals use exactly the same eligibility rules as the report's brand mention statistics — the two must agree.",
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/AnswerSearchItem"
+            },
+            "type": "array"
+          },
+          "brands": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "candidate_total": {
+            "description": "Answers matching the SQL pre-filter, before exact brand matching.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "interpretation": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "limit": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "next_offset": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "returned": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema": {
+            "const": "answer-search.v1",
+            "type": "string"
+          },
+          "total": {
+            "description": "Exact match count. Equals the report's brand_mentions.mentioned_answers for the same brand list.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_is_exact": {
+            "description": "False when the candidate cap was hit, meaning total does not cover everything.",
+            "type": "boolean"
+          },
+          "truncated_by_cap": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "total",
+          "returned",
           "answers",
           "interpretation"
         ],
@@ -17312,6 +17551,335 @@
         }
       ]
     },
+    "/v1/task-groups/{groupId}/answers/search": {
+      "get": {
+        "description": "Finds the answers behind an aggregate number: given a report saying a brand was mentioned in N answers, this returns those N answers with context around each mention, so a model can judge whether the brand was recommended or merely passed over. Uses exactly the same eligibility rules as the report's brand mention statistics, so totals agree.\n\nWhen brands are supplied only answers mentioning at least one of them are returned. The answer text is omitted unless include_answer=true; use the single-answer endpoint for full text.",
+        "operationId": "getTaskGroupsByGroupIdAnswersSearch",
+        "parameters": [
+          {
+            "description": "Keyword matched against question and answer text, Chinese substring aware.",
+            "in": "query",
+            "name": "q",
+            "schema": {
+              "maxLength": 200,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Brand as `name|alias1|alias2`, repeatable. Pipe-separated aliases keep the URL short and avoid one query parameter per alias. Matching is the same rule engine the report uses.",
+            "explode": true,
+            "in": "query",
+            "name": "brand",
+            "schema": {
+              "items": {
+                "maxLength": 500,
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "explode": true,
+            "in": "query",
+            "name": "platform",
+            "schema": {
+              "items": {
+                "enum": [
+                  "doubao",
+                  "qianwen",
+                  "wenxin",
+                  "zhipu"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Include full answer text. Off by default: dozens of full answers is a large response.",
+            "in": "query",
+            "name": "include_answer",
+            "schema": {
+              "default": "false",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AnswerSearchResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Matching answers with brand-mention context",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Search collected answers by keyword and/or brand mention",
+        "tags": [
+          "Observability"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "groupId",
+          "required": true,
+          "schema": {
+            "example": "grp_0123456789abcdef0123456789abcdef",
+            "pattern": "^grp_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/v1/task-groups/{groupId}/answers/{runId}": {
+      "get": {
+        "description": "Full text for a single run returned by the search endpoint.",
+        "operationId": "getTaskGroupsByGroupIdAnswersByRunId",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AnswerDetailResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Answer detail",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Get one answer's full text",
+        "tags": [
+          "Observability"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "groupId",
+          "required": true,
+          "schema": {
+            "example": "grp_0123456789abcdef0123456789abcdef",
+            "pattern": "^grp_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "runId",
+          "required": true,
+          "schema": {
+            "example": "run_0123456789abcdef0123456789abcdef",
+            "pattern": "^run_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/v1/task-groups/{groupId}/geo-reports": {
       "get": {
         "description": "Every snapshot generated for this group, newest first. Use this to pick the reports to compare.",
@@ -18816,6 +19384,333 @@
           "schema": {
             "example": "tsk_0123456789abcdef0123456789abcdef",
             "pattern": "^tsk_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/v1/tasks/{taskId}/answers/search": {
+      "get": {
+        "description": "Same contract as the task-group variant, scoped to one collection task. Useful when a task covers a single platform.",
+        "operationId": "getTasksByTaskIdAnswersSearch",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "schema": {
+              "maxLength": 200,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Brand as `name|alias1|alias2`, repeatable.",
+            "explode": true,
+            "in": "query",
+            "name": "brand",
+            "schema": {
+              "items": {
+                "maxLength": 500,
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "explode": true,
+            "in": "query",
+            "name": "platform",
+            "schema": {
+              "items": {
+                "enum": [
+                  "doubao",
+                  "qianwen",
+                  "wenxin",
+                  "zhipu"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_answer",
+            "schema": {
+              "default": "false",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AnswerSearchResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Matching answers with brand-mention context",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/SaasBadRequest"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Search collected answers for a single collection task",
+        "tags": [
+          "Tasks"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "taskId",
+          "required": true,
+          "schema": {
+            "example": "tsk_0123456789abcdef0123456789abcdef",
+            "pattern": "^tsk_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/v1/tasks/{taskId}/answers/{runId}": {
+      "get": {
+        "description": "Get one answer's full text for a collection task",
+        "operationId": "getTasksByTaskIdAnswersByRunId",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AnswerDetailResource"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Answer detail",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present with value true when a successful response was replayed from Idempotency-Key storage.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "X-OneGl-API-Version": {
+                "description": "OpenAPI contract version served by this OneGl instance.",
+                "schema": {
+                  "example": "0.7.0",
+                  "type": "string"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SaasNotFound"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaasError"
+                }
+              }
+            },
+            "description": "API request rate limit exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the caller should retry.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "X-OneGl-Request-Id": {
+                "$ref": "#/components/headers/OneGlRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/OneGlRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/OneGlRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/OneGlRateLimitReset"
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "summary": "Get one answer's full text for a collection task",
+        "tags": [
+          "Tasks"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "taskId",
+          "required": true,
+          "schema": {
+            "example": "tsk_0123456789abcdef0123456789abcdef",
+            "pattern": "^tsk_[a-f0-9]{32}$",
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "runId",
+          "required": true,
+          "schema": {
+            "example": "run_0123456789abcdef0123456789abcdef",
+            "pattern": "^run_[a-f0-9]{32}$",
             "type": "string"
           }
         }

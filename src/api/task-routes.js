@@ -30,6 +30,7 @@ import {
 } from "../reporting/geo-customer-reports.js";
 import { compareGeoCustomerReports } from "../reporting/geo-report-compare.js";
 import { listAnswers } from "../analysis/answer-sample.js";
+import { getAnswerByRunId, searchAnswers } from "../analysis/answer-search.js";
 import {
   attachTaskGroupMembers,
   createTaskGroup,
@@ -88,6 +89,22 @@ const MANUAL_ACCOUNT_STATES = new Set([
  * limit of the scheduler, not a statement about the registry: executions are unrestricted.
  */
 const SCHEDULE_PROVIDER = "doubao";
+
+/**
+ * 品牌查询参数解析：`?brand=思邈棠|思邈堂|思邈棠中式养生`
+ *
+ * 用 `|` 分隔别名而不是为每个别名开一个参数：URL 会变长，而且 OpenAPI 里
+ * 表达「一组可变长度的别名」本来就不如一个分隔符字符串直观。
+ * 重复多次给 brand= 也可以，两种写法等价。
+ */
+function parseBrandQuery(values) {
+  if (!Array.isArray(values) || !values.length) return [];
+  return values.flatMap((raw) => {
+    const [name, ...aliases] = String(raw).split("|").map((v) => v.trim()).filter(Boolean);
+    if (!name) return [];
+    return [{ name, aliases }];
+  });
+}
 
 function positiveLimit(raw, fallback = 100, max = 500) {
   if (raw == null || raw === "") return fallback;
@@ -477,6 +494,51 @@ export async function handleTaskRoute({ req, res, url, db, auth, tenant }) {
     return sendJson(res, 200, { data });
   }
 
+  /**
+   * 对话检索：按关键词 / 品牌命中找回答。
+   *
+   * 报告给的是聚合数字（「思邈棠提及率 66%」），调用方的 agent 需要追问
+   * 「那 64 条具体怎么说的」。这个端点补上中间地带 —— 不用把全量 11.5 万字符
+   * 回答（约 35 万 token）丢给模型，只取命中的那几十条。
+   */
+  const answerSearch = pathname.match(
+    /^\/v1\/(tasks\/(tsk_[a-f0-9]+)|task-groups\/(grp_[a-f0-9]+))\/answers\/search$/,
+  );
+  if (answerSearch && req.method === "GET") {
+    requireScope(auth, "reports:read");
+    const data = await searchAnswers(db, {
+      tenantId: tenant.id,
+      taskId: answerSearch[1] ?? null,
+      groupId: answerSearch[2] ?? null,
+      q: url.searchParams.get("q"),
+      brands: parseBrandQuery(url.searchParams.getAll("brand")),
+      platforms: url.searchParams.getAll("platform"),
+      limit: url.searchParams.get("limit"),
+      offset: url.searchParams.get("offset"),
+      // 品牌参数用 "名称|别名1|别名2" 形式，避免为每个别名开一个查询参数
+      includeAnswer: url.searchParams.get("include_answer") === "true",
+    });
+    return sendJson(res, 200, { data });
+  }
+
+  /**
+   * 单条回答全文：检索结果里 run_id 的补充。
+   * 检索默认不返回 answer（几十条时体积太大），需要逐条细看时走这里。
+   */
+  const answerOne = pathname.match(
+    /^\/v1\/(tasks\/(tsk_[a-f0-9]+)|task-groups\/(grp_[a-f0-9]+))\/answers\/(run_[A-Za-z0-9_-]+)$/,
+  );
+  if (answerOne && req.method === "GET") {
+    requireScope(auth, "reports:read");
+    const isGroup = answerOne[1].startsWith("task-groups");
+    const data = await getAnswerByRunId(db, {
+      tenantId: tenant.id,
+      taskId: isGroup ? null : answerOne[2],
+      groupId: isGroup ? answerOne[2] : null,
+      runId: answerOne[3],
+    });
+    return sendJson(res, 200, { data });
+  }
   /* ------------------------------------------------------------ 任务组 */
 
   // 任务组 = 用户视角的一个任务，内部按平台拆成多个采集 task。

@@ -730,6 +730,78 @@ export function applySaasOpenApi(document) {
       },
       additionalProperties: true,
     },
+    AnswerSearchBrandMatch: {
+      type: "object",
+      required: ["name", "mention_count", "first_position", "matched_terms", "context"],
+      properties: {
+        name: { type: "string" },
+        mention_count: { type: "integer", minimum: 0 },
+        first_position: { type: "integer", minimum: 0, description: "Character offset of the first mention; lower means the platform raised it earlier." },
+        matched_terms: { type: "array", items: { type: "string" }, description: "Which alias or product name actually matched." },
+        context: { type: "string", description: "Text around the first mention, enough to tell a recommendation from a passing mention." },
+      },
+      additionalProperties: true,
+    },
+    AnswerSearchItem: {
+      type: "object",
+      required: ["run_id", "batch_id", "platform", "question", "answer_chars", "brand_matches"],
+      properties: {
+        run_id: { type: "string" },
+        batch_id: { type: "integer" },
+        platform: { type: "string", enum: PROVIDERS() },
+        question: { type: ["string", "null"] },
+        answer: { type: "string", description: "Full answer text. Present only when include_answer=true." },
+        answer_chars: { type: "integer", minimum: 0 },
+        answer_truncated: { type: "boolean" },
+        answer_completion: { type: ["string", "null"] },
+        citation_count: { type: "integer", minimum: 0 },
+        term_position: { type: ["integer", "null"], description: "Character offset of the keyword hit, or null when q was not used." },
+        brand_matches: { type: "array", items: { $ref: "#/components/schemas/AnswerSearchBrandMatch" } },
+      },
+      additionalProperties: true,
+    },
+    AnswerSearchResource: {
+      type: "object",
+      description:
+        "Answers matching a keyword, a set of brands, or both. When brands are supplied, only answers that " +
+        "actually mention at least one of them are returned, and the totals use exactly the same eligibility " +
+        "rules as the report's brand mention statistics — the two must agree.",
+      required: ["total", "returned", "answers", "interpretation"],
+      properties: {
+        schema: { type: "string", const: "answer-search.v1" },
+        query: { type: ["string", "null"] },
+        brands: { type: "array", items: { type: "string" } },
+        candidate_total: { type: "integer", minimum: 0, description: "Answers matching the SQL pre-filter, before exact brand matching." },
+        total: { type: "integer", minimum: 0, description: "Exact match count. Equals the report's brand_mentions.mentioned_answers for the same brand list." },
+        total_is_exact: { type: "boolean", description: "False when the candidate cap was hit, meaning total does not cover everything." },
+        truncated_by_cap: { type: "boolean" },
+        returned: { type: "integer", minimum: 0 },
+        limit: { type: "integer", minimum: 1 },
+        offset: { type: "integer", minimum: 0 },
+        has_more: { type: "boolean" },
+        next_offset: { type: ["integer", "null"] },
+        answers: { type: "array", items: { $ref: "#/components/schemas/AnswerSearchItem" } },
+        interpretation: { type: "object", additionalProperties: true },
+      },
+      additionalProperties: true,
+    },
+    AnswerDetailResource: {
+      type: "object",
+      required: ["run_id", "platform", "answer", "answer_chars"],
+      properties: {
+        schema: { type: "string", const: "answer-detail.v1" },
+        run_id: { type: "string" },
+        batch_id: { type: "integer" },
+        platform: { type: "string", enum: PROVIDERS() },
+        question: { type: ["string", "null"] },
+        answer: { type: "string" },
+        answer_chars: { type: "integer", minimum: 0 },
+        answer_truncated: { type: "boolean" },
+        answer_completion: { type: ["string", "null"] },
+        citation_count: { type: "integer", minimum: 0 },
+      },
+      additionalProperties: true,
+    },
     AnswerSampleResource: {
       type: "object",
       required: ["sampled", "scanned", "scan_cap", "total_available", "returned", "by_platform", "meta", "answers", "interpretation"],
@@ -1284,6 +1356,69 @@ export function applySaasOpenApi(document) {
         },
       },
     },
+    "/v1/task-groups/{groupId}/answers/search": {
+      parameters: [stringId("groupId", "grp")],
+      get: {
+        summary: "Search collected answers by keyword and/or brand mention",
+        description:
+          "Finds the answers behind an aggregate number: given a report saying a brand was mentioned in N answers, " +
+          "this returns those N answers with context around each mention, so a model can judge whether the brand " +
+          "was recommended or merely passed over. Uses exactly the same eligibility rules as the report's brand " +
+          "mention statistics, so totals agree.\n\n" +
+          "When brands are supplied only answers mentioning at least one of them are returned. The answer text is " +
+          "omitted unless include_answer=true; use the single-answer endpoint for full text.",
+        parameters: [
+          {
+            name: "q",
+            in: "query",
+            schema: { type: "string", maxLength: 200 },
+            description: "Keyword matched against question and answer text, Chinese substring aware.",
+          },
+          {
+            name: "brand",
+            in: "query",
+            schema: { type: "array", items: { type: "string", maxLength: 500 } },
+            style: "form",
+            explode: true,
+            description:
+              "Brand as `name|alias1|alias2`, repeatable. Pipe-separated aliases keep the URL short and avoid one " +
+              "query parameter per alias. Matching is the same rule engine the report uses.",
+          },
+          {
+            name: "platform",
+            in: "query",
+            schema: { type: "array", items: { type: "string", enum: PROVIDERS() } },
+            style: "form",
+            explode: true,
+          },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200, default: 50 } },
+          { name: "offset", in: "query", schema: { type: "integer", minimum: 0, default: 0 } },
+          {
+            name: "include_answer",
+            in: "query",
+            schema: { type: "string", enum: ["true", "false"], default: "false" },
+            description: "Include full answer text. Off by default: dozens of full answers is a large response.",
+          },
+        ],
+        responses: {
+          200: json("Matching answers with brand-mention context", { $ref: "#/components/schemas/AnswerSearchResource" }),
+          400: { $ref: "#/components/responses/SaasBadRequest" },
+          404: { $ref: "#/components/responses/SaasNotFound" },
+          422: { $ref: "#/components/responses/SaasBadRequest" },
+        },
+      },
+    },
+    "/v1/task-groups/{groupId}/answers/{runId}": {
+      parameters: [stringId("groupId", "grp"), stringId("runId", "run")],
+      get: {
+        summary: "Get one answer's full text",
+        description: "Full text for a single run returned by the search endpoint.",
+        responses: {
+          200: json("Answer detail", { $ref: "#/components/schemas/AnswerDetailResource" }),
+          404: { $ref: "#/components/responses/SaasNotFound" },
+        },
+      },
+    },
     "/v1/task-groups/{groupId}/answers": {
       parameters: [stringId("groupId", "grp")],
       get: {
@@ -1334,6 +1469,52 @@ export function applySaasOpenApi(document) {
           400: { $ref: "#/components/responses/SaasBadRequest" },
           404: { $ref: "#/components/responses/SaasNotFound" },
           422: { $ref: "#/components/responses/SaasBadRequest" },
+        },
+      },
+    },
+    "/v1/tasks/{taskId}/answers/search": {
+      parameters: [stringId("taskId", "tsk")],
+      get: {
+        summary: "Search collected answers for a single collection task",
+        description:
+          "Same contract as the task-group variant, scoped to one collection task. Useful when a task covers a " +
+          "single platform.",
+        parameters: [
+          { name: "q", in: "query", schema: { type: "string", maxLength: 200 } },
+          {
+            name: "brand",
+            in: "query",
+            schema: { type: "array", items: { type: "string", maxLength: 500 } },
+            style: "form",
+            explode: true,
+            description: "Brand as `name|alias1|alias2`, repeatable.",
+          },
+          {
+            name: "platform",
+            in: "query",
+            schema: { type: "array", items: { type: "string", enum: PROVIDERS() } },
+            style: "form",
+            explode: true,
+          },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200, default: 50 } },
+          { name: "offset", in: "query", schema: { type: "integer", minimum: 0, default: 0 } },
+          { name: "include_answer", in: "query", schema: { type: "string", enum: ["true", "false"], default: "false" } },
+        ],
+        responses: {
+          200: json("Matching answers with brand-mention context", { $ref: "#/components/schemas/AnswerSearchResource" }),
+          400: { $ref: "#/components/responses/SaasBadRequest" },
+          404: { $ref: "#/components/responses/SaasNotFound" },
+          422: { $ref: "#/components/responses/SaasBadRequest" },
+        },
+      },
+    },
+    "/v1/tasks/{taskId}/answers/{runId}": {
+      parameters: [stringId("taskId", "tsk"), stringId("runId", "run")],
+      get: {
+        summary: "Get one answer's full text for a collection task",
+        responses: {
+          200: json("Answer detail", { $ref: "#/components/schemas/AnswerDetailResource" }),
+          404: { $ref: "#/components/responses/SaasNotFound" },
         },
       },
     },

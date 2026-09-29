@@ -1271,6 +1271,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/task-groups/{groupId}/answers/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Search collected answers by keyword and/or brand mention
+         * @description Finds the answers behind an aggregate number: given a report saying a brand was mentioned in N answers, this returns those N answers with context around each mention, so a model can judge whether the brand was recommended or merely passed over. Uses exactly the same eligibility rules as the report's brand mention statistics, so totals agree.
+         *
+         *     When brands are supplied only answers mentioning at least one of them are returned. The answer text is omitted unless include_answer=true; use the single-answer endpoint for full text.
+         */
+        get: operations["getTaskGroupsByGroupIdAnswersSearch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/task-groups/{groupId}/answers/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+                runId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get one answer's full text
+         * @description Full text for a single run returned by the search endpoint.
+         */
+        get: operations["getTaskGroupsByGroupIdAnswersByRunId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/task-groups/{groupId}/geo-reports": {
         parameters: {
             query?: never;
@@ -1395,6 +1442,51 @@ export interface paths {
          * @description Same contract as the task-group variant, scoped to one collection task.
          */
         get: operations["getTasksByTaskIdAnswers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/tasks/{taskId}/answers/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Search collected answers for a single collection task
+         * @description Same contract as the task-group variant, scoped to one collection task. Useful when a task covers a single platform.
+         */
+        get: operations["getTasksByTaskIdAnswersSearch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/tasks/{taskId}/answers/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                taskId: string;
+                runId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get one answer's full text for a collection task
+         * @description Get one answer's full text for a collection task
+         */
+        get: operations["getTasksByTaskIdAnswersByRunId"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1873,6 +1965,22 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        AnswerDetailResource: {
+            answer: string;
+            answer_chars: number;
+            answer_completion?: string | null;
+            answer_truncated?: boolean;
+            batch_id?: number;
+            citation_count?: number;
+            /** @enum {string} */
+            platform: "doubao" | "qianwen" | "wenxin" | "zhipu";
+            question?: string | null;
+            run_id: string;
+            /** @constant */
+            schema?: "answer-detail.v1";
+        } & {
+            [key: string]: unknown;
+        };
         AnswerSampleAnswer: {
             /** @description AI answer text, safe-sliced to avoid splitting surrogate pairs. */
             answer: string;
@@ -1930,6 +2038,61 @@ export interface components {
             seed?: string | null;
             /** @description Same as scanned: candidates in the current window, NOT the full table count. */
             total_available: number;
+        } & {
+            [key: string]: unknown;
+        };
+        AnswerSearchBrandMatch: {
+            /** @description Text around the first mention, enough to tell a recommendation from a passing mention. */
+            context: string;
+            /** @description Character offset of the first mention; lower means the platform raised it earlier. */
+            first_position: number;
+            /** @description Which alias or product name actually matched. */
+            matched_terms: string[];
+            mention_count: number;
+            name: string;
+        } & {
+            [key: string]: unknown;
+        };
+        AnswerSearchItem: {
+            /** @description Full answer text. Present only when include_answer=true. */
+            answer?: string;
+            answer_chars: number;
+            answer_completion?: string | null;
+            answer_truncated?: boolean;
+            batch_id: number;
+            brand_matches: components["schemas"]["AnswerSearchBrandMatch"][];
+            citation_count?: number;
+            /** @enum {string} */
+            platform: "doubao" | "qianwen" | "wenxin" | "zhipu";
+            question: string | null;
+            run_id: string;
+            /** @description Character offset of the keyword hit, or null when q was not used. */
+            term_position?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** @description Answers matching a keyword, a set of brands, or both. When brands are supplied, only answers that actually mention at least one of them are returned, and the totals use exactly the same eligibility rules as the report's brand mention statistics — the two must agree. */
+        AnswerSearchResource: {
+            answers: components["schemas"]["AnswerSearchItem"][];
+            brands?: string[];
+            /** @description Answers matching the SQL pre-filter, before exact brand matching. */
+            candidate_total?: number;
+            has_more?: boolean;
+            interpretation: {
+                [key: string]: unknown;
+            };
+            limit?: number;
+            next_offset?: number | null;
+            offset?: number;
+            query?: string | null;
+            returned: number;
+            /** @constant */
+            schema?: "answer-search.v1";
+            /** @description Exact match count. Equals the report's brand_mentions.mentioned_answers for the same brand list. */
+            total: number;
+            /** @description False when the candidate cap was hit, meaning total does not cover everything. */
+            total_is_exact?: boolean;
+            truncated_by_cap?: boolean;
         } & {
             [key: string]: unknown;
         };
@@ -2384,6 +2547,8 @@ export interface components {
             periods: components["schemas"]["GeoReportPeriodInput"][];
             /** @description Defaults to the platforms configured on this Task. */
             platforms?: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
+            /** @description Optional customer branding applied to the generated HTML. */
+            theme?: components["schemas"]["ReportTheme"];
         };
         GeoCustomerReportDetails: components["schemas"]["GeoCustomerReportResource"] & {
             snapshot: components["schemas"]["GeoCustomerReportSnapshot"];
@@ -2452,6 +2617,10 @@ export interface components {
                 [key: string]: unknown;
             };
             task_id?: string | null;
+            /** @description Customer branding stored in this snapshot; null when the default theme was used. */
+            theme: {
+                [key: string]: unknown;
+            } | null;
             warnings: string[];
         } & {
             [key: string]: unknown;
@@ -3627,6 +3796,31 @@ export interface components {
             revision_id: string;
             schema_version: string;
             task_id?: string;
+        };
+        /** @description Optional customer branding for the HTML report: accent colour, logo, footer attribution. Invalid values are dropped rather than failing report generation. The theme is stored in the snapshot, so the rendered HTML and its content_hash stay consistent. */
+        ReportTheme: {
+            /** @description Hex colours only. Anything else is ignored and the default is kept. */
+            colors?: {
+                /** @description Links, borders, highlights. */
+                accent?: string;
+                bad?: string;
+                /** @description Page background. */
+                bg?: string;
+                /** @description Body text. */
+                ink?: string;
+                /** @description Borders and separators. */
+                line?: string;
+                ok?: string;
+                surface?: string;
+                warn?: string;
+            };
+            /** @description Footer attribution, e.g. the agency or platform name. Defaults to 'OneGl · GEO 客户报告'. */
+            footer_text?: string;
+            /** @default 40 */
+            logo_height: number;
+            /** @description Customer logo, http(s) only. Rendered above the report title; ignored when the URL is not http(s). */
+            logo_url?: string;
+            logo_width?: number | null;
         };
         ReportVersions: {
             /** @description Version of the cited-page intelligence producer, or null when analysis has not produced a payload yet. */
@@ -7811,6 +8005,123 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    getTaskGroupsByGroupIdAnswersSearch: {
+        parameters: {
+            query?: {
+                /** @description Keyword matched against question and answer text, Chinese substring aware. */
+                q?: string;
+                /** @description Brand as `name|alias1|alias2`, repeatable. Pipe-separated aliases keep the URL short and avoid one query parameter per alias. Matching is the same rule engine the report uses. */
+                brand?: string[];
+                platform?: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
+                limit?: number;
+                offset?: number;
+                /** @description Include full answer text. Off by default: dozens of full answers is a large response. */
+                include_answer?: "true" | "false";
+            };
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Matching answers with brand-mention context */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AnswerSearchResource"];
+                    };
+                };
+            };
+            400: components["responses"]["SaasBadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            422: components["responses"]["SaasBadRequest"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getTaskGroupsByGroupIdAnswersByRunId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Answer detail */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AnswerDetailResource"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     getTaskGroupsByGroupIdGeoReports: {
         parameters: {
             query?: {
@@ -8473,6 +8784,121 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["SaasNotFound"];
             422: components["responses"]["SaasBadRequest"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getTasksByTaskIdAnswersSearch: {
+        parameters: {
+            query?: {
+                q?: string;
+                /** @description Brand as `name|alias1|alias2`, repeatable. */
+                brand?: string[];
+                platform?: ("doubao" | "qianwen" | "wenxin" | "zhipu")[];
+                limit?: number;
+                offset?: number;
+                include_answer?: "true" | "false";
+            };
+            header?: never;
+            path: {
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Matching answers with brand-mention context */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AnswerSearchResource"];
+                    };
+                };
+            };
+            400: components["responses"]["SaasBadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
+            422: components["responses"]["SaasBadRequest"];
+            /** @description API request rate limit exceeded. */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry. */
+                    "Retry-After"?: number;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaasError"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getTasksByTaskIdAnswersByRunId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                taskId: string;
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Answer detail */
+            200: {
+                headers: {
+                    /** @description Present with value true when a successful response was replayed from Idempotency-Key storage. */
+                    "Idempotency-Replayed"?: "true";
+                    /** @description OpenAPI contract version served by this OneGl instance. */
+                    "X-OneGl-API-Version"?: string;
+                    "X-OneGl-Request-Id": components["headers"]["OneGlRequestId"];
+                    "X-RateLimit-Limit": components["headers"]["OneGlRateLimitLimit"];
+                    "X-RateLimit-Remaining": components["headers"]["OneGlRateLimitRemaining"];
+                    "X-RateLimit-Reset": components["headers"]["OneGlRateLimitReset"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AnswerDetailResource"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["SaasNotFound"];
             /** @description API request rate limit exceeded. */
             429: {
                 headers: {
