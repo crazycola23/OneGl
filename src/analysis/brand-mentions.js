@@ -249,6 +249,9 @@ export function computeBrandMentions(answers, brands, { exampleRadius = 90, maxE
 
   return {
     schema: "brand-mentions.v1",
+    // 「做了统计」与「列表为空」的区分：调用方传了品牌、但一条可用回答都没有时，
+    // 品牌列表自然是空的，但这是「没数据」而不是「都没提到」。
+    available: brands.length > 0 && valid.length > 0,
     answer_count: valid.length,
     // 分母被排除的条数。平台检索中间态（如「找到 1 篇资料」）和抓取残片
     // 会实打实稀释提及率，必须让调用方看得见排除了多少。

@@ -1399,6 +1399,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "available": {
+            "description": "False when no brand analysis was performed (no brands supplied, or no usable answers). Distinguishes 'not measured' from 'measured and not mentioned', whose brand list is empty but available is true.",
+            "type": "boolean"
+          },
           "basis": {
             "const": "mentioned_answers_over_valid_answers",
             "type": "string"
@@ -1435,6 +1439,7 @@
           }
         },
         "required": [
+          "available",
           "answer_count",
           "excluded_answers",
           "truncated",
@@ -3238,6 +3243,113 @@
         ],
         "type": "object"
       },
+      "GeoReportCompareBrandDelta": {
+        "additionalProperties": true,
+        "description": "One competitor's mention movement between the two reports. Null on either side means the brand was not measured in that report — not that it scored zero.",
+        "properties": {
+          "base": {
+            "additionalProperties": true,
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "comparable": {
+            "type": "boolean"
+          },
+          "current": {
+            "additionalProperties": true,
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "mention_count_delta": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mention_rate_delta_percentage_points": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "present_in_base": {
+            "type": "boolean"
+          },
+          "present_in_current": {
+            "type": "boolean"
+          },
+          "role": {
+            "enum": [
+              "own",
+              "competitor",
+              "unspecified"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "comparable",
+          "present_in_current",
+          "present_in_base",
+          "current",
+          "base"
+        ],
+        "type": "object"
+      },
+      "GeoReportCompareBrandMentions": {
+        "additionalProperties": true,
+        "description": "Competitor mention comparison. Deterministic deltas only; interpretation is left to the caller's model.",
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "base_answer_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "brands": {
+            "items": {
+              "$ref": "#/components/schemas/GeoReportCompareBrandDelta"
+            },
+            "type": "array"
+          },
+          "current_answer_count": {
+            "description": "Valid answers on the target side; the mention-rate denominator.",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "denominator_changed": {
+            "description": "True when the two periods used different denominators, so a rate change may reflect sampling rather than brand performance.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "available",
+          "brands"
+        ],
+        "type": "object"
+      },
       "GeoReportCompareDomain": {
         "properties": {
           "citations": {
@@ -3299,24 +3411,41 @@
               "null"
             ]
           },
+          "brand_mentions": {
+            "$ref": "#/components/schemas/GeoReportCompareBrandMentions"
+          },
           "citations": {
             "additionalProperties": true,
-            "type": "object"
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "period_from": {
             "format": "date",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "period_key": {
-            "description": "Caller-supplied key of the period taken from the target report.",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "period_label": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "period_to": {
             "format": "date",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "platform": {
             "enum": [
@@ -3328,7 +3457,7 @@
             "type": "string"
           },
           "present_in_both": {
-            "description": "False means the platform is missing from one side; deltas are null, not 0.",
+            "description": "False means the platform is missing from one side; metrics are null, not 0.",
             "type": "boolean"
           },
           "present_in_target": {
@@ -3339,7 +3468,10 @@
           },
           "runs": {
             "additionalProperties": true,
-            "type": "object"
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "top_domains": {
             "additionalProperties": true,
@@ -3375,12 +3507,21 @@
           },
           "tracked_content": {
             "additionalProperties": true,
-            "type": "object"
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
           "platform",
-          "present_in_both"
+          "present_in_both",
+          "present_in_target",
+          "removed_since_base",
+          "runs",
+          "citations",
+          "tracked_content",
+          "brand_mentions"
         ],
         "type": "object"
       },

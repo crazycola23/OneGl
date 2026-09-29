@@ -292,8 +292,12 @@ export function applySaasOpenApi(document) {
     },
     BrandMentionsResource: {
       type: "object",
-      required: ["answer_count", "excluded_answers", "truncated", "brand_count", "basis", "brands", "interpretation"],
+      required: ["available", "answer_count", "excluded_answers", "truncated", "brand_count", "basis", "brands", "interpretation"],
       properties: {
+        available: {
+          type: "boolean",
+          description: "False when no brand analysis was performed (no brands supplied, or no usable answers). Distinguishes 'not measured' from 'measured and not mentioned', whose brand list is empty but available is true.",
+        },
         answer_count: { type: "integer", minimum: 0, description: "Answers that count toward mention-rate denominators." },
         excluded_answers: {
           type: "integer",
@@ -732,29 +736,64 @@ export function applySaasOpenApi(document) {
         covered_runs: { type: ["integer", "null"], minimum: 0 },
       },
     },
+    GeoReportCompareBrandDelta: {
+      type: "object",
+      description: "One competitor's mention movement between the two reports. Null on either side means the brand was not measured in that report — not that it scored zero.",
+      required: ["name", "comparable", "present_in_current", "present_in_base", "current", "base"],
+      properties: {
+        name: { type: "string" },
+        role: { type: "string", enum: ["own", "competitor", "unspecified"] },
+        comparable: { type: "boolean" },
+        present_in_current: { type: "boolean" },
+        present_in_base: { type: "boolean" },
+        current: { type: ["object", "null"], additionalProperties: true },
+        base: { type: ["object", "null"], additionalProperties: true },
+        mention_rate_delta_percentage_points: { type: ["number", "null"] },
+        mention_count_delta: { type: ["integer", "null"] },
+      },
+      additionalProperties: true,
+    },
+    GeoReportCompareBrandMentions: {
+      type: "object",
+      description: "Competitor mention comparison. Deterministic deltas only; interpretation is left to the caller's model.",
+      required: ["available", "brands"],
+      properties: {
+        available: { type: "boolean" },
+        reason: { type: ["string", "null"] },
+        current_answer_count: { type: ["integer", "null"], description: "Valid answers on the target side; the mention-rate denominator." },
+        base_answer_count: { type: ["integer", "null"] },
+        denominator_changed: {
+          type: ["boolean", "null"],
+          description: "True when the two periods used different denominators, so a rate change may reflect sampling rather than brand performance.",
+        },
+        brands: { type: "array", items: { $ref: "#/components/schemas/GeoReportCompareBrandDelta" } },
+      },
+      additionalProperties: true,
+    },
     GeoReportComparePlatform: {
       type: "object",
       description:
         "Per-platform comparison. Aligned by platform, not by period key: period keys are caller-supplied " +
         "strings and will not match between two reports, so using them as an alignment key silently yields " +
         "zero comparable rows. When a report holds several periods, the one closest in time is used.",
-      required: ["platform", "present_in_both"],
+      required: ["platform", "present_in_both", "present_in_target", "removed_since_base", "runs", "citations", "tracked_content", "brand_mentions"],
       properties: {
         platform: { type: "string", enum: PROVIDERS() },
-        period_key: { type: "string", description: "Caller-supplied key of the period taken from the target report." },
-        period_label: { type: "string" },
-        period_from: { type: "string", format: "date" },
-        period_to: { type: "string", format: "date" },
+        period_key: { type: ["string", "null"] },
+        period_label: { type: ["string", "null"] },
+        period_from: { type: ["string", "null"], format: "date" },
+        period_to: { type: ["string", "null"], format: "date" },
         base_period_key: { type: ["string", "null"], description: "Period key taken from the base report; usually differs from period_key." },
         base_period_label: { type: ["string", "null"] },
         base_period_from: { type: ["string", "null"], format: "date" },
         base_period_to: { type: ["string", "null"], format: "date" },
-        present_in_both: { type: "boolean", description: "False means the platform is missing from one side; deltas are null, not 0." },
+        present_in_both: { type: "boolean", description: "False means the platform is missing from one side; metrics are null, not 0." },
         present_in_target: { type: "boolean" },
         removed_since_base: { type: "boolean" },
-        runs: { type: "object", additionalProperties: true },
-        citations: { type: "object", additionalProperties: true },
-        tracked_content: { type: "object", additionalProperties: true },
+        runs: { type: ["object", "null"], additionalProperties: true },
+        citations: { type: ["object", "null"], additionalProperties: true },
+        tracked_content: { type: ["object", "null"], additionalProperties: true },
+        brand_mentions: { $ref: "#/components/schemas/GeoReportCompareBrandMentions" },
         top_domains: {
           type: "object",
           properties: {

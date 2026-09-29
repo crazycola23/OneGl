@@ -564,7 +564,14 @@ async function platformMetrics(client, { batchRows, projectIds, brandConfigured,
 function emptyBrandMentions(brands) {
   return {
     schema: "brand-mentions.v1",
+    // available=false 表示「这次根本没做品牌统计」（没传 brands 或没有可用回答），
+    // 与 available=true 但某品牌 mention_rate=0（「统计了，确实没提到」）是两件事。
+    // 对比端点靠这个字段区分，否则会把「没测」报成「下降到 0」。
+    available: brands.length > 0,
     answer_count: 0,
+    excluded_answers: 0,
+    truncated: false,
+    notes: [],
     brand_count: 0,
     basis: "mentioned_answers_over_valid_answers",
     brands: [],

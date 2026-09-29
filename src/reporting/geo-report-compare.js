@@ -118,6 +118,11 @@ function flatten(payload) {
         runs: platform.runs,
         citations: platform.citations,
         questions: platform.questions,
+        // 品牌提及必须一起带出来：竞品提及率的两期变化正是「基于最近报告做对比」
+        // 最想看的东西。不带的话，对比端点只有 runs.brand_mention_rate ——
+        // 那是采集期按项目 target_brand 算的单一品牌口径，与报告请求里
+        // brands 参数统计的竞品口径完全无关。
+        brand_mentions: platform.brand_mentions ?? null,
       });
       byPlatform.set(platform.platform, list);
     }
@@ -130,6 +135,11 @@ function flatten(payload) {
  *
  * 「最接近」= 日期区间结束日最大且不超过 base 的结束日；没有则退回区间开始日最大者。
  * 这样按时间推进的多次采集能自然对上，而不是依赖调用方填一样的 key。
+ *
+ * base 侧必须传**时间最早**的那个 period（见 earliestPeriod），不能用数组首个元素：
+ * 调用方完全可以按任意顺序填 periods，用首元素会导致「基线(9月初)」被当成
+ * 「最新一期」，进而把 target 的 9 月底数据和 base 的 9 月初数据配成一对 ——
+ * 数字各自都对，配对是错的，且 notes 里没有任何提示。
  */
 function pickComparable(list, baseEntry) {
   if (!list.length) return null;
@@ -143,6 +153,106 @@ function pickComparable(list, baseEntry) {
   return list
     .slice()
     .sort((a, b) => String(b.period_from ?? b.period_to ?? "").localeCompare(String(a.period_from ?? a.period_to ?? "")))[0];
+}
+
+/**
+ * 竞品提及的两期对比。
+ *
+ * 三个必须说清的口径问题：
+ *
+ * 1. **匹配键是品牌名。** 同一品牌在两侧的 name 完全一致（调用方传的），别名不参与匹配 ——
+ *    别名是匹配用的，跨期对齐必须用稳定标识。
+ * 2. **缺一侧是 null 不是 0。** 品牌 A 只在 target 的 brands 里出现，base 侧就是「没统计过」，
+ *    报 0 会被读成「以前提过、现在不提了」，那是完全不同的事。
+ * 3. **分母可能不同。** 两期抽样的有效回答数不同（采样波动、失败率变化），提及率的
+ *    变化可能来自分母而非品牌本身，所以两期分母都带出来，让调用方自己判断。
+ */
+function compareBrandMentions(current, previous, { label, notes }) {
+  // 「没做品牌统计」与「统计了但品牌列表为空」要分开：
+  // 前者拿不到任何对比数据，后者是真实的「这些品牌都没被提到」。
+  const currentHas = Boolean(current?.available);
+  const previousHas = Boolean(previous?.available);
+  if (!currentHas || !previousHas) {
+    return {
+      available: false,
+      reason: !currentHas
+        ? "target report has no brand analysis (no brands supplied or no usable answers)"
+        : "base report has no brand analysis (no brands supplied or no usable answers)",
+      current_answer_count: num(current?.answer_count) ?? null,
+      base_answer_count: num(previous?.answer_count) ?? null,
+      brands: [],
+    };
+  }
+
+  const currentMap = new Map((current.brands ?? []).map((b) => [b.name, b]));
+  const previousMap = new Map((previous.brands ?? []).map((b) => [b.name, b]));
+  const names = [...new Set([...currentMap.keys(), ...previousMap.keys()])];
+
+  const brands = names
+    .map((name) => {
+      const c = currentMap.get(name) ?? null;
+      const p = previousMap.get(name) ?? null;
+      const comparable = Boolean(c && p);
+      return {
+        name,
+        role: c?.role ?? p?.role ?? "unspecified",
+        comparable,
+        present_in_current: Boolean(c),
+        present_in_base: Boolean(p),
+        current: c
+          ? {
+              mention_rate: num(c.mention_rate),
+              mentioned_answers: num(c.mentioned_answers),
+              mention_count: num(c.mention_count),
+              valid_answers: num(c.valid_answers),
+            }
+          : null,
+        base: p
+          ? {
+              mention_rate: num(p.mention_rate),
+              mentioned_answers: num(p.mentioned_answers),
+              mention_count: num(p.mention_count),
+              valid_answers: num(p.valid_answers),
+            }
+          : null,
+        // 百分点差：提及率类指标用百分点而非百分比变化
+        mention_rate_delta_percentage_points: comparable
+          ? percentagePointDelta(c.mention_rate, p.mention_rate, {
+              label: `${label}.${name}.mention_rate`,
+              notes,
+              noteCode: "missing_metric",
+            })
+          : null,
+        mention_count_delta: comparable
+          ? delta(c.mention_count, p.mention_count, {
+              label: `${label}.${name}.mention_count`,
+              notes,
+              noteCode: "missing_metric",
+            })
+          : null,
+      };
+    })
+    .sort((a, b) => {
+      // 有可比数据的排前面，再按提及率变化绝对值（波动最大的最值得看）
+      if (a.comparable !== b.comparable) return a.comparable ? -1 : 1;
+      const da = a.mention_rate_delta_percentage_points == null ? -1 : Math.abs(a.mention_rate_delta_percentage_points);
+      const db = b.mention_rate_delta_percentage_points == null ? -1 : Math.abs(b.mention_rate_delta_percentage_points);
+      if (da !== db) return db - da;
+      return (b.current?.mention_rate ?? -1) - (a.current?.mention_rate ?? -1);
+    });
+
+  return {
+    available: true,
+    reason: null,
+    current_answer_count: num(current.answer_count) ?? null,
+    base_answer_count: num(previous.answer_count) ?? null,
+    // 分母不一致时提醒：提及率变化可能来自样本波动而非品牌表现
+    denominator_changed:
+      num(current.answer_count) != null && num(previous.answer_count) != null
+        ? num(current.answer_count) !== num(previous.answer_count)
+        : null,
+    brands,
+  };
 }
 
 function comparePlatform(entry, prevEntry, { notes }) {
@@ -217,6 +327,16 @@ function comparePlatform(entry, prevEntry, { notes }) {
         { label: `${label}.article_coverage_rate`, notes, noteCode: "missing_metric" },
       ),
     },
+    // 竞品提及的两期对比。
+    //
+    // 匹配键是品牌名：两侧 brands 列表不同的品牌只出现在一侧，另一侧给 null
+    // 而不是 0 —— 「这次没统计这个品牌」和「统计了但没提到」必须能区分。
+    // 调用方若忽略 notes 里的 brand_set_changed 就直接比排名，会得到错误结论，
+    // 所以这里同时给出可比性标记。
+    brand_mentions: compareBrandMentions(entry.brand_mentions, prevEntry?.brand_mentions, {
+      label,
+      notes,
+    }),
     // 来源结构的变化是渠道策略调整的直接证据：哪些域进了、哪些退出了。
     top_domains: {
       current: (citations.top_domains ?? []).map((d) => ({ domain: d.domain, citations: num(d.citations), covered_runs: num(d.covered_runs) })),
@@ -254,6 +374,17 @@ function domainDiff(currentDomains, previousDomains, kind) {
  * 「指标下降了」和「这次压根没这个平台的样本」—— 两者在报告里长得一样，
  * 但在决策上完全不同。
  */
+/** 时间最早的 period：作为「基线」参与配对，而不是数组首个元素。 */
+function earliestPeriod(list) {
+  if (!list.length) return null;
+  return list
+    .slice()
+    .sort((a, b) =>
+      String(a.period_from ?? a.period_to ?? "")
+        .localeCompare(String(b.period_from ?? b.period_to ?? "")),
+    )[0];
+}
+
 export async function compareGeoCustomerReports(pool, { tenantId, baseReportId, targetReportId }) {
   if (!baseReportId || !targetReportId) fail("base_report_id and target_report_id are required");
   if (baseReportId === targetReportId) {
@@ -312,23 +443,40 @@ export async function compareGeoCustomerReports(pool, { tenantId, baseReportId, 
   for (const platformId of platformIds) {
     const targetList = targetFlat.get(platformId) ?? [];
     const baseList = baseFlat.get(platformId) ?? [];
+    // 基线取时间最早的 period，不是数组首个 —— 调用方填 periods 的顺序是自由的
+    const baseAnchor = earliestPeriod(baseList);
     if (!targetList.length) {
-      // target 这次完全没有该平台的数据
-      const removed = baseList[0];
+      // target 这次完全没有该平台的数据。
+      //
+      // 必须给出与正常分支**同构**的对象：客户端通常写
+      // `for (const p of resp.platforms) p.runs.valid_runs`，若这里只给
+      // `{platform, present_in_both}`，访问 p.runs 就是 undefined，再下一层直接抛
+      // TypeError —— 整个响应遍历到这一项就中断。指标一律给 null 而非 0：
+      // 「没采到」不是「采到了 0」。
+      const removed = baseAnchor;
       platforms.push({
         platform: platformId,
-        present_in_both: false,
-        present_in_target: false,
-        removed_since_base: true,
+        period_key: null,
+        period_label: null,
+        period_from: null,
+        period_to: null,
         base_period_key: removed?.period_key ?? null,
         base_period_label: removed?.period_label ?? null,
         base_period_from: removed?.period_from ?? null,
         base_period_to: removed?.period_to ?? null,
+        present_in_both: false,
+        present_in_target: false,
+        removed_since_base: true,
+        runs: null,
+        citations: null,
+        tracked_content: null,
+        brand_mentions: null,
+        top_domains: null,
       });
       continue;
     }
-    // target 有多个 period 时，取最接近 base 的那个（通常是紧接着的一次采集）
-    const entry = pickComparable(targetList, baseList[0]);
+    // target 有多个 period 时，取最接近基线的那个（通常是紧接着的一次采集）
+    const entry = pickComparable(targetList, baseAnchor);
     platforms.push({
       ...comparePlatform(entry, pickComparable(baseList, entry), { notes }),
       present_in_target: true,
