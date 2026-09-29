@@ -79,6 +79,14 @@ export const qianwenWebProfile = {
     // 回答卡的类名在 Camoufox 上是 answer-common-card / qk-markdown，不再是 message-card，
     // 而采集器当时把 message-card 写死在页面扫描里，于是每次提问都读不到答案、一路拖到超时。
     composerSelectors: ['[data-slate-editor="true"]'],
+    // 「开新对话」入口。2026-09-29 在真实页面上量到的：
+    //   <div data-session-switch-target="new-chat">
+    // 按钮上没有可读文案（只有 newChatReveal-* 的构建类名），所以按 data 属性选。
+    //
+    // 为什么必须有：连续在同一会话提问时，页面上累积的助手卡片会被扫描逻辑
+    // 一起读走 —— 实测第二问返回的答案开头是第一问的内容。豆包从一开始就点
+    // 「新对话」，千问之前没有对应逻辑。
+    newChatSelectors: ['[data-session-switch-target="new-chat"]'],
     // Camoufox 实测两个都在：data-session-switch-target 与 aria-label="发送消息"。
     sendSelectors: ['[data-session-switch-target="send-query"]', '[aria-label="发送消息"]'],
     // 提问卡类名可读（message-card-wrap question），回答卡在 Chromium 上带构建哈希

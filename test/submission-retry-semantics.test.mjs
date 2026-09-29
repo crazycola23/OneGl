@@ -60,15 +60,17 @@ test("千问 focus 路径的校验也带正确标记", () => {
   // focus 路径的 throw 也要带 promptSubmitted:false。
   // 断言写「字段都在」而不是逐字匹配：诊断形式改过一次
   // （改用 composerTextForLog 输出可读形式），逐字匹配会在改动时误报。
+  // 千问的输入分支已合并（focus 与指针两条路径现在都走 fillVerifiedPrompt），
+  // 所以这里只验证 fillVerifiedPrompt 本身带正确标记。
   assert.match(qianwen, /reason: "verification-mismatch"/);
   assert.match(qianwen, /expected: composerTextForLog\(/);
   assert.match(qianwen, /actual: composerTextForLog\(/);
-  // 「clickable.mode === "focus"」在文件里出现两次（点击分支、输入分支），
-  // 所以从「keyboard.type」往后取才是输入分支。
-  const typeAt = qianwen.indexOf("await page.keyboard.type(prompt");
-  const focusBlock = qianwen.slice(typeAt - 200, typeAt + 1200);
-  assert.match(focusBlock, /promptSubmitted: false/,
-    "focus 输入分支的 throw 也要带 promptSubmitted:false");
+  const fill = qianwen.slice(
+    qianwen.indexOf("async function fillVerifiedPrompt"),
+    qianwen.indexOf("\nasync function", qianwen.indexOf("async function fillVerifiedPrompt") + 10),
+  );
+  assert.match(fill, /promptSubmitted: false/,
+    "校验失败说明提问未送达，必须标记为可安全重试");
 });
 
 test("豆包原有的两条路径标记仍然正确", () => {

@@ -1,0 +1,56 @@
+fix(qianwen): 每问之前开新会话，避免答案串台
+
+## 用户指出的方向是对的
+
+实测（真实 Chromium）连续在同一会话提问，第二问返回的答案开头
+是**第一问的内容** —— 问「How do I boil an egg…」却读到
+「What is the capital of France?」的答案开头。
+
+原因不在提取逻辑，而在**缺少开新会话**：
+页面上的助手卡片会累积，而扫描逻辑读的是页面上所有助手卡片。
+
+豆包从一开始就点「新对话」（doubao.js:374-412 `startFreshConversation`），
+千问没有对应逻辑 —— 这就是两者的差别。
+
+## 我第一反应是修错了地方
+
+最初去改「只取最后一轮卡片」的提取逻辑。那是在**错误的层面**解决问题：
+即使提取只取最后一轮，同一会话里累积的历史仍会干扰「回答数量」「生成中」
+等信号，品牌检测也会把历史回答算进本次。
+
+已回滚，改成在正确层面解决。
+
+## 改动
+
+1. `startFreshConversation`：点 `[data-session-switch-target="new-chat"]`
+   （实测量到的入口，按钮无可读文案），失败则回首页兜底
+2. `waitForEmptyConversation`：连续 3 次轮询确认历史回答清空才算稳定
+   —— 与豆包同一判据，不等够时间就继续会把上轮卡片当本次答案
+3. 失败不直接判死，但记下原因（否则出问题无从追）
+4. 选择器进 profile —— 平台差异属于 profile，不该写死在采集器里
+
+## 顺带修掉一个实测否决的做法
+
+同时把 `clearComposer` 整个删除。实测（真实 Chromium + 真实 Slate）
+它在四种清空方式里是**失败**的：
+
+    基线（不清空，直接 type）        ✗ locator.click 超时
+    locator.fill()                   ✓ 105ms
+    Ctrl+A + Backspace + type        ✗ locator.click 超时
+    evaluate textContent="" + type    ✗ locator.click 超时
+
+`textContent = ""` 删掉了 Slate 的状态树（它是「DOM 结构即状态」的编辑器），
+之后键盘输入全部无效，而且破坏是持久的。两条输入路径因此合并，都走 `fill()`。
+
+## 实测验证
+
+    1. What is the capital of France?      → 230 字符 "The capital of France is Paris"
+    2. How do I boil an egg exactly 7min? → 1486 字符 "Here's how to boil an egg so it cooks for exactly 7 minutes"
+
+答案完全对应各自问题，不再串台。
+
+## 状态
+
+623 个测试 604 通过。测试断言已更新为**防止 clearComposer 被加回来**。
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

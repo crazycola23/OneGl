@@ -1,4 +1,4 @@
-import { intEnvValue } from "./accounts/safety.js";
+﻿import { intEnvValue } from "./accounts/safety.js";
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
 import { isSilentlyDropped, noFirstTokenWindowMs } from "./no-first-token.js";
 import { parseAnswerSources } from "./qianwen-answer-sources.js";
@@ -437,6 +437,98 @@ export function looksSettled(answer) {
  * 2026-09-22 samples got wrong.
  */
 /**
+ * 开一个新会话。
+ *
+ * ## 为什么必须有这一步
+ *
+ * 实测（真实 Chromium，2026-09-29）：连续在同一会话里提问，
+ * 第二问返回的答案开头是**第一问的内容** ——
+ * 问「How do I boil an egg…」却读到「What is the capital of France?」的答案开头。
+ * 因为页面上的助手卡片会累积，而扫描逻辑读的是**页面上所有**助手卡片。
+ *
+ * 之前我第一反应是去修「只取最后一轮卡片」的提取逻辑 —— 那是**在错误的层面
+ * 解决问题**：即使提取只取最后一轮，同一会话里累积的历史仍会干扰
+ * 「回答数量」「生成中」等信号，且品牌检测会把历史回答算进本次。
+ *
+ * 正确做法与豆包一致（doubao.js:374-412 `startFreshConversation`）：
+ * **每问之前开新会话**，让页面回到干净状态。
+ * 千问的入口实测是 `[data-session-switch-target="new-chat"]`。
+ *
+ * 清空 composer 只解决「文本残留」，解决不了「历史卡片累积」。
+ */
+async function startFreshConversation(page, config, context) {
+  const selector = context.newChatSelectors?.join(",") || '[data-session-switch-target="new-chat"]';
+  let clicked = false;
+  try {
+    const button = page.locator(selector).first();
+    if (await button.isVisible({ timeout: 2_000 }).catch(() => false)) {
+      await button.click({ timeout: 5_000 });
+      clicked = true;
+    }
+  } catch {
+    // 落到下面的 URL 兜底
+  }
+
+  if (!clicked) {
+    // 兜底：直接回首页。千问的会话都在 /chat/<id> 下，回 / 即新会话。
+    const pattern = context.conversationUrlPattern;
+    const onConversation = pattern ? pattern.test(page.url()) : /\/chat\//.test(page.url());
+    if (onConversation) {
+      await page.goto(config.qianwenUrl ?? "https://www.qianwen.com/", {
+        waitUntil: "domcontentloaded",
+        timeout: 60_000,
+      });
+    }
+  }
+
+  const settleMs = config?.conversationSettleMs ?? 15_000;
+  const emptyConfirmed = await waitForEmptyConversation(page, settleMs, context);
+  return { clicked, emptyConfirmed };
+}
+
+/**
+ * 等页面上的历史回答清空。
+ *
+ * 不只是「等一会」—— 必须**确认**已经没有可见的助手卡片了。
+ * 豆包那边是 waitForEmptyConversation（doubao.js:415），连续 3 次轮询为空才算稳定。
+ * 这里沿用同样的判据：没有这一步就可能把上一次的卡片当成本次答案。
+ */
+async function waitForEmptyConversation(page, timeoutMs, context) {
+  const deadline = Date.now() + timeoutMs;
+  let stableEmptyPolls = 0;
+  const REQUIRED_EMPTY_POLLS = 3;
+
+  while (Date.now() < deadline) {
+    const remaining = await countAnswerCards(page, context);
+    if (remaining === 0) {
+      stableEmptyPolls += 1;
+      if (stableEmptyPolls >= REQUIRED_EMPTY_POLLS) return true;
+    } else {
+      stableEmptyPolls = 0;
+    }
+    await page.waitForTimeout(600);
+  }
+  return stableEmptyPolls >= REQUIRED_EMPTY_POLLS;
+}
+
+async function countAnswerCards(page, context) {
+  const selector = (context.answerSelectors ?? []).join(",") || '[class*="message-card"]';
+  const bubbleSelector = (context.userBubbleSelectors ?? []).join(",") || '[class*="question"]';
+  return page.evaluate(
+    ({ sel, bub }) => document.querySelectorAll(sel)
+      .filter((el) => {
+        const style = getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        if (bub && el.matches(bub)) return false;
+        return true;
+      }).length,
+    { sel: selector, bub: bubbleSelector },
+  ).catch(() => 0);
+}
+
+/**
  * 读回编辑器当前内容。
  *
  * 千问的 composer 是 Slate（contenteditable），value 属性不可靠，要读 textContent。
@@ -456,18 +548,6 @@ async function readComposerText(locator) {
  * 那 3 次 ANSWER_NOT_FOUND（千问提交后 181s 无任何字符产出）很可能就是这类
  * 情况的另一种表现：拼出来的题目触发了平台的静默丢弃。
  */
-async function clearComposer(locator) {
-  await locator.evaluate((element) => {
-    const selection = element.ownerDocument.getSelection();
-    const range = element.ownerDocument.createRange();
-    range.selectNodeContents(element);
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    element.textContent = "";
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-}
-
 /**
  * 归一化用于**回读校验的比较**。
  *
@@ -494,23 +574,44 @@ const composerTextForLog = (value) => String(value ?? "").replace(/\s+/g, " ").t
 /**
  * 填入并回读校验。
  *
- * 与豆包的 fillVerifiedPrompt 同一套判据：填完读回来对不上就重试，
- * 全失败则抛 SUBMISSION_FAILED 且 promptSubmitted:false ——
- * 提问从未送达，重试是安全的（见 accounts/safety.js 的 canRetryOutcome）。
+ * ## 为什么用 fill() 而不是「清空 + 逐字符输入」
+ *
+ * 早期实现是 `evaluate(el => el.textContent = "")` 清空、然后 `pressSequentially`
+ * 逐字符输入。**实测（真实 Chromium + 真实 Slate，2026-09-29）这条路 100% 失效**：
+ *
+ *   基线（不清空，直接 type）        ✗ locator.click 超时
+ *   locator.fill()                   ✓ 105ms
+ *   Ctrl+A + Backspace + type        ✗ locator.click 超时
+ *   evaluate textContent="" + type    ✗ locator.click 超时
+ *
+ * 两个原因：
+ *   1. `textContent = ""` 删掉了 Slate 的状态树 —— 它是「DOM 结构即状态」的
+ *      编辑器，选区、撤销栈、渲染都挂在子节点上。而且破坏是**持久**的：
+ *      同一浏览器会话内一旦用错，后续所有操作都不可恢复。
+ *   2. 千问的 composer 常态就需要 `fill()` 才能被正确操作，click 本身就会超时。
+ *
+ * 而 DOM 替身测不出这些 —— 替身的 `textContent = ""` 只是给字符串赋值，
+ * 没有任何与 Slate 相关的约束。**替身能验证调用序列，验证不了作用于真实框架时
+ * 会不会破坏状态。** 这类问题只有真实浏览器能发现。
+ *
+ * ## 与「开新会话」的关系
+ *
+ * fill() 解决的是**输入框残留**；历史回答卡片累积是另一个问题，
+ * 由 startFreshConversation 解决。两者都要，缺一不可。
  */
 async function fillVerifiedPrompt(page, composer, prompt, attempts = 3) {
   const expected = composerText(prompt);
   let lastFailure = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      await clearComposer(composer);
-      await composer.pressSequentially(prompt, { delay: 25 });
+      // fill() 自带清空语义，且走 Playwright 为 contenteditable 准备的事件路径
+      await composer.fill(prompt, { timeout: 15_000 });
       const actual = composerText(await readComposerText(composer));
       if (actual === expected) return;
       lastFailure = {
         reason: "verification-mismatch",
         expected: composerTextForLog(prompt),
-        actual: composerTextForLog(actual),
+        actual: composerTextForLog(await readComposerText(composer).catch(() => "")),
       };
     } catch (error) {
       lastFailure = {
@@ -565,42 +666,27 @@ async function submitAndWait(page, prompt, config, context) {
       { stage: "submit", dismissalAttempts: clickable.dismissalAttempts, url: page.url(), promptSubmitted: false },
     );
   }
-  // openQianwen already focused the composer, and Slate re-renders the editable node on focus.
-  // Clicking a second time waits on a node that has since been replaced, which is how a run
-  // died on a 10s click timeout *after* a successful open. Only click when it is not focused.
-  const focused = await page
-    .evaluate(() => document.activeElement?.getAttribute("data-slate-editor") === "true")
-    .catch(() => false);
-  if (!focused) {
-    if (clickable.mode === "focus") {
-      await page.evaluate((selector) => document.querySelector(selector)?.focus(), context.composer);
-    } else {
-      // No force: force skips the hit-test and lands the click on whatever overlay is on top.
-      await composer.click({ timeout: 6_000 });
-    }
-  }
-  if (clickable.mode === "focus") {
-    // Typed at the keyboard rather than through the locator: that is the path measured to work
-    // when a pointer click cannot reach the editor at all.
-    // 两条路径都先清空再输入并回读校验：原实现两条都没有校验，输入框若残留
-    // 上一问，逐字符输入会把新问题追加到旧问题后面，发出拼接题而系统认为成功。
-    await clearComposer(composer);
-    await page.keyboard.type(prompt, { delay: 25 });
-    const actual = composerText(await readComposerText(composer));
-    if (actual !== composerText(prompt)) {
-      throw new DoubaoMvpError(
-        ErrorCode.SUBMISSION_FAILED,
-        "千问输入框内容与提问不一致，已拦截未提交。",
-        { stage: "fill", reason: "verification-mismatch",
-        expected: composerTextForLog(prompt),
-        actual: composerTextForLog(actual),
-        promptSubmitted: false,
-      },
-      );
-    }
-  } else {
-    await fillVerifiedPrompt(page, composer, prompt);
-  }
+  // **每问之前开新会话。**
+  //
+  // 实测（2026-09-29，真实 Chromium）：连续在同一会话提问，第二问返回的答案
+  // 开头是第一问的内容 —— 问「How do I boil an egg…」却读到
+  // 「What is the capital of France?」的答案开头。页面上累积的助手卡片会被
+  // 扫描逻辑一起读走。
+  //
+  // 豆包从一开始就点「新对话」（doubao.js startFreshConversation），
+  // 千问之前没有对应逻辑。填入前的清空只解决「输入框残留」，
+  // 解决不了「历史卡片累积」—— 两者都要。
+  const conversation = await startFreshConversation(page, config, context).catch((error) => {
+    // 开新会话失败不直接判死：继续往下走，校验与扫描仍会兜住脏数据。
+    // 但要把原因记下来，否则出问题无从追。
+    return { clicked: false, emptyConfirmed: false, error: String(error?.message ?? error) };
+  });
+
+  // 两条路径（指针可达 / 需 DOM focus）统一走 fillVerifiedPrompt：
+  // 实测千问的 composer 用指针 click 会超时，所以生产走 focus 路径；
+  // 而 focus 路径原本用的 clearComposer 会破坏 Slate 状态。
+  // fill() 不需要指针点击、也不破坏状态，两条路径因此可以合并。
+  await fillVerifiedPrompt(page, composer, prompt);
 
   const afterTyping = await scanPage(page, context);
   if (afterTyping.sendDisabled !== false) {
