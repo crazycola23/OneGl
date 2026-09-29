@@ -2695,9 +2695,16 @@ export interface components {
             } | null;
             mention_count_delta?: number | null;
             mention_rate_delta_percentage_points?: number | null;
+            /**
+             * @description Deterministic classification of the change, not a recommendation. gained/declined exceed the sampling resolution; within_noise means the difference exists but is smaller than one answer's worth; flat means no measurable change; not_comparable means the brand appears on one side only.
+             * @enum {string}
+             */
+            movement: "gained" | "declined" | "within_noise" | "flat" | "not_comparable" | "unknown";
             name: string;
             present_in_base: boolean;
             present_in_current: boolean;
+            /** @description Smallest change this sample size can resolve (100 / smaller denominator). */
+            resolution_percentage_points?: number | null;
             /** @enum {string} */
             role?: "own" | "competitor" | "unspecified";
         } & {
@@ -2712,7 +2719,23 @@ export interface components {
             current_answer_count?: number | null;
             /** @description True when the two periods used different denominators, so a rate change may reflect sampling rather than brand performance. */
             denominator_changed?: boolean | null;
+            interpretation?: {
+                [key: string]: unknown;
+            };
+            movement?: components["schemas"]["GeoReportCompareBrandMovement"];
             reason?: string | null;
+            /** @description Smallest mention-rate change this sample size can resolve, in percentage points (100 / the smaller denominator). A delta below this is one answer's worth of noise. */
+            resolution_percentage_points?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** @description Competitor names grouped by movement direction. Names only — acting on them is the caller's decision. */
+        GeoReportCompareBrandMovement: {
+            declined: string[];
+            flat: string[];
+            gained: string[];
+            not_comparable: string[];
+            within_noise: string[];
         } & {
             [key: string]: unknown;
         };

@@ -858,7 +858,7 @@ export function applySaasOpenApi(document) {
     GeoReportCompareBrandDelta: {
       type: "object",
       description: "One competitor's mention movement between the two reports. Null on either side means the brand was not measured in that report — not that it scored zero.",
-      required: ["name", "comparable", "present_in_current", "present_in_base", "current", "base"],
+      required: ["name", "comparable", "present_in_current", "present_in_base", "current", "base", "movement"],
       properties: {
         name: { type: "string" },
         role: { type: "string", enum: ["own", "competitor", "unspecified"] },
@@ -869,14 +869,38 @@ export function applySaasOpenApi(document) {
         base: { type: ["object", "null"], additionalProperties: true },
         mention_rate_delta_percentage_points: { type: ["number", "null"] },
         mention_count_delta: { type: ["integer", "null"] },
+        movement: {
+          type: "string",
+          enum: ["gained", "declined", "within_noise", "flat", "not_comparable", "unknown"],
+          description:
+            "Deterministic classification of the change, not a recommendation. gained/declined exceed the " +
+            "sampling resolution; within_noise means the difference exists but is smaller than one answer's " +
+            "worth; flat means no measurable change; not_comparable means the brand appears on one side only.",
+        },
+        resolution_percentage_points: {
+          type: ["number", "null"],
+          description: "Smallest change this sample size can resolve (100 / smaller denominator).",
+        },
+      },
+      additionalProperties: true,
+    },
+    GeoReportCompareBrandMovement: {
+      type: "object",
+      description: "Competitor names grouped by movement direction. Names only — acting on them is the caller's decision.",
+      required: ["gained", "declined", "within_noise", "flat", "not_comparable"],
+      properties: {
+        gained: { type: "array", items: { type: "string" } },
+        declined: { type: "array", items: { type: "string" } },
+        within_noise: { type: "array", items: { type: "string" } },
+        flat: { type: "array", items: { type: "string" } },
+        not_comparable: { type: "array", items: { type: "string" } },
       },
       additionalProperties: true,
     },
     GeoReportCompareBrandMentions: {
       type: "object",
       description: "Competitor mention comparison. Deterministic deltas only; interpretation is left to the caller's model.",
-      required: ["available", "brands"],
-      properties: {
+      required: ["available", "brands"],      properties: {
         available: { type: "boolean" },
         reason: { type: ["string", "null"] },
         current_answer_count: { type: ["integer", "null"], description: "Valid answers on the target side; the mention-rate denominator." },
@@ -885,6 +909,12 @@ export function applySaasOpenApi(document) {
           type: ["boolean", "null"],
           description: "True when the two periods used different denominators, so a rate change may reflect sampling rather than brand performance.",
         },
+        resolution_percentage_points: {
+          type: ["number", "null"],
+          description: "Smallest mention-rate change this sample size can resolve, in percentage points (100 / the smaller denominator). A delta below this is one answer's worth of noise.",
+        },
+        movement: { $ref: "#/components/schemas/GeoReportCompareBrandMovement" },
+        interpretation: { type: "object", additionalProperties: true },
         brands: { type: "array", items: { $ref: "#/components/schemas/GeoReportCompareBrandDelta" } },
       },
       additionalProperties: true,

@@ -241,17 +241,81 @@ function compareBrandMentions(current, previous, { label, notes }) {
       return (b.current?.mention_rate ?? -1) - (a.current?.mention_rate ?? -1);
     });
 
+  // 显著性标记：确定性计算，不是判断。
+  //
+  // agent 拿到 Δ=0 时无从区分「这个竞品的地位真的没变」和「变化被采样波动淹没了」，
+  // 于是要么把所有 0 都当噪音、要么把 0.4 个百分点的小波动当趋势。
+  //
+  // 判据是可复算的：
+  //   1. 最小分母决定比率变化的分辨率 —— 20 条回答里变化 1 条 = 5 个百分点，
+  //      80 条里变化 1 条 = 1.25 个百分点，数字一样但可信度完全不同
+  //   2. Δ 超过这个分辨率才算「可测的变化」
+  // 3. 分母大幅变化时整体标注不可比（采样波动可能盖过真实变化）
+  //
+  // 只标状态不给建议：该不该据此行动是调用方模型的判断，不是这里的。
+  const currentN = num(current.answer_count);
+  const baseN = num(previous.answer_count);
+  const denominatorChanged = currentN != null && baseN != null && currentN !== baseN;
+  // 用较小的一侧算分辨率：保守，避免把小样本的波动说成趋势
+  const smallerN = Math.min(currentN ?? 0, baseN ?? 0);
+  const resolution = smallerN > 0 ? (100 / smallerN) : null;
+
+  const ranked = brands.map((entry) => {
+    if (!entry.comparable) {
+      return { ...entry, movement: "not_comparable", resolution_percentage_points: null };
+    }
+    const delta = entry.mention_rate_delta_percentage_points;
+    if (delta == null || resolution == null) {
+      return { ...entry, movement: "unknown", resolution_percentage_points: resolution };
+    }
+    if (Math.abs(delta) < 0.05) {
+      // 浮点上完全相等也会落到这里，避免给出 0.0 之后的噪音判断
+      return { ...entry, movement: "flat", resolution_percentage_points: resolution };
+    }
+    if (Math.abs(delta) < resolution) {
+      // 变化存在但小于采样分辨率 —— 典型是「只差一条回答」
+      return { ...entry, movement: "within_noise", resolution_percentage_points: resolution };
+    }
+    return {
+      ...entry,
+      movement: delta > 0 ? "gained" : "declined",
+      resolution_percentage_points: resolution,
+    };
+  });
+
+  const summary = {
+    gained: ranked.filter((b) => b.movement === "gained").map((b) => b.name),
+    declined: ranked.filter((b) => b.movement === "declined").map((b) => b.name),
+    within_noise: ranked.filter((b) => b.movement === "within_noise").map((b) => b.name),
+    flat: ranked.filter((b) => b.movement === "flat").map((b) => b.name),
+    not_comparable: ranked.filter((b) => b.movement === "not_comparable").map((b) => b.name),
+  };
+
   return {
     available: true,
     reason: null,
-    current_answer_count: num(current.answer_count) ?? null,
-    base_answer_count: num(previous.answer_count) ?? null,
+    current_answer_count: currentN,
+    base_answer_count: baseN,
     // 分母不一致时提醒：提及率变化可能来自样本波动而非品牌表现
-    denominator_changed:
-      num(current.answer_count) != null && num(previous.answer_count) != null
-        ? num(current.answer_count) !== num(previous.answer_count)
-        : null,
-    brands,
+    denominator_changed: denominatorChanged,
+    // 变化可被采样分辨的最小百分点：|Δ| 小于此值时不应解读为趋势
+    resolution_percentage_points: resolution,
+    // 按运动方向分组。只列名字，不含建议 —— 行动判断归调用方模型。
+    movement: summary,
+    brands: ranked,
+    interpretation: {
+      provided_by: "onegl",
+      role: "mention_movement",
+      conclusion: null,
+      guidance:
+        "movement 按变化方向分组：gained / declined 是超过采样分辨率的真实变化，" +
+        "within_noise 是存在差异但小于分辨率（通常只差一两条回答），" +
+        "flat 是可测范围内的零变化，not_comparable 是只在单侧出现。" +
+        (denominatorChanged
+          ? "本次两期分母不同，变化可能部分来自采样波动而非品牌表现。"
+          : "") +
+        "这些是确定性判定，是否据此行动由你的模型判断。",
+    },
   };
 }
 

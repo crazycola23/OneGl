@@ -3528,6 +3528,18 @@
               "null"
             ]
           },
+          "movement": {
+            "description": "Deterministic classification of the change, not a recommendation. gained/declined exceed the sampling resolution; within_noise means the difference exists but is smaller than one answer's worth; flat means no measurable change; not_comparable means the brand appears on one side only.",
+            "enum": [
+              "gained",
+              "declined",
+              "within_noise",
+              "flat",
+              "not_comparable",
+              "unknown"
+            ],
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
@@ -3536,6 +3548,13 @@
           },
           "present_in_current": {
             "type": "boolean"
+          },
+          "resolution_percentage_points": {
+            "description": "Smallest change this sample size can resolve (100 / smaller denominator).",
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "role": {
             "enum": [
@@ -3552,7 +3571,8 @@
           "present_in_current",
           "present_in_base",
           "current",
-          "base"
+          "base",
+          "movement"
         ],
         "type": "object"
       },
@@ -3589,9 +3609,23 @@
               "null"
             ]
           },
+          "interpretation": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "movement": {
+            "$ref": "#/components/schemas/GeoReportCompareBrandMovement"
+          },
           "reason": {
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "resolution_percentage_points": {
+            "description": "Smallest mention-rate change this sample size can resolve, in percentage points (100 / the smaller denominator). A delta below this is one answer's worth of noise.",
+            "type": [
+              "number",
               "null"
             ]
           }
@@ -3599,6 +3633,50 @@
         "required": [
           "available",
           "brands"
+        ],
+        "type": "object"
+      },
+      "GeoReportCompareBrandMovement": {
+        "additionalProperties": true,
+        "description": "Competitor names grouped by movement direction. Names only — acting on them is the caller's decision.",
+        "properties": {
+          "declined": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "flat": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "gained": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "not_comparable": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "within_noise": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "gained",
+          "declined",
+          "within_noise",
+          "flat",
+          "not_comparable"
         ],
         "type": "object"
       },
