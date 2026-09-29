@@ -177,7 +177,8 @@ test("SaaS task creation rolls back project, binding, and keywords when the task
   const suffix = `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
   const taskName = `ROLLBACK_TEST_${suffix}`;
   const description = `SaaS task ${taskName}`;
-  const port = 35050 + (process.pid % 400);
+  // 端口段独占：见 observability-controls-db.test.mjs 的说明。本文件独占 35200-35399。
+  const port = 35200 + (process.pid % 200);
   const proc = startApi(port);
 
   try {

@@ -1,4 +1,5 @@
 import { compileBrandRules, detectBrandMention } from "../brand/detect.js";
+import { ApiHttpError } from "../api/http.js";
 import { isUsableAnswerText, safeContext, MIN_USABLE_ANSWER_CHARS } from "./text-slice.js";
 
 /**
@@ -24,11 +25,16 @@ import { isUsableAnswerText, safeContext, MIN_USABLE_ANSWER_CHARS } from "./text
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
 
+/**
+ * 抛 ApiHttpError 而不是普通 Error。
+ *
+ * 早期版本抛普通 Error 并挂 .status 属性，路由层不认这种异常，
+ * 于是所有本该是 404/422 的错误都变成 500 —— 调用方无法区分
+ * 「ID 传错了」和「参数不对」和「服务端故障」，重试策略也就无从谈起。
+ * answer-sample.js 一直是抛 ApiHttpError，这里跟着对齐。
+ */
 function fail(message, status = 400, code = "invalid_request") {
-  const error = new Error(message);
-  error.status = status;
-  error.code = code;
-  throw error;
+  throw new ApiHttpError(status, code, message);
 }
 
 function positiveInt(raw, name, fallback, max) {
@@ -118,8 +124,18 @@ export async function searchAnswers(client, options = {}) {
 
   const { rows: scope } = await client.query(scopeSql, groupId ? [tenantId, groupId] : [tenantId, taskId]);
   if (!scope.length) {
-    fail(groupId ? "task group was not found" : "task was not found", 404,
-      groupId ? "group_not_found" : "task_not_found");
+    // 区分「scope 不存在」与「scope 存在但还没采集」——见 answer-sample.js 的同名分支。
+    // 新建任务还没发起采集时，原实现报 404 group_not_found，
+    // 调用方会误以为自己传错了 ID，而真实答案只是「还没有数据」。
+    const existsSql = groupId
+      ? "SELECT 1 FROM service_task_groups WHERE tenant_id = $1 AND public_id = $2"
+      : "SELECT 1 FROM service_tasks WHERE tenant_id = $1 AND public_id = $2";
+    const { rows: exists } = await client.query(existsSql, groupId ? [tenantId, groupId] : [tenantId, taskId]);
+    if (!exists.length) {
+      fail(groupId ? "task group was not found" : "task was not found", 404,
+        groupId ? "group_not_found" : "task_not_found");
+    }
+    return emptyResult({ term, parsedBrands, boundedLimit, boundedOffset });
   }
 
   let batchIds = scope.map((row) => Number(row.batch_id));
@@ -285,6 +301,38 @@ export async function searchAnswers(client, options = {}) {
   };
 }
 
+/**
+ * scope 存在但还没有任何已结束采集批次时的检索结果。
+ *
+ * 与「正常但无命中」同形（200 + 空数组 + total 0），区别在 guidance 写明原因 ——
+ * 调用方据此知道是「还没采集」而不是「采集了但没这个词」。
+ */
+function emptyResult({ term, parsedBrands, boundedLimit, boundedOffset }) {
+  return {
+    schema: "answer-search.v1",
+    query: term ?? null,
+    brands: parsedBrands.map((b) => b.name),
+    candidate_total: 0,
+    total: 0,
+    total_is_exact: true,
+    truncated_by_cap: false,
+    returned: 0,
+    limit: boundedLimit,
+    offset: boundedOffset,
+    has_more: false,
+    next_offset: null,
+    answers: [],
+    interpretation: {
+      provided_by: "onegl",
+      role: "answer_search",
+      conclusion: null,
+      guidance:
+        "该范围存在，但没有任何已结束的采集批次。这是正常状态 —— " +
+        "先发起采集，产出的回答会出现在这里。",
+    },
+  };
+}
+
 function findTerm(text, term) {
   const at = String(text ?? "").toLowerCase().indexOf(term.toLowerCase());
   return at >= 0 ? at : null;
@@ -316,8 +364,16 @@ export async function getAnswerByRunId(client, { tenantId, taskId = null, groupI
 
   const { rows: scope } = await client.query(scopeSql, groupId ? [tenantId, groupId] : [tenantId, taskId]);
   if (!scope.length) {
-    fail(groupId ? "task group was not found" : "task was not found", 404,
-      groupId ? "group_not_found" : "task_not_found");
+    // 同样区分「不存在」与「存在但没数据」——理由见 searchAnswers 的同名分支
+    const existsSql = groupId
+      ? "SELECT 1 FROM service_task_groups WHERE tenant_id = $1 AND public_id = $2"
+      : "SELECT 1 FROM service_tasks WHERE tenant_id = $1 AND public_id = $2";
+    const { rows: exists } = await client.query(existsSql, groupId ? [tenantId, groupId] : [tenantId, taskId]);
+    if (!exists.length) {
+      fail(groupId ? "task group was not found" : "task was not found", 404,
+        groupId ? "group_not_found" : "task_not_found");
+    }
+    fail("no collected answers in this scope yet", 422, "no_answers");
   }
   const batchIds = scope.map((row) => Number(row.batch_id));
 

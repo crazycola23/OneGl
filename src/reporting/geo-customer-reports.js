@@ -655,6 +655,10 @@ function reportSummary(payload, hash) {
       })),
     ),
     profile_version: payload.profile.version,
+    // 主题必须透出：契约把它列为 required，而调用方拿到的 HTML 已经是
+    // 品牌定制过的。想知道「这份报告用了什么主色 / 署名」时，
+    // 不该被迫去 GET /snapshot 翻整份 payload。
+    theme: payload.theme ?? null,
     content_hash: hash,
     report_url: "/v1/geo-reports/" + payload.report_id,
     html_url: "/v1/geo-reports/" + payload.report_id + "/html",

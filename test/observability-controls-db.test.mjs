@@ -88,7 +88,9 @@ test("API observability persists tenant/client audit, rate-limits across Redis, 
   if (!DATABASE_URL || !REDIS_URL) return t.skip("DATABASE_URL and REDIS_URL are required");
   const pool = new pg.Pool({ connectionString: DATABASE_URL });
   const suffix = `${process.pid}_${Date.now()}`;
-  const port = 35000 + (process.pid % 1000);
+  // 端口段独占：node --test 并行跑文件，process.pid 在同一 worker 内相同，
+  // 基于 pid%N 的区间极易互相撞车。本文件独占 35800-36199。
+  const port = 35800 + (process.pid % 200);
   let processInfo;
   let clientName = null;
   try {

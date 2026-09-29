@@ -78,7 +78,8 @@ test("SaaS production contract provides idempotency, cursor pagination and publi
   const pool = createPool();
   const suffix = `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
   const accountId = `production-doubao-${suffix}`;
-  const port = 35000 + (process.pid % 500);
+  // 端口段独占：见 observability-controls-db.test.mjs 的说明。本文件独占 35000-35199。
+  const port = 35000 + (process.pid % 200);
   const proc = startApi(port);
   const taskIds = [];
 

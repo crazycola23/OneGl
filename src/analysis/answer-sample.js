@@ -27,6 +27,41 @@ import { safeSlice, MIN_USABLE_ANSWER_CHARS } from "./text-slice.js";
  * 分层后千问抽 ~10、豆包抽 ~3，各自的竞品池独立成立。
  */
 
+/**
+ * scope 存在但没有任何已结束采集批次时的响应。
+ *
+ * 与「正常但无命中」同形：200 + 空数组 + 全零计数。区别只在 interpretation
+ * 里写清楚原因 —— 调用方据此知道是「还没采集」而不是「采集了但没命中」。
+ */
+function emptyPage({ tenantId, taskId, groupId, platforms, limit, afterId, ratio }) {
+  return {
+    schema: "answer-sample.v1",
+    sampled: ratio != null,
+    sample_ratio: ratio,
+    seed: null,
+    scanned: 0,
+    scan_cap: 0,
+    scan_truncated: false,
+    total_available: 0,
+    returned: 0,
+    sampled_count: 0,
+    by_platform: {},
+    answers: [],
+    meta: { has_more: false, next_cursor: null, cursor_basis: "scan_window_end" },
+    interpretation: {
+      provided_by: "onegl",
+      role: "answer_sample",
+      conclusion: null,
+      guidance:
+        (groupId ? "该任务组" : "该任务") + "存在，但没有任何已结束的采集批次。" +
+        "这是正常状态 —— 先发起采集，产出的回答会出现在这里。" +
+        (platforms?.length ? `（当前按 ${platforms.join("、")} 过滤）` : ""),
+      scope: { task_id: taskId ?? null, group_id: groupId ?? null, tenant_id: tenantId },
+      requested: { limit, after_id: afterId ?? null },
+    },
+  };
+}
+
 /** 单次返回的最大回答数：防止一次拉爆响应体。 */
 const MAX_ANSWERS = 500;
 /** seed 长度上限：hashSeed 每行调用一次，不限长就是 CPU 放大面。 */
@@ -157,8 +192,22 @@ export async function listAnswers(client, options = {}) {
   const scopeParams = groupId ? [tenantId, groupId] : [tenantId, taskId];
   const { rows: scope } = await client.query(scopeSql, scopeParams);
   if (!scope.length) {
-    fail(groupId ? "task group was not found" : "task was not found", 404,
-      groupId ? "group_not_found" : "task_not_found");
+    // 「scope 不存在」和「scope 存在但还没采集」必须区分开。
+    //
+    // 原来只有一条 scope 查询，JOIN 了 service_task_executions，
+    // 于是新建的任务（还没跑过采集）查出来是空的，被当成「组不存在」报 404。
+    // 调用方看到 404 会以为自己传错了 ID，反复重试或换 ID 排查 ——
+    // 而真实原因只是「还没开始采集」，正确答案应该是 200 + 空列表。
+    const existsSql = groupId
+      ? "SELECT 1 FROM service_task_groups WHERE tenant_id = $1 AND public_id = $2"
+      : "SELECT 1 FROM service_tasks WHERE tenant_id = $1 AND public_id = $2";
+    const { rows: exists } = await client.query(existsSql, scopeParams);
+    if (!exists.length) {
+      fail(groupId ? "task group was not found" : "task was not found", 404,
+        groupId ? "group_not_found" : "task_not_found");
+    }
+    // scope 存在但没有已结束的采集批次：正常状态，返回空结果
+    return emptyPage({ tenantId, taskId, groupId, platforms, limit, afterId, ratio });
   }
 
   let batchIds = scope.map((row) => Number(row.batch_id));
@@ -253,9 +302,6 @@ export async function listAnswers(client, options = {}) {
     sample_ratio: ratio,
     seed: ratio != null ? seed : null,
     // rows 是本次扫描到的候选数（受 scanCap 限制），不是数据库里的真实总量。
-    // 两者分开报，调用方才知道自己看到的是全部还是被截断过的一段。
-    // rows 是本次扫描窗口内的候选数（受 scan_cap 限制），**不是**数据库里的真实总量。
-    // 单独报出两者，避免调用方拿一个被截断的数当分母去算「我覆盖了多少」。
     scanned: rows.length,
     scan_cap: scanCap,
     scan_truncated: rows.length >= scanCap,

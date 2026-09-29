@@ -56,7 +56,8 @@ async function stop(child) {
 }
 
 test("production API reports ready only with live DB, applied migrations, Redis and safety controls", { skip: !enabled }, async () => {
-  const port = 35000 + (process.pid % 1000);
+  // 端口段独占：见 observability-controls-db.test.mjs 的说明。本文件独占 36100-36399。
+  const port = 36100 + (process.pid % 200);
   const info = startApi(port);
   try {
     await waitListening(info);
