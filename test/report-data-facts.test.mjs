@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildGeoCustomerReportHtml } from "../src/report/html-geo-customer.js";
+import { sectionText } from "./helpers/section-text.mjs";
 
 /**
  * 行动建议里要有基于数据的事实，不只是流程性建议。
@@ -82,10 +83,7 @@ function payload(platforms) {
   };
 }
 
-const section10 = (html) => {
-  const i = html.indexOf('id="sec-10"');
-  return html.slice(i, html.indexOf("</section>", i)).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
-};
+const section10 = (html) => sectionText(html, "结论与行动建议");
 
 const RICH = () => payload([
   platform({

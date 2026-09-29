@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildGeoCustomerReportHtml } from "../src/report/html-geo-customer.js";
+import { sectionText } from "./helpers/section-text.mjs";
 
 /**
  * 第 7 节：未配置问题分类时明说，而不是显示一张零信息量的表。
@@ -62,10 +63,8 @@ function payload(questions) {
   };
 }
 
-const section7 = (html) => {
-  const i = html.indexOf('id="sec-07"');
-  return html.slice(i, html.indexOf("</section>", i)).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
-};
+/** 按标题取「检测的问题范围」一节，不依赖章节编号（删章后编号会移位）。 */
+const section7 = (html) => sectionText(html, "检测的问题范围");
 
 const Q = (question, category, assignments = 1) => ({ question, category, assignments });
 

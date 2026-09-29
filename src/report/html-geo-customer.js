@@ -1,5 +1,26 @@
 import { footerText, normalizeTheme, themeCss } from "./report-theme.js";
 
+/**
+ * 正文章节顺序，全报告唯一来源。
+ *
+ * 目录项、章节 id、:target 高亮规则三处都从这里派生，所以加减章节只改这一行。
+ * 之前这三处各写一份：正文里硬编码 `sec-01..sec-11`，目录是另一份手写数组，
+ * 高亮 CSS 又是第三条手写 11 条规则。漏改任何一处都不报错，症状是
+ * 「点目录跳错位置」或「点某节不高亮」——只能靠人眼发现。
+ *
+ * 序号与章节 id 一一对应且连续。跳过连续性的检查放在渲染时（见 render 里的断言）。
+ */
+const SECTION_TITLES = [
+  "执行概览",
+  "最重要的发现",
+  "品牌提及对比",
+  "来源链接与引用强度",
+  "内容要素覆盖",
+  "检测的问题范围",
+  "结论与行动建议",
+  "数据说明",
+];
+
 const escapeHtml = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;")
@@ -372,11 +393,6 @@ function sourcesSection(payload, rows) {
      "落库归一化为 sm.cn 与 alicdn.com）单独计数，不纳入内容来源排行。各平台合计见上方分块。</p></section>";
 }
 
-function regionsSection() {
-  return "<section id=\"sec-05\"><h2>5. 地域需求分布</h2>" +
-    "<div class=\"empty\">当前报告配置未包含地域词表。系统不会从回答文本自动猜测地名的业务含义。</div></section>";
-}
-
 function trackedSection(payload, rows) {
   const metricsRows = rows.map(({ period, platform }) => {
     const tracked = platform.citations.tracked_content;
@@ -404,7 +420,7 @@ function trackedSection(payload, rows) {
       table(["目标文章", "域名", "引用数", "覆盖回答"], articleRows) +
       (tracked.truncated ? "<p class=\"muted\">列表只展开覆盖靠前的 200 条，汇总指标使用完整配置集合。</p>" : "");
   }).join("");
-  return "<section id=\"sec-06\"><h2>6. 内容要素覆盖</h2>" +
+  return "<section id=\"sec-05\"><h2>5. 内容要素覆盖</h2>" +
     (payload.target.tracked_articles_configured
       ? table(["阶段", "平台", "已配置文章", "被引用文章", "文章覆盖率", "覆盖回答", "覆盖回答率", "较上一阶段变化"], metricsRows)
       : "<div class=\"empty\">尚未配置目标文章（tracked_articles），收录效果显示 N/A，不把未配置当成 0%。</div>") +
@@ -453,33 +469,8 @@ function questionSection(payload) {
         numberText(platform.questions.length) + "）</summary><ol>" + questionRows + "</ol></details></div>");
     }
   }
-  return "<section id=\"sec-07\"><h2>7. 检测的问题范围</h2>" +
+  return "<section id=\"sec-06\"><h2>6. 检测的问题范围</h2>" +
     (blocks.join("") || "<div class=\"empty\">所选范围没有问题分配记录。</div>") + "</section>";
-}
-
-function evaluationSection() {
-  return "<section id=\"sec-08\"><h2>8. AI 评判维度与价格带</h2>" +
-    "<div class=\"empty\">当前版本尚无经项目确认的主题词与价格抽取配置，因此不输出推断性维度或金额统计。</div></section>";
-}
-
-function sourceOpportunitySection(payload, rows) {
-  const domainCount = rows.reduce((sum, row) => sum + row.platform.citations.unique_domains, 0);
-  const iconCount = rows.reduce((sum, row) => sum + row.platform.citations.icon_citations, 0);
-  // 标题里点明「来源结构」而不是「层级」：下面这两个数字是域名去重计数，
-  // 与媒体/垂直站/UGC 的层级判定无关。放在「来源层级与机会点」标题下
-  // 会让人误以为这是层级分析的结果。
-  return "<section id=\"sec-09\"><h2>9. 来源层级与机会点</h2>" +
-    "<div class=\"empty\">媒体、垂直站、UGC 与官网层级需要可维护的域名映射，" +
-    "当前不对域名自动贴来源层级标签，因此本节不输出层级构成或机会点判断。</div>" +
-    // 数字单独归组并标注口径，避免被当成层级的代理指标
-    "<h3>可计的来源规模（按域名去重，非层级构成）</h3>" +
-    "<div class=\"grid grid2\"><div class=\"card\"><div class=\"muted\">平台阶段记录的唯一内容域名数合计</div><strong class=\"num\">" +
-    numberText(domainCount) + "</strong></div><div class=\"card\"><div class=\"muted\">排除在内容排行外的图标引用</div><strong class=\"num\">" +
-    numberText(iconCount) + "</strong></div></div>" +
-    note("域名数按平台和阶段分别统计后展示，不做层级归类。",
-      "以可计可见引用中的 normalized_domain 去重；图标域不计入内容来源。",
-      "这两个数字反映来源规模，不能推断渠道结构或各层级的权重；建立经确认的域名层级配置后才可按期观察渠道结构变化。") +
-    "</section>";
 }
 
 /**
@@ -487,7 +478,7 @@ function sourceOpportunitySection(payload, rows) {
  *
  * ## 为什么需要
  *
- * 第 10 节之前全是流程性建议（"逐条核对来源"、"持续记录阶段"），
+ * 第 7 节之前全是流程性建议（"逐条核对来源"、"持续记录阶段"），
  * 而报告本身最有决策价值的观察 —— 哪个平台被谁压制、我的内容在哪弱 ——
  * 一条都没出现在行动建议里。实测一份 4 竞品 2 平台的报告里，
  * 5 条关键事实全部缺席：千问首选某品牌 72% 而豆包只有 38%、
@@ -602,7 +593,7 @@ function actionSection(payload, rows) {
   // 关于项目品牌（采集期口径）的建议只在**确实没产出竞品数据**时才提。
   //
   // 早期版本只看 payload.target.brand_configured，于是「项目没配 target_brand、
-  // 但本次传了竞品」时会同时出现：第 3 节展示思邈棠 71.8%，第 10 节却说
+  // 但本次传了竞品」时会同时出现：第 3 节展示思邈棠 71.8%，第 7 节却说
   // 「当前品牌提及指标为 N/A；补充目标品牌后再解读提及表现」—— 客户刚看到
   // 竞品数据就被告知没有品牌数据，只能认为其中一处在算错。
   if (!payload.target.brand_configured && !brandStats) {
@@ -630,7 +621,7 @@ function actionSection(payload, rows) {
   if (payload.periods.length > 1) {
     blocks.push("<li><strong>持续记录阶段：</strong>沿用相同 Task、平台、时区和跟踪文章配置生成下一阶段；样本口径变化时单独注明。</li>");
   }
-  return "<section id=\"sec-10\"><h2>10. 结论与行动建议</h2><div class=\"key\"><p>报告当前只对已采集数据作描述性统计。阶段变化可作为复核线索，不单独证明某次内容动作带来了变化。</p></div><ol class=\"actions\">" +
+  return "<section id=\"sec-07\"><h2>7. 结论与行动建议</h2><div class=\"key\"><p>报告当前只对已采集数据作描述性统计。阶段变化可作为复核线索，不单独证明某次内容动作带来了变化。</p></div><ol class=\"actions\">" +
     blocks.join("") + "</ol></section>";
 }
 
@@ -670,7 +661,7 @@ function dataNotesSection(payload, rows) {
   const warnings = payload.warnings.length
     ? "<ul class=\"warnings\">" + payload.warnings.map((item) => "<li>" + escapeHtml(item) + "</li>").join("") + "</ul>"
     : "<p class=\"muted\">无额外数据质量提示。</p>";
-  return "<section id=\"sec-11\"><h2>11. 数据说明</h2>" +
+  return "<section id=\"sec-08\"><h2>8. 数据说明</h2>" +
     table(["口径", "说明"], methodRows) +
     note("可计批次 " + numberText(rows.reduce((sum, row) => sum + row.period.source_batches.length, 0)) +
       " 个；未结束批次 " + numberText(payload.periods.reduce((sum, period) => sum + period.excluded_batches.length, 0)) + " 个",
@@ -719,19 +710,13 @@ const CSS = [
   // 纯 CSS 做不到「滚动到哪一节」，于是改用 :target：点目录项时对应 section 变成
   // 目标，:has() 顺带把对应目录项高亮。拿不到滚动跟随，但零脚本、零注入面。
   ".sidenav .toclist a:active{background:#eef3fb}",
-  "@supports selector(:has(*)){" +
-  "body:has(#sec-01:target) .toclist a[href='#sec-01']," +
-  "body:has(#sec-02:target) .toclist a[href='#sec-02']," +
-  "body:has(#sec-03:target) .toclist a[href='#sec-03']," +
-  "body:has(#sec-04:target) .toclist a[href='#sec-04']," +
-  "body:has(#sec-05:target) .toclist a[href='#sec-05']," +
-  "body:has(#sec-06:target) .toclist a[href='#sec-06']," +
-  "body:has(#sec-07:target) .toclist a[href='#sec-07']," +
-  "body:has(#sec-08:target) .toclist a[href='#sec-08']," +
-  "body:has(#sec-09:target) .toclist a[href='#sec-09']," +
-  "body:has(#sec-10:target) .toclist a[href='#sec-10']," +
-  "body:has(#sec-11:target) .toclist a[href='#sec-11']" +
-  "{background:color-mix(in srgb,var(--accent) 9%,white);border-left-color:var(--accent);font-weight:650}}",
+  // :target 高亮规则按章节数生成。写死 11 条时每次加减章节都要同步改这里，
+  // 漏一条的表现是「点那一节不高亮」——很不起眼，但每次都在。
+  // @supports selector(:has(*)) 包一层：不支持 :has() 的浏览器整块忽略。
+  "@supports selector(:has(*){" + SECTION_TITLES.map((_, index) => {
+    const n = String(index + 1).padStart(2, "0");
+    return "body:has(#sec-" + n + ":target) .toclist a[href='#sec-" + n + "']";
+  }).join(",") + "{background:color-mix(in srgb,var(--accent) 9%,white);border-left-color:var(--accent);font-weight:650}}",
   ".sidenav-guides{display:block;margin-top:18px;padding-top:14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}",
   ".sidenav-guides div{margin:8px 0}.sidenav-guides strong{color:var(--ink)}",
   "details{border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:12px 0}summary{cursor:pointer;font-weight:650;color:var(--accent)}details ol{padding-left:24px}details li{margin:8px 0}",
@@ -751,7 +736,8 @@ const CSS = [
   ".facts h4{margin:0 0 8px;font-size:14px;color:var(--ink)}" +
   ".facts ul{margin:0;padding-left:20px}.facts li{margin:4px 0}",
   // 目录里标出「本期未启用」的章节：不标的话读者会以为漏看了内容
-  ".toc-pending{color:var(--muted)}.toc-tag{color:var(--faint);font-weight:400;margin-left:4px}",
+  // toc-pending / toc-tag 随「本期未启用」标记一起删除：空占位章移除后
+  // 这两个类不再被任何地方使用，留着是误导。
   // 窄屏：侧边栏退回到正文顶部的横排目录。侧栏常驻在小屏上没有意义 ——
   // 它会把本来就窄的正文再切掉 232px。
   "@media(max-width:900px){body{display:block}.sidenav{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);padding:16px 0}.sidenav .toclist{flex-direction:row;flex-wrap:wrap;gap:6px 12px}.sidenav .toclist a{padding:4px 8px;border-left:0;border-bottom:2px solid transparent}.sidenav-guides{display:none}main{padding:16px 12px 40px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.grid2,.guide-grid{grid-template-columns:1fr}section{padding:16px}.hero{padding:20px!important}}",
@@ -788,40 +774,43 @@ function logoMarkup(theme) {
 
 export function buildGeoCustomerReportHtml(payload) {
   const rows = allRows(payload);
-  const sectionHtml = [
+  const sectionParts = [
     overviewSection(payload, rows),
     findingsSection(payload, rows),
     institutionSection(payload, rows),
     sourcesSection(payload, rows),
-    regionsSection(),
     trackedSection(payload, rows),
     questionSection(payload),
-    evaluationSection(),
-    sourceOpportunitySection(payload, rows),
     actionSection(payload, rows),
     dataNotesSection(payload, rows),
-  ].join("");
+  ];
+  // 章节顺序与 id 必须和 SECTION_TITLES 对得上，对不上直接抛错。
+  // 少了这层，目录里点「第 5 节」跳到的会是一节不相干的标题，而报告照常渲染、
+  // 照常 http 200 —— 没有任何测试会失败。这正是原来那份手写 11 条目录规则的由来。
+  if (sectionParts.length !== SECTION_TITLES.length) {
+    throw new Error(
+      `章节数量与目录不一致：渲染了 ${sectionParts.length} 节，目录声明 ${SECTION_TITLES.length} 节`,
+    );
+  }
+  sectionParts.forEach((html, index) => {
+    const number = String(index + 1).padStart(2, "0");
+    if (!html.includes(`<section id="sec-${number}">`)) {
+      throw new Error(`第 ${number} 节（${SECTION_TITLES[index]}）的 id 不对，应为 sec-${number}`);
+    }
+  });
+  const sectionHtml = sectionParts.join("");
   const guides = [
     ["只有 1 分钟", "从最重要的发现和行动建议开始。", "#sec-02"],
-    // 指向第 3 节（品牌提及对比）而不是第 9 节：来源层级一节当前是空占位，
-    // 引导过去只会让人扑空。
     ["要决定渠道", "看竞品在各平台的提及差异，再看来源强度。", "#sec-03"],
     ["要核对证据", "打开来源文章链接逐条核对。", "#sec-04"],
-    ["要调整内容", "先看目标文章覆盖，再看问题范围。", "#sec-06"],
+    ["要调整内容", "先看目标文章覆盖，再看问题范围。", "#sec-05"],
   ];
-  // 目录里给三个未启用的章节加「本期未启用」标记。
-  // 它们在正文里是说明为什么不输出的空状态，但目录只有标题，
-  // 读者会以为漏看了内容或渲染失败。标出来更省事。
-  const PENDING_SECTIONS = new Set(["地域需求分布", "AI 评判维度与价格带", "来源层级与机会点"]);
-  const toc = [
-    "执行概览", "最重要的发现", "品牌提及对比", "来源链接与引用强度",
-    "地域需求分布", "内容要素覆盖", "检测的问题范围", "AI 评判维度与价格带",
-    "来源层级与机会点", "结论与行动建议", "数据说明",
-  ].map((title, index) => {
+  // 目录、正文章节标题、:target 高亮规则三处都从这一份列表派生。
+  // 之前目录是一份手写数组、正文是另一组硬编码 id，加减章节要同步改三处 ——
+  // 漏改的表现是「点目录跳到错的地方」或「那一节不高亮」，都不会报错。
+  const toc = SECTION_TITLES.map((title, index) => {
     const number = String(index + 1).padStart(2, "0");
-    const suffix = PENDING_SECTIONS.has(title) ? "（本期未启用）" : "";
-    return "<a href=\"#sec-" + number + "\" class=\"" + (PENDING_SECTIONS.has(title) ? "toc-pending" : "") + "\">" +
-      number + " " + escapeHtml(title) + "<span class=\"toc-tag\">" + suffix + "</span></a>";
+    return "<a href=\"#sec-" + number + "\">" + number + " " + escapeHtml(title) + "</a>";
   }).join("");
   const periodSummary = payload.scope.periods.map((period) =>
     escapeHtml(period.label + " (" + period.from + " 至 " + period.to + ", " + period.time_zone + ")")).join("；");

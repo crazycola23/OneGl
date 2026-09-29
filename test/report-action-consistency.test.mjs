@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildGeoCustomerReportHtml } from "../src/report/html-geo-customer.js";
+import { sectionText } from "./helpers/section-text.mjs";
 
 /**
  * 行动建议不能与报告已展示的内容自相矛盾。
@@ -85,10 +86,7 @@ function payload({ brandConfigured, competitorData, trackedConfigured = true }) 
   };
 }
 
-const section10 = (html) => {
-  const i = html.indexOf('id="sec-10"');
-  return html.slice(i, html.indexOf("</section>", i)).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
-};
+const section10 = (html) => sectionText(html, "结论与行动建议");
 
 test("有竞品数据时不要求「完善品牌配置」", () => {
   // 项目未配 target_brand，但本次传了竞品 —— 之前这两条会同时出现
