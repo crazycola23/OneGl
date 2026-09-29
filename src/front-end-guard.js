@@ -1,4 +1,5 @@
 import { doubaoAnonymousEnabled, inspectSession } from "./doubao.js";
+import { hasStoredStorageState } from "./security/storage-state.js";
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
 
 // 等待 composer（输入框）出现后再做判定。
@@ -133,7 +134,7 @@ async function frontEndSnapshot(page) {
   });
 }
 
-function throwForSessionState(state) {
+function throwForSessionState(state, { hadStoredAuth = false } = {}) {
   if (state?.state === "verification_required") {
     throw new DoubaoMvpError(
       ErrorCode.VERIFICATION_REQUIRED,
@@ -146,6 +147,24 @@ function throwForSessionState(state) {
       ErrorCode.ACCESS_RESTRICTED,
       "Doubao reports an access restriction; conservative operation guard stopped the run.",
       { stage: "frontend-preflight", state },
+    );
+  }
+  // login_required 必须在这里拦下，不能落到调用方的兜底 PAGE_CHANGED。
+  //
+  // 实测批次 69：6 条 PAGE_CHANGED 的 details 里 session.state 全部是
+  // "login_required"，而账号记录显示 consecutive_failures=0、last_error_code 为空
+  // —— 登录态早已失效，系统却只知道「这一问失败了」，于是让后面每一问
+  // 各自失败、整批 50 问白跑，而账号状态从头到尾没被标记为需要人工登录。
+  //
+  // 判据与 accounts/safety.js 的 ACCOUNT_BLOCKING_CODES 对齐：
+  // 有过登录态 → SESSION_EXPIRED（登录态失效），没有 → LOGIN_REQUIRED（从未登录）。
+  if (state?.state === "login_required") {
+    throw new DoubaoMvpError(
+      hadStoredAuth ? ErrorCode.SESSION_EXPIRED : ErrorCode.LOGIN_REQUIRED,
+      hadStoredAuth
+        ? "The saved Doubao session is no longer authenticated. Run the auth command again."
+        : "Doubao login is required. Run the auth command first.",
+      { stage: "frontend-preflight", state, promptSubmitted: false },
     );
   }
 }
@@ -173,11 +192,17 @@ export async function prepareFrontEndForRun(page, config, options = {}) {
   // 判定依据取自平台适配器自己（`doubao-web.requiresStoredAuth` 就是
   // `!doubaoAnonymousEnabled()`），不再由调用方各写一份。
   const anonymous = doubaoAnonymousEnabled();
+  // login_required 要区分「从未登录」与「登录态失效」——
+  // 前者 LOGIN_REQUIRED、后者 SESSION_EXPIRED，两者都会把账号标记为需人工处理，
+  // 但给运维的提示不同（该去登录，还是该重新登录）。
+  // 查一次即可，三个 throwForSessionState 调用点共用。
+  const hadStoredAuth = anonymous ? false : await hasStoredStorageState(guard.config).catch(() => false);
+  const stateOpts = { hadStoredAuth };
   // 先确保页面已渲染出 composer，再做状态判定（见文件顶部注释）。
   // 超时只是让下面的 fail-closed 分支去报错，语义不变。
   await waitForComposer(page);
   let session = await inspectSession(page, { anonymous });
-  throwForSessionState(session);
+  throwForSessionState(session, stateOpts);
 
   let snapshot = await frontEndSnapshot(page);
   const wasBusy = snapshot.busy;
@@ -186,7 +211,7 @@ export async function prepareFrontEndForRun(page, config, options = {}) {
   while (idleStreak < guard.stableIdlePolls && Date.now() < deadline) {
     await page.waitForTimeout(guard.pollMs);
     session = await inspectSession(page, { anonymous });
-    throwForSessionState(session);
+    throwForSessionState(session, stateOpts);
     snapshot = await frontEndSnapshot(page);
     idleStreak = snapshot.busy ? 0 : idleStreak + 1;
   }
@@ -213,7 +238,7 @@ export async function prepareFrontEndForRun(page, config, options = {}) {
     await page.waitForTimeout(1_000);
     await waitForComposer(page);
     session = await inspectSession(page, { anonymous });
-    throwForSessionState(session);
+    throwForSessionState(session, stateOpts);
     snapshot = await frontEndSnapshot(page);
   }
 
