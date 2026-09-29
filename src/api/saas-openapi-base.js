@@ -871,11 +871,12 @@ export function applySaasOpenApi(document) {
         mention_count_delta: { type: ["integer", "null"] },
         movement: {
           type: "string",
-          enum: ["gained", "declined", "within_noise", "flat", "not_comparable", "unknown"],
+          enum: ["gained", "declined", "within_noise", "absent_both", "flat", "not_comparable", "unknown"],
           description:
             "Deterministic classification of the change, not a recommendation. gained/declined exceed the " +
             "sampling resolution; within_noise means the difference exists but is smaller than one answer's " +
-            "worth; flat means no measurable change; not_comparable means the brand appears on one side only.",
+            "worth; flat means an unchanged non-zero rate; absent_both means never mentioned in either period; " +
+            "not_comparable means the brand appears on one side only.",
         },
         resolution_percentage_points: {
           type: ["number", "null"],
@@ -884,16 +885,37 @@ export function applySaasOpenApi(document) {
       },
       additionalProperties: true,
     },
+    GeoReportCompareMovementEntry: {
+      type: "object",
+      required: ["name", "mention_rate_delta_percentage_points"],
+      properties: {
+        name: { type: "string" },
+        mention_rate_delta_percentage_points: { type: ["number", "null"] },
+        base_mention_rate: { type: ["number", "null"] },
+        current_mention_rate: { type: ["number", "null"] },
+      },
+      additionalProperties: true,
+    },
     GeoReportCompareBrandMovement: {
       type: "object",
-      description: "Competitor names grouped by movement direction. Names only — acting on them is the caller's decision.",
-      required: ["gained", "declined", "within_noise", "flat", "not_comparable"],
+      description:
+        "Competitors grouped by movement direction, each group sorted by absolute delta descending and carrying " +
+        "the delta plus both periods' rates, so callers need not re-scan the brands array. Acting on them is the " +
+        "caller's decision.",
+      required: ["gained", "declined", "within_noise", "absent_both", "flat", "not_comparable"],
       properties: {
-        gained: { type: "array", items: { type: "string" } },
-        declined: { type: "array", items: { type: "string" } },
-        within_noise: { type: "array", items: { type: "string" } },
-        flat: { type: "array", items: { type: "string" } },
-        not_comparable: { type: "array", items: { type: "string" } },
+        gained: { type: "array", items: { $ref: "#/components/schemas/GeoReportCompareMovementEntry" } },
+        declined: { type: "array", items: { $ref: "#/components/schemas/GeoReportCompareMovementEntry" } },
+        within_noise: { type: "array", items: { $ref: "#/components/schemas/GeoReportCompareMovementEntry" } },
+        absent_both: {
+          type: "array",
+          items: { $ref: "#/components/schemas/GeoReportCompareMovementEntry" },
+          description:
+            "Not mentioned in either period. Distinct from a stable non-zero rate: this is absence of " +
+            "visibility, not a steady competitive position.",
+        },
+        flat: { type: "array", items: { $ref: "#/components/schemas/GeoReportCompareMovementEntry" } },
+        not_comparable: { type: "array", items: { $ref: "#/components/schemas/GeoReportCompareMovementEntry" } },
       },
       additionalProperties: true,
     },

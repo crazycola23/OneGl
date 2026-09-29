@@ -3529,11 +3529,12 @@
             ]
           },
           "movement": {
-            "description": "Deterministic classification of the change, not a recommendation. gained/declined exceed the sampling resolution; within_noise means the difference exists but is smaller than one answer's worth; flat means no measurable change; not_comparable means the brand appears on one side only.",
+            "description": "Deterministic classification of the change, not a recommendation. gained/declined exceed the sampling resolution; within_noise means the difference exists but is smaller than one answer's worth; flat means an unchanged non-zero rate; absent_both means never mentioned in either period; not_comparable means the brand appears on one side only.",
             "enum": [
               "gained",
               "declined",
               "within_noise",
+              "absent_both",
               "flat",
               "not_comparable",
               "unknown"
@@ -3638,35 +3639,42 @@
       },
       "GeoReportCompareBrandMovement": {
         "additionalProperties": true,
-        "description": "Competitor names grouped by movement direction. Names only — acting on them is the caller's decision.",
+        "description": "Competitors grouped by movement direction, each group sorted by absolute delta descending and carrying the delta plus both periods' rates, so callers need not re-scan the brands array. Acting on them is the caller's decision.",
         "properties": {
+          "absent_both": {
+            "description": "Not mentioned in either period. Distinct from a stable non-zero rate: this is absence of visibility, not a steady competitive position.",
+            "items": {
+              "$ref": "#/components/schemas/GeoReportCompareMovementEntry"
+            },
+            "type": "array"
+          },
           "declined": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/GeoReportCompareMovementEntry"
             },
             "type": "array"
           },
           "flat": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/GeoReportCompareMovementEntry"
             },
             "type": "array"
           },
           "gained": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/GeoReportCompareMovementEntry"
             },
             "type": "array"
           },
           "not_comparable": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/GeoReportCompareMovementEntry"
             },
             "type": "array"
           },
           "within_noise": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/GeoReportCompareMovementEntry"
             },
             "type": "array"
           }
@@ -3675,6 +3683,7 @@
           "gained",
           "declined",
           "within_noise",
+          "absent_both",
           "flat",
           "not_comparable"
         ],
@@ -3707,6 +3716,37 @@
           "domain",
           "citations",
           "covered_runs"
+        ],
+        "type": "object"
+      },
+      "GeoReportCompareMovementEntry": {
+        "additionalProperties": true,
+        "properties": {
+          "base_mention_rate": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "current_mention_rate": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "mention_rate_delta_percentage_points": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "mention_rate_delta_percentage_points"
         ],
         "type": "object"
       },

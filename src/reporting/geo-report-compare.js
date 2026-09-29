@@ -268,6 +268,14 @@ function compareBrandMentions(current, previous, { label, notes }) {
     if (delta == null || resolution == null) {
       return { ...entry, movement: "unknown", resolution_percentage_points: resolution };
     }
+    // 「两期都是 0」与「两期相同但非 0」必须分开。
+    //
+    // 早期版本都归为 flat，agent 于是会读成「这个竞品的势头稳定」——
+    // 而事实是「这个品牌两期都没被 AI 提到」。前者是竞争态势，
+    // 后者是存在感缺失，要采取的行动完全相反。
+    if ((entry.base?.mention_rate ?? 0) === 0 && (entry.current?.mention_rate ?? 0) === 0) {
+      return { ...entry, movement: "absent_both", resolution_percentage_points: resolution };
+    }
     if (Math.abs(delta) < 0.05) {
       // 浮点上完全相等也会落到这里，避免给出 0.0 之后的噪音判断
       return { ...entry, movement: "flat", resolution_percentage_points: resolution };
@@ -283,12 +291,30 @@ function compareBrandMentions(current, previous, { label, notes }) {
     };
   });
 
+  // 分组里带 Δ 值而不只是名字。
+  //
+  // 只给名字的话，agent 拿到 `gained: ["A", "B"]` 无法知道谁涨得多，
+  // 必须反查 brands 数组再自己排一次 —— 而 brands 是按 |Δ| 降序的，
+  // 跨分组后这个顺序就丢了（gained 组里最小 Δ 可能大于 declined 组里最大 Δ）。
+  // 每组内部按 Δ 的绝对值降序，与 brands 的主排序一致。
+  const group = (kind) => ranked
+    .filter((b) => b.movement === kind)
+    .sort((a, b) => Math.abs(b.mention_rate_delta_percentage_points ?? 0)
+                  - Math.abs(a.mention_rate_delta_percentage_points ?? 0))
+    .map((b) => ({
+      name: b.name,
+      mention_rate_delta_percentage_points: b.mention_rate_delta_percentage_points,
+      base_mention_rate: b.base?.mention_rate ?? null,
+      current_mention_rate: b.current?.mention_rate ?? null,
+    }));
+
   const summary = {
-    gained: ranked.filter((b) => b.movement === "gained").map((b) => b.name),
-    declined: ranked.filter((b) => b.movement === "declined").map((b) => b.name),
-    within_noise: ranked.filter((b) => b.movement === "within_noise").map((b) => b.name),
-    flat: ranked.filter((b) => b.movement === "flat").map((b) => b.name),
-    not_comparable: ranked.filter((b) => b.movement === "not_comparable").map((b) => b.name),
+    gained: group("gained"),
+    declined: group("declined"),
+    within_noise: group("within_noise"),
+    absent_both: group("absent_both"),
+    flat: group("flat"),
+    not_comparable: group("not_comparable"),
   };
 
   return {
@@ -308,9 +334,12 @@ function compareBrandMentions(current, previous, { label, notes }) {
       role: "mention_movement",
       conclusion: null,
       guidance:
-        "movement 按变化方向分组：gained / declined 是超过采样分辨率的真实变化，" +
+        "movement 按变化方向分组，每组按 |Δ| 降序、组内带 Δ 值与两期提及率，" +
+        "不必反查 brands 数组。gained / declined 是超过采样分辨率的真实变化，" +
         "within_noise 是存在差异但小于分辨率（通常只差一两条回答），" +
-        "flat 是可测范围内的零变化，not_comparable 是只在单侧出现。" +
+        "flat 是两期提及率相同的**非零**值，absent_both 是两期都没被提到 —— " +
+        "后者不是「势头稳定」而是「没有存在感」，要采取的行动完全不同。" +
+        "not_comparable 是只在单侧出现。" +
         (denominatorChanged
           ? "本次两期分母不同，变化可能部分来自采样波动而非品牌表现。"
           : "") +

@@ -102,3 +102,50 @@ test("五类判定互不重叠且覆盖全部情况", () => {
   ]);
   assert.equal(seen.size, 5, `应覆盖 5 类判定，实际 ${[...seen].join(", ")}`);
 });
+
+/**
+ * 「两期都是 0」必须与「两期相同但非 0」分开。
+ *
+ * 早期版本都归为 flat，agent 于是把「这个品牌两期都没被 AI 提到」
+ * 读成「这个竞品的势头稳定」—— 前者是存在感缺失、后者是竞争态势，
+ * 要采取的行动完全相反。这个分类只在真实数据上才暴露：
+ * 实测有个竞品两期提及率都是 0，落在 flat 组里。
+ */
+test("两期都是 0 → absent_both，不是 flat", () => {
+  const classify2 = (baseRate, targetRate, resolution) => {
+    if (baseRate == null || targetRate == null) return "not_comparable";
+    if (baseRate === 0 && targetRate === 0) return "absent_both";
+    const delta = Math.round((targetRate - baseRate) * 10000) / 100;
+    if (Math.abs(delta) < 0.05) return "flat";
+    if (Math.abs(delta) < resolution) return "within_noise";
+    return delta > 0 ? "gained" : "declined";
+  };
+
+  assert.equal(classify2(0, 0, RESOLUTION_85), "absent_both",
+    "两期都没被提到是存在感缺失，不是势头稳定");
+  assert.equal(classify2(0.5, 0.5, RESOLUTION_85), "flat",
+    "两期相同但非 0 才是 flat");
+  // 边界：一侧从 0 涨到有 → 真实的 gained，不是「从没有到没有」
+  assert.equal(classify2(0, 0.5, RESOLUTION_85), "gained");
+  assert.equal(classify2(0.5, 0, RESOLUTION_85), "declined");
+});
+
+test("六类判定互不重叠", () => {
+  const cases = [
+    [0.5, 0.5, "flat"],
+    [0, 0, "absent_both"],
+    [0.5, 0.505, "within_noise"],
+    [0.5, 0.60, "gained"],
+    [0.60, 0.5, "declined"],
+    [null, 0.5, "not_comparable"],
+  ];
+  const seen = new Set(cases.map(([b, t]) => {
+    if (b == null || t == null) return "not_comparable";
+    if (b === 0 && t === 0) return "absent_both";
+    const d = Math.round((t - b) * 10000) / 100;
+    if (Math.abs(d) < 0.05) return "flat";
+    if (Math.abs(d) < RESOLUTION_85) return "within_noise";
+    return d > 0 ? "gained" : "declined";
+  }));
+  assert.equal(seen.size, 6, `应覆盖 6 类判定，实际 ${[...seen].join(", ")}`);
+});
