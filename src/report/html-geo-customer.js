@@ -388,14 +388,21 @@ function evaluationSection() {
 function sourceOpportunitySection(payload, rows) {
   const domainCount = rows.reduce((sum, row) => sum + row.platform.citations.unique_domains, 0);
   const iconCount = rows.reduce((sum, row) => sum + row.platform.citations.icon_citations, 0);
+  // 标题里点明「来源结构」而不是「层级」：下面这两个数字是域名去重计数，
+  // 与媒体/垂直站/UGC 的层级判定无关。放在「来源层级与机会点」标题下
+  // 会让人误以为这是层级分析的结果。
   return "<section id=\"sec-09\"><h2>9. 来源层级与机会点</h2>" +
+    "<div class=\"empty\">媒体、垂直站、UGC 与官网层级需要可维护的域名映射，" +
+    "当前不对域名自动贴来源层级标签，因此本节不输出层级构成或机会点判断。</div>" +
+    // 数字单独归组并标注口径，避免被当成层级的代理指标
+    "<h3>可计的来源规模（按域名去重，非层级构成）</h3>" +
     "<div class=\"grid grid2\"><div class=\"card\"><div class=\"muted\">平台阶段记录的唯一内容域名数合计</div><strong class=\"num\">" +
     numberText(domainCount) + "</strong></div><div class=\"card\"><div class=\"muted\">排除在内容排行外的图标引用</div><strong class=\"num\">" +
     numberText(iconCount) + "</strong></div></div>" +
-    "<div class=\"empty\">媒体、垂直站、UGC 与官网层级需要可维护的域名映射。当前不对域名自动贴来源层级标签。</div>" +
-    note("域名数按平台和阶段分别统计后展示。",
+    note("域名数按平台和阶段分别统计后展示，不做层级归类。",
       "以可计可见引用中的 normalized_domain 去重；图标域不计入内容来源。",
-      "建立经确认的域名层级配置后，可按期观察渠道结构变化。") + "</section>";
+      "这两个数字反映来源规模，不能推断渠道结构或各层级的权重；建立经确认的域名层级配置后才可按期观察渠道结构变化。") +
+    "</section>";
 }
 
 function actionSection(payload, rows) {
@@ -499,6 +506,8 @@ const CSS = [
   "footer{color:var(--muted);font-size:12px;text-align:center;padding:20px}",
   // 客户 logo：只在传了 theme.logo_url 时出现，否则这个标签不存在
   ".brand-logo{display:block;max-width:100%;height:auto;margin:0 auto 12px;object-fit:contain}",
+  // 目录里标出「本期未启用」的章节：不标的话读者会以为漏看了内容
+  ".toc-pending{color:var(--muted)}.toc-tag{color:var(--faint);font-weight:400;margin-left:4px}",
   "@media(max-width:760px){main{padding:16px 12px 40px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.grid2,.guide-grid{grid-template-columns:1fr}section{padding:16px}.hero{padding:20px!important}}",
   "@media print{@page{margin:14mm}body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}main{max-width:none;padding:0}section,.subpanel,.card,.guide{box-shadow:none;break-inside:avoid;border-color:#d7dce3}a{color:inherit;text-decoration:none}details{break-inside:avoid}details>summary{list-style:none}details:not([open])>*:not(summary){display:block}.toclist a:after{content:''}header.hero{border-color:#d7dce3}.table-wrap{overflow:visible}table{min-width:0;font-size:11px}th,td{padding:6px}}",
 ].join("\n");
@@ -548,12 +557,20 @@ export function buildGeoCustomerReportHtml(payload) {
     ["要核对证据", "打开来源文章链接逐条核对。", "#sec-04"],
     ["要调整内容", "先看目标文章覆盖，再看问题范围。", "#sec-06"],
   ];
+  // 目录里给三个未启用的章节加「本期未启用」标记。
+  // 它们在正文里是说明为什么不输出的空状态，但目录只有标题，
+  // 读者会以为漏看了内容或渲染失败。标出来更省事。
+  const PENDING_SECTIONS = new Set(["地域需求分布", "AI 评判维度与价格带", "来源层级与机会点"]);
   const toc = [
     "执行概览", "最重要的发现", "品牌提及对比", "来源链接与引用强度",
     "地域需求分布", "内容要素覆盖", "检测的问题范围", "AI 评判维度与价格带",
     "来源层级与机会点", "结论与行动建议", "数据说明",
-  ].map((title, index) => "<a href=\"#sec-" + String(index + 1).padStart(2, "0") + "\">" +
-    String(index + 1).padStart(2, "0") + " " + escapeHtml(title) + "</a>").join("");
+  ].map((title, index) => {
+    const number = String(index + 1).padStart(2, "0");
+    const suffix = PENDING_SECTIONS.has(title) ? "（本期未启用）" : "";
+    return "<a href=\"#sec-" + number + "\" class=\"" + (PENDING_SECTIONS.has(title) ? "toc-pending" : "") + "\">" +
+      number + " " + escapeHtml(title) + "<span class=\"toc-tag\">" + suffix + "</span></a>";
+  }).join("");
   const periodSummary = payload.scope.periods.map((period) =>
     escapeHtml(period.label + " (" + period.from + " 至 " + period.to + ", " + period.time_zone + ")")).join("；");
   // 主题覆盖放在最后，靠 CSS 层叠生效；platformStyle 必须先于它，
