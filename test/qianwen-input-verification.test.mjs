@@ -24,11 +24,21 @@ import { readFileSync } from "node:fs";
 const src = readFileSync(new URL("../src/qianwen.js", import.meta.url), "utf8");
 const profile = readFileSync(new URL("../src/providers/qianwen-web.js", import.meta.url), "utf8");
 
+/**
+ * 取函数体。
+ *
+ * 要同时覆盖 `async function` 与 `function` —— assertFreshConversation 是同步的
+ * （只做判断后抛错），只匹配 async 会漏掉它，表现为「应能找到」的失败。
+ */
 function functionBody(name) {
-  const start = src.indexOf(`async function ${name}`);
+  const asyncAt = src.indexOf(`async function ${name}`);
+  const plainAt = src.indexOf(`function ${name}`);
+  const start = asyncAt >= 0 ? asyncAt : plainAt;
   assert.ok(start >= 0, `应能找到 ${name}`);
   const declEnd = src.indexOf("{", start);
-  const next = src.indexOf("\nasync function", declEnd);
+  const next = src.indexOf("\nfunction", declEnd) >= 0
+    ? src.indexOf("\nfunction", declEnd)
+    : src.indexOf("\nasync function", declEnd);
   return src.slice(start, next > declEnd ? next : src.length);
 }
 
@@ -75,11 +85,36 @@ test("开新会话后要确认历史回答真的清空", () => {
     "要连续多次确认为空，不能只判一次");
 });
 
-test("新会话失败不静默 —— 失败原因要能被追到", () => {
-  assert.match(src, /startFreshConversation[\s\S]{0,200}catch/,
-    "要有 catch：失败不该直接判死后续流程");
-  assert.match(src, /error:\s*String\(error/,
-    "catch 里要记下原因，否则出问题无从追");
+test("开新会话失败要 fail-closed，不能静默继续", () => {
+  // 这里刻意与别处相反：开新会话失败**不** catch 掉继续跑。
+  //
+  // 因为开新会话失败意味着页面上还留着上一轮的回答卡片，而扫描逻辑读的是
+  // **页面上所有**助手卡片 —— 于是历史回答会被当成自己的答案存进库。
+  // 那种错误不报错，只是报告里的数字悄悄错了，比这次采集失败危险得多。
+  //
+  // 四个平台里只有千问缺过这个逻辑（豆包 doubao.js:1316-1317 用
+  // startCleanConversation + assertFreshConversation；文心 wenxin.js:409 与
+  // 智谱 zhipu.js 用内联的 `if (!reset.ok) throw`）。千问现在对齐豆包。
+  assert.match(src, /function assertFreshConversation/);
+  assert.match(src, /assertFreshConversation\(conversation, page\.url\(\)\)/,
+    "开完新会话必须断言，确认它真的成了");
+  // 只在 qianwen.js 内检查：文心与智谱也有同名函数，全局匹配会误判。
+  // 正则里避开「catch」字面，否则本注释自己就会被匹配上（真发生过）。
+  const swallowed = new RegExp(
+    "startFreshConversation\\([^)]*\\)\\s*" + "\\." + "catch" + "\\(",
+  );
+  assert.ok(!swallowed.test(src),
+    "startFreshConversation 不应被捕获后继续 —— 失败要 fail-closed");
+});
+
+test("断言允许「点过且已确认」与「回到根路径」两种成功形态", () => {
+  const body = functionBody("assertFreshConversation");
+  assert.match(body, /if \(conversation\.clicked\)/,
+    "点过按钮：必须确认卡片清空");
+  assert.match(body, /if \(!onRoot\)/,
+    "没点成：只有回到根路径才算开了新会话");
+  assert.match(body, /ErrorCode\.PAGE_CHANGED/,
+    "确认不了就抛 PAGE_CHANGED，语义是「页面状态不对」");
 });
 
 test("profile 声明了新会话入口", () => {

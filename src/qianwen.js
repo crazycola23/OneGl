@@ -1,4 +1,4 @@
-﻿import { intEnvValue } from "./accounts/safety.js";
+import { intEnvValue } from "./accounts/safety.js";
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
 import { isSilentlyDropped, noFirstTokenWindowMs } from "./no-first-token.js";
 import { parseAnswerSources } from "./qianwen-answer-sources.js";
@@ -437,6 +437,44 @@ export function looksSettled(answer) {
  * 2026-09-22 samples got wrong.
  */
 /**
+ * 断言新会话确实建立成功。
+ *
+ * 与豆包的 assertFreshConversation（doubao.js:1278）同一判据。
+ *
+ * 为什么不能像别处那样 catch 掉继续跑：开新会话失败意味着页面上还留着
+ * 上一轮的回答卡片，而扫描逻辑读的是**页面上所有**助手卡片 ——
+ * 于是本次采集会把历史回答当成自己的答案存进库。
+ *
+ * 那种错误比直接失败危险得多：它不报错，报告里只是数字悄悄错了。
+ * 所以这里 fail-closed：确认不了就是没开成，直接抛。
+ *
+ * `resetConfirmed` 为 false 但 URL 已经是根路径的情况是允许的 ——
+ * 豆包也放行，因为回首页本身就等于新会话，页面上的卡片已被清掉。
+ */
+function assertFreshConversation(conversation, currentUrl) {
+  const onRoot = !/\/chat\/[^/?#]+/.test(String(currentUrl ?? ""));
+  if (conversation.clicked) {
+    // 点过按钮：必须确认卡片真的清空了
+    if (!conversation.emptyConfirmed) {
+      throw new DoubaoMvpError(
+        ErrorCode.PAGE_CHANGED,
+        "千问「新对话」已点击但历史回答未清空；本轮不提问，避免把上一轮的回答当成本次结果。",
+        { stage: "conversation-reset", conversationReset: true, conversationResetConfirmed: false, url: currentUrl, promptSubmitted: false },
+      );
+    }
+    return;
+  }
+  // 没点成：只有回到根路径才算开了新会话，否则视为未重置
+  if (!onRoot) {
+    throw new DoubaoMvpError(
+      ErrorCode.PAGE_CHANGED,
+      "千问未能开启新会话且当前仍在旧会话中；本轮不提问，避免读到上一轮的回答。",
+      { stage: "conversation-reset", conversationReset: false, url: currentUrl, promptSubmitted: false },
+    );
+  }
+}
+
+/**
  * 开一个新会话。
  *
  * ## 为什么必须有这一步
@@ -450,8 +488,8 @@ export function looksSettled(answer) {
  * 解决问题**：即使提取只取最后一轮，同一会话里累积的历史仍会干扰
  * 「回答数量」「生成中」等信号，且品牌检测会把历史回答算进本次。
  *
- * 正确做法与豆包一致（doubao.js:374-412 `startFreshConversation`）：
- * **每问之前开新会话**，让页面回到干净状态。
+ * 正确做法与豆包一致（doubao.js:373 `startCleanConversation` +
+ * :1278 `assertFreshConversation`）：**每问之前开新会话**，并确认它真的成了。
  * 千问的入口实测是 `[data-session-switch-target="new-chat"]`。
  *
  * 清空 composer 只解决「文本残留」，解决不了「历史卡片累积」。
@@ -676,11 +714,10 @@ async function submitAndWait(page, prompt, config, context) {
   // 豆包从一开始就点「新对话」（doubao.js startFreshConversation），
   // 千问之前没有对应逻辑。填入前的清空只解决「输入框残留」，
   // 解决不了「历史卡片累积」—— 两者都要。
-  const conversation = await startFreshConversation(page, config, context).catch((error) => {
-    // 开新会话失败不直接判死：继续往下走，校验与扫描仍会兜住脏数据。
-    // 但要把原因记下来，否则出问题无从追。
-    return { clicked: false, emptyConfirmed: false, error: String(error?.message ?? error) };
-  });
+  const conversation = await startFreshConversation(page, config, context);
+  // fail-closed：确认不了新会话就别问。历史回答混进来不会报错，
+  // 只会让报告里的数字悄悄错 —— 那比这次采集失败危险得多。
+  assertFreshConversation(conversation, page.url());
 
   // 两条路径（指针可达 / 需 DOM focus）统一走 fillVerifiedPrompt：
   // 实测千问的 composer 用指针 click 会超时，所以生产走 focus 路径；
