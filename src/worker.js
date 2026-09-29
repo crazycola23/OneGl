@@ -282,9 +282,15 @@ async function getSession({ accountKey, provider }, slot = 0) {
  * 换窗口（default 路径）清的是会话状态：对话历史、页内存储、DOM，新窗口继承账号 cookie，
  * Camoufox 的指纹在 launch 时就定下了，所以平台侧仍是「同一台机器回访」。
  *
- * 换身份（ONEGL_WINDOW_RESET_EVERY）是唯一能改指纹的动作，代价是一次完整冷启动，因此两个
- * 开关分开、各自按自己的计数触发，而不是把两件事绑在一个数字上。作用域由
- * ONEGL_WINDOW_RESET_PROVIDERS 收窄，免得针对一个平台的策略把其它平台的会话也冷启动掉。
+ * 换身份（ONEGL_WINDOW_RESET_EVERY）是唯一能改指纹的动作，代价是一次完整冷启动。
+ * **作用域按「当前是不是匿名面」判定**（adapter.requiresStoredAuth === false）：
+ * 匿名面没有可继承的身份，平台只能靠指纹区分来源，不换就会被认成同一台机器回访；
+ * 登录态则相反 —— 账号的会话身份是资产，冷启动会把它弄丢，所以不换。
+ *
+ * 早先这里用 ONEGL_WINDOW_RESET_PROVIDERS 平台名白名单，而它被设成 `qianwen`，
+ * 于是豆包匿名面从不换指纹，实测 6 连问全失败。白名单那种写法有两个问题：
+ * 新增匿名平台要记得加，平台从匿名切回登录要记得删。
+ * 判据换成适配器声明的 `requiresStoredAuth`，两者都不用维护。
  *
  * 三者容易混淆，各自说清：
  *   1. 换窗口读 contextPrompts ——「当前这个窗口服务过几次提问」，rotateContext() 会把它归零。
@@ -301,12 +307,20 @@ async function prepareWindow(session, account, batchId, slot = 0) {
   const limit = windowPromptLimit(adapter.profile?.quota?.promptsPerWindow, safety.roundPromptLimit);
 
   const every = safety.windowResetEvery;
-  const scoped =
-    Array.isArray(safety.windowResetProviders) && safety.windowResetProviders.length > 0
-      ? safety.windowResetProviders.includes(String(account.provider).toLowerCase())
-      : true;
+  // 作用域按**匿名属性**判定，不按平台名。
+  //
+  // 早先这里查 ONEGL_WINDOW_RESET_PROVIDERS 白名单，而那被设成了 `qianwen`。
+  // 于是豆包（走匿名面）从不换指纹 —— 而匿名面没有可继承的身份，
+  // 唯一能让平台认不出「同一台机器回访」的就是指纹。
+  // 实测 2026-09-29：豆包匿名面 6 连问全部 DOUBAO_SUBMISSION_FAILED，
+  // details.sentByButton=false（点了但页面没确认提交）。
+  //
+  // 判据用 requiresStoredAuth === false，也就是「这个平台当前跑的是匿名面」——
+  // 它是适配器声明的事实，比手工维护平台名列表可靠：
+  // 新增一个匿名平台时自动纳入，某个平台改回登录态时自动排除。
+  const anonymous = adapter.requiresStoredAuth === false;
 
-  if (every > 0 && scoped) {
+  if (every > 0 && anonymous) {
     // 槽位内的「已服务」计数从数据库推导，且按并发槽位分开：并排跑 N 个浏览器时，每个槽位
     // 有自己的指纹和自己的轮换节奏，用全局批次计数会让 N 个槽位在同一个位置一起重启。
     const served = await promptCountForBatch(pool, {

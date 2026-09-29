@@ -72,10 +72,16 @@ export function safetyConfig() {
     // one browser process for the whole worker lifetime. The counter resets on every relaunch, so
     // N means "relaunch every N prompts", never "stop after N prompts".
     windowResetEvery: intEnv("ONEGL_WINDOW_RESET_EVERY", 0, 0),
-    // Optional scope for the relaunch above. Empty means "every provider", which is the only
-    // value that was ever available before this knob; a non-empty list keeps a relaunch policy
-    // aimed at one platform from also cold-starting the browser for the others, where it would
-    // cost a launch per N prompts and change a working session's device identity for no reason.
+    // 作用域不再由平台名白名单决定 —— 改用适配器声明的 requiresStoredAuth：
+    // 匿名面（false）必须换指纹，因为没有可继承的身份，平台只能靠指纹区分来源；
+    // 登录态不换，因为账号的会话身份是资产，冷启动会把它弄丢。
+    //
+    // 早先这里是 strListEnv("ONEGL_WINDOW_RESET_PROVIDERS")，而配置被设成 `qianwen`，
+    // 于是豆包匿名面从不换指纹，实测 6 连问全部 DOUBAO_SUBMISSION_FAILED。
+    // 白名单要靠人维护：新增匿名平台要记得加，平台改回登录态要记得删。
+    // 判据换成适配器属性后，两件事都不用记。
+    //
+    // 保留这个字段是为了不破坏调用方（外部脚本可能读它），但 worker.js 已不再据此判定。
     windowResetProviders: strListEnv("ONEGL_WINDOW_RESET_PROVIDERS"),
     // 同一个账号允许同时跑几个浏览器 —— **不分有凭证还是匿名**，统一由这个值决定。
     //
