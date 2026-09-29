@@ -91,9 +91,15 @@ function overviewSection(payload, rows) {
     "。报告生成于 " + escapeHtml(new Date(payload.generated_at).toLocaleString("zh-CN", { timeZone: reportTimeZone })) +
     "（" + escapeHtml(reportTimeZone) + "）。</p>" +
     "<div class=\"grid cards\">" + cards + "</div>" +
-    table(["阶段", "平台", "分配数", "有效回答", "有效率", "部分回答", "失败", "平均答长", "品牌提及率", "可计引用回答", "可见引用"], summaryRows) +
+    // 表头必须点明这是「采集期项目品牌」的口径。
+    // 同一份报告第 3 节讲的是本次请求传入的竞品，两个都叫「品牌提及率」
+    // 会让读者以为其中一处在算错。采集期那个值本身没错，只是另一批品牌。
+    table(["阶段", "平台", "分配数", "有效回答", "有效率", "部分回答", "失败", "平均答长",
+      "项目品牌提及率", "可计引用回答", "可见引用"], summaryRows) +
     note("按阶段 × 平台列出；不合并不同阶段的重复采集。",
-      "分配数来自 sampling_batch_prompts；有效回答须为 success/partial 且确认新会话；品牌提及率只在已配置目标品牌时计算。",
+      "分配数来自 sampling_batch_prompts；有效回答须为 success/partial 且确认新会话。" +
+      "「项目品牌提及率」是采集期按项目 target_brand 算的，与第 3 节本次传入的竞品不是同一批品牌；" +
+      "本次竞品的提及率见第 3 节。",
       "样本量差异较大的平台先比较比例和来源结构，不直接比较原始总数。") +
     "</section>";
 }
@@ -110,9 +116,14 @@ function findingsSection(payload, rows) {
     const implication = source
       ? "可先核对该来源页与客户内容的覆盖差距；这表示来源共现，不代表该来源导致品牌提及。"
       : "先累积可计引用样本，再判断来源结构。";
-    const brandFact = platform.runs.brand_mention_rate == null
-      ? ""
-      : "；品牌提及率 " + percentage(platform.runs.brand_mention_rate);
+    // 品牌事实必须用本报告 brands 参数统计出来的口径。
+    //
+    // 早期版本读 runs.brand_mention_rate —— 那是**采集期**按项目 target_brand
+    // 算的，与报告请求里传的竞品毫无关系。实测项目 target_brand 是类目词
+    // 「绍兴肩颈腰腿调理（改名）」，于是第 2 节对客户说「品牌提及率 1.0%」，
+    // 而第 3 节说思邈棠 71.8% —— 两个「品牌提及率」并列出现，
+    // 读者只会认为其中某个错了。数字本身都没错，错的只是没标口径。
+    const brandFact = competitorFact(platform, payload);
     blocks.push("<div class=\"key\"><div class=\"key-title\">" + escapeHtml(period.label) + " · " +
       platformTag(platform.platform, payload) + "</div><p><strong>事实：</strong>" + escapeHtml(fact + brandFact + sourceFact) +
       "。</p><p><strong>建议：</strong>" + escapeHtml(implication) + "</p></div>");
@@ -121,7 +132,29 @@ function findingsSection(payload, rows) {
     blocks.push("<div class=\"empty\">所选范围尚无已结束批次的有效回答，当前不能形成平台结论。采集完成后可用相同日期范围重新生成快照。</div>");
   }
   return "<section id=\"sec-02\"><h2>2. 最重要的发现</h2>" + blocks.join("") +
-    "<p class=\"muted\">发现只总结本报告实际观测；不将同一回答里的品牌提及和来源引用解释为因果关系。</p></section>";
+    "<p class=\"muted\">发现只总结本报告实际观测；不将同一回答里的品牌提及和来源引用解释为因果关系。" +
+    "品牌数据来自本次报告请求传入的竞品列表，与采集期项目配置的品牌无关。</p></section>";
+}
+
+/**
+ * 平台品牌事实：按本报告的竞品统计，给出最高提及者。
+ *
+ * 不用 runs.brand_mention_rate —— 那是采集期按项目 target_brand 算的，
+ * 与本报告的竞品列表不是同一批品牌。详见 findingsSection 的注释。
+ */
+function competitorFact(platform, payload) {
+  const stats = platform.brand_mentions;
+  if (!stats?.available || !stats.brands?.length) {
+    // 没做品牌分析时如实说没做，而不是退回到另一个口径的数字
+    return payload.scope?.brands?.length
+      ? "；本次未产出品牌提及统计（没有可分析的回答正文）"
+      : "；本次未指定竞品，未做品牌提及统计";
+  }
+  const top = [...stats.brands].sort((a, b) => (b.mention_rate ?? 0) - (a.mention_rate ?? 0))[0];
+  if (!top || top.mention_rate == null) return "；本平台没有可用于计算提及率的有效回答";
+  const others = stats.brands.length - 1;
+  return `；本次传入的 ${stats.brands.length} 个品牌中提及率最高的是 ${top.name} ${percentage(top.mention_rate)}` +
+    (others > 0 ? `，其余 ${others} 个见第 3 节` : "");
 }
 
 /**
