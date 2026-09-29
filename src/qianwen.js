@@ -468,8 +468,28 @@ async function clearComposer(locator) {
   });
 }
 
-/** 归一化：与报告层的 normalizeText 同口径（折叠空白后比较）。 */
-const composerText = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+/**
+ * 归一化用于**回读校验的比较**。
+ *
+ * 关键点：这里必须**删除所有空白**而不是折叠成空格。
+ *
+ * 早期版本用 `.replace(/\s+/g, " ").trim()`，看起来与豆包口径一致，
+ * 但实测 Slate 会在渲染长文本时插入软换行 —— 回读拿到的是
+ * "越城区颈肩腰腿调理\n哪家手法好？"，折叠后变成
+ * "越城区颈肩腰腿调理 哪家手法好？"，与期望值 "…调理哪家手法好？"
+ * 多一个空格 → **误判失败**。
+ *
+ * 也就是说那个版本把「本来成功的采集」判成了失败，正是这轮要消除的浪费。
+ *
+ * 校验的意图是「输入框里是不是我那句话」，而不是「排版是否逐字一致」——
+ * 编辑器怎么折行与提问内容无关。删掉所有空白后，折叠、缩进、
+ * 软换行、U+00A0 都不再影响判定，而真正填错内容仍会被抓住
+ * （那会在文字本身，删空白删不掉）。
+ */
+const composerText = (value) => String(value ?? "").replace(/\s+/g, "");
+
+/** 诊断用：保留单行可读形式，不参与判定。 */
+const composerTextForLog = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
 
 /**
  * 填入并回读校验。
@@ -487,7 +507,11 @@ async function fillVerifiedPrompt(page, composer, prompt, attempts = 3) {
       await composer.pressSequentially(prompt, { delay: 25 });
       const actual = composerText(await readComposerText(composer));
       if (actual === expected) return;
-      lastFailure = { reason: "verification-mismatch", expected, actual };
+      lastFailure = {
+        reason: "verification-mismatch",
+        expected: composerTextForLog(prompt),
+        actual: composerTextForLog(actual),
+      };
     } catch (error) {
       lastFailure = {
         reason: "fill-failed",
@@ -567,7 +591,11 @@ async function submitAndWait(page, prompt, config, context) {
       throw new DoubaoMvpError(
         ErrorCode.SUBMISSION_FAILED,
         "千问输入框内容与提问不一致，已拦截未提交。",
-        { stage: "fill", reason: "verification-mismatch", expected: composerText(prompt), actual, promptSubmitted: false },
+        { stage: "fill", reason: "verification-mismatch",
+        expected: composerTextForLog(prompt),
+        actual: composerTextForLog(actual),
+        promptSubmitted: false,
+      },
       );
     }
   } else {
