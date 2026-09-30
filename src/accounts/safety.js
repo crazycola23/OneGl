@@ -273,6 +273,18 @@ export const RETRYABLE_CODES = new Set([
   // 全部被直接判死。
   "DOUBAO_SUBMISSION_FAILED",
   "PAGE_CHANGED",
+  // 提交后 180s 内零输出。这类原先**双重锁死**（既不在这里，也在
+  // RESUBMIT_UNSAFE_CODES 里），理由是「提问很可能已送达，重发就是重复提问」。
+  //
+  // 2026-09-30 实测后放开：该理由的前提是「重发会污染同一段对话」，而采集侧
+  // 本来就是一条一问一换窗口（round_prompt_limit=1，prepareWindow 每轮换
+  // context），每 2 条还重启浏览器换指纹。重发拿到的是全新会话，不会让 AI
+  // 把上一条问答带进来。
+  //
+  // 仍然保留的代价：若平台其实已收到并处理了，这次重发会得到同一问题的第二条
+  // 回答，报告里出现重复样本。这是可接受的 —— 实测失败率（4 槽位 50% → 2 槽位
+  // 10%）说明平台侧随机丢弃是主因，放弃重试等于白丢这批样本。
+  "ANSWER_NOT_FOUND",
 ]);
 
 /**
@@ -288,17 +300,14 @@ export const RESUBMIT_UNSAFE_CODES = new Set([
   "NETWORK_ERROR",
   "DOUBAO_SUBMISSION_FAILED",
   "PAGE_CHANGED",
-  // 提交后等不到任何回答 —— 提问很可能**已经送达**（豆包 804/846、千问 657
-  // 三处都显式标了 promptSubmitted: true）。
+  // ANSWER_NOT_FOUND 曾在这里，靠 promptSubmitted 标记拦下重复提问。
+  // 2026-09-30 移出：采集侧一条一问一换窗口，重发落在全新会话上，
+  // 不会让 AI 把上一条问答带进来，重复提问的代价（报告里同一问题两条样本）
+  // 小于放弃这批样本的代价。详见 RETRYABLE_CODES 里的同条注释。
   //
-  // 之前它不在这个集合里，于是 canRetryOutcome 走「不在 RETRYABLE_CODES → false」
-  // 那条路而恰好不重试。**结论对，理由错**：它靠「忘了加进 RETRYABLE_CODES」
-  // 才安全，而那看起来很像是遗漏 —— 任何人想「让超时也能重试」时把它加进
-  // RETRYABLE_CODES，就会立刻变成重复提问。
-  //
-  // 显式放进这个集合后，语义与实现一致：它在 RETRYABLE_CODES 里，
-  // 但因 promptSubmitted 为 true 而被拦下。
-  "ANSWER_NOT_FOUND",
+  // DOUBAO_SUBMISSION_FAILED 仍留在这里：它是「发送动作触发了但页面没确认提交」，
+  // 平台侧是否真的收到不确定，且这一类实测里 sentByButton=false 的占比高，
+  // 重发撞上同一问题的概率明显更高。
 ]);
 
 export function isRetryable(code) {

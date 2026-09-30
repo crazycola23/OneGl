@@ -82,35 +82,43 @@ test("豆包原有的两条路径标记仍然正确", () => {
     "可能已提交的场景不能标记为未提交，否则会造成重复提问");
 });
 
-test("ANSWER_NOT_FOUND 显式列入高危集合，不靠「忘了加」才安全", () => {
-  // 三处抛出点（豆包 804/846、千问 657）都标了 promptSubmitted: true，
-  // 承认提问很可能已送达。
+test("ANSWER_NOT_FOUND 2026-09-30 起放开重试：一问一换窗口下重发不会串上下文", () => {
+  // 原先它被双重锁死（不在 RETRYABLE_CODES + 在 RESUBMIT_UNSAFE_CODES 里），
+  // 理由是「提问很可能已送达，重发就是重复提问」。这个理由成立的前提是
+  // 「重发会污染同一段对话」—— 而采集侧本来就是一条一问一换窗口
+  //（round_prompt_limit=1，每 2 条还重启浏览器换指纹），重发落在全新会话上。
   //
-  // 之前它不在 RESUBMIT_UNSAFE_CODES 里，靠「不在 RETRYABLE_CODES → false」
-  // 那条路恰好不重试。结论对但理由错 —— 任何人「让超时也能重试」时把它加进
-  // RETRYABLE_CODES，就会立刻变成重复提问。
-  assert.ok(RESUBMIT_UNSAFE_CODES.has("ANSWER_NOT_FOUND"),
-    "应显式列入高危集合，让语义与实现一致");
+  // 2026-09-30 实测支持放开：失败率 4 槽位 50% → 2 槽位 10%，剩下的
+  // ANSWER_NOT_FOUND 是平台侧随机丢弃，放弃重试等于白丢这批样本。
+  assert.ok(RETRYABLE_CODES.has("ANSWER_NOT_FOUND"),
+    "应进可重试集合");
+  assert.ok(!RESUBMIT_UNSAFE_CODES.has("ANSWER_NOT_FOUND"),
+    "应从重发不安全集合移出");
 
-  // 现状行为不变：不重试。
-  assert.equal(isRetryable("ANSWER_NOT_FOUND"), false,
-    "它不在 RETRYABLE_CODES 里，所以第一道检查就返回 false");
-  assert.equal(canRetryOutcome("ANSWER_NOT_FOUND", { promptSubmitted: true }), false);
-  assert.equal(canRetryOutcome("ANSWER_NOT_FOUND", { promptSubmitted: false }), false,
-    "同样不重试 —— 第一道 RETRYABLE_CODES 检查就拦下了，promptSubmitted 是第二道");
+  assert.equal(isRetryable("ANSWER_NOT_FOUND"), true);
+  assert.equal(canRetryOutcome("ANSWER_NOT_FOUND", { promptSubmitted: true }), true,
+    "新窗口不串上下文，允许重发");
+  assert.equal(canRetryOutcome("ANSWER_NOT_FOUND", { promptSubmitted: false }), true);
 });
 
-test("若将来把 ANSWER_NOT_FOUND 加进可重试集合，标记仍能拦住重复提问", () => {
-  // 这是本次改动的真正价值：让第二道检查（promptSubmitted）成为可靠防线，
-  // 而不是让第一道检查的「遗漏」来兜底。
-  //
-  // 用一个等价场景验证第二道检查本身是有效的。
+test("DOUBAO_SUBMISSION_FAILED 仍在高危集合：是否真收到不确定，重复风险更高", () => {
+  // 与 ANSWER_NOT_FOUND 分开处理：这一类是「发送动作触发了但页面没确认提交」，
+  // 平台侧是否真的收到不确定；且实测里 sentByButton=false 占比高，
+  // 重发撞上同一问题的概率明显更高。
+  assert.ok(RESUBMIT_UNSAFE_CODES.has("DOUBAO_SUBMISSION_FAILED"));
   assert.equal(canRetryOutcome("DOUBAO_SUBMISSION_FAILED", { promptSubmitted: true }), false,
-    "高危码 + 已送达 → 拦下（第二道检查有效）");
+    "已标记送达 → 拦下");
   assert.equal(canRetryOutcome("DOUBAO_SUBMISSION_FAILED", { promptSubmitted: false }), true,
-    "高危码 + 未送达 → 放行");
-  assert.equal(canRetryOutcome("ANSWER_NOT_FOUND", { promptSubmitted: true }), false,
-    "ANSWER_NOT_FOUND 现在也在高危集合里，标记语义被尊重");
+    "明确未送达 → 放行");
+});
+
+test("第二道检查（promptSubmitted）仍然对真正的高危码有效", () => {
+  // ANSWER_NOT_FOUND 放开后，重复提问的防线只剩 promptSubmitted 标记这一道。
+  // 它必须仍然拦得住那些「是否送达真的不确定」的码。
+  assert.equal(canRetryOutcome("DOUBAO_SUBMISSION_FAILED", { promptSubmitted: true }), false);
+  assert.equal(canRetryOutcome("DOUBAO_TIMEOUT", { promptSubmitted: true }), false);
+  assert.equal(canRetryOutcome("NETWORK_ERROR", { promptSubmitted: true }), false);
+  assert.equal(canRetryOutcome("PAGE_CHANGED", { promptSubmitted: true }), false);
 });
 
 test("三个抛出点都显式标注了 promptSubmitted", () => {
