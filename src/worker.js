@@ -451,79 +451,17 @@ function createSemaphore(permits) {
 }
 
 /**
- * 并发超时的兜底：检测到「平台从未给出答案」的成对超时后，自动把这个账号降到单槽位。
+ * 单账号并发槽位的**硬上限**。
  *
- * 依据是实测（2026-09-24，#66）：并发 2 时 i74/i75 两条**同时** job-start 并同时跑到预算
- * 耗尽（993s / 1015s），而并发下的成功记录耗时稳定在 268s 完全没变。不是本地资源竞争，
- * 是平台对「同一时刻两个匿名请求」的响应被挂起。
+ * 早期这里只有 `ONEGL_ACCOUNT_SLOTS` 一个可调项，配成 4 就真跑 4 个浏览器。
+ * 实测（2026-09-30，豆包匿名面 10 条采集）4 槽位下 5 条失败：4 条 ANSWER_NOT_FOUND
+ * （180s 内零输出，平台静默丢弃）、1 条 DOUBAO_SUBMISSION_FAILED，失败集中在
+ * 13:41–13:45，之后同一账号又恢复成功 —— 平台对「同账号多窗口高频提交」的惩罚。
  *
- * 判据刻意收紧，避免把平台偶发的慢响应也算进来：
- *   - 只在 slots > 1 时触发（单槽位下没有可降的东西）；
- *   - 只认 TIMEOUT 且 `answerSeen`（超时时已渲染的字符数）极小的超时 —— 有答案说明平台在
- *     慢慢写，那是平台慢，撤并发帮不上忙；
- *   - 同一账号累计到阈值才降，单次不算。
- *
- * 降级是**进程内**的（不落库）：重启后回到配置值。这是有意的 —— 它是一个运行期自我保护，
- * 不是一个需要跨重启延续的状态；而跨重启保留一个静默的降级，反而会让「为什么变慢了」变得难查。
+ * 所以并发度不再交给配置决定：**所有平台一律最多 2 个槽位**，配置写多少都被钳到这里。
  */
-const CONCURRENCY_DEGRADE_WINDOW_MS = 10 * 60_000;
-const CONCURRENCY_DEGRADE_THRESHOLD = 2;
-const ANSWER_NEVER_RENDERED_CHARS = 50;
-/**
- * 降级兜底的开关。
- *
- * 这是个**取舍**，不是纯粹的保护。并发提交被平台惩罚时，降级能立刻止损（不再继续成对超时），
- * 代价是把槽位退回 1、吞吐减半。
- *
- * 实测批次 68：开 2 槽位后 i33–i38 连续六条并发成功，随后 i39/i40 成对超时触发降级，
- * 之后三十多条全部退回单槽位 —— 保护确实生效了，但速度也被它吃掉了，表现为
- * 「配置写的是 2、`take-slot` 却全是 slots=1」，光看配置查不出原因。
- *
- * 所以留一个开关，让运维按当下更在意哪一头来选：
- *   `ONEGL_CONCURRENCY_DEGRADE=0` 关闭 —— 并发不被收回，代价是平台惩罚可能持续。
- */
-const CONCURRENCY_DEGRADE_ENABLED = process.env.ONEGL_CONCURRENCY_DEGRADE !== "0";
-const degradedAccounts = new Map();
-/** 已降级到单槽位的账号身份（accountIdentity 串）。进程内有效。 */
-const concurrencyDegraded = new Set();
+const MAX_ACCOUNT_SLOTS = 2;
 
-function noteConcurrencyTimeout(accountKey, provider, slot, errorDetails) {
-  if (!CONCURRENCY_DEGRADE_ENABLED) return false;
-  if (slotsFor(provider) <= 1) return false;
-  const seen = Number(errorDetails?.answerSeen);
-  if (!Number.isFinite(seen) || seen > ANSWER_NEVER_RENDERED_CHARS) return false;
-
-  const identity = accountIdentity(accountKey, provider);
-  const now = Date.now();
-  const recent = (degradedAccounts.get(identity) ?? []).filter((at) => now - at < CONCURRENCY_DEGRADE_WINDOW_MS);
-  recent.push(now);
-  degradedAccounts.set(identity, recent);
-
-  if (recent.length < CONCURRENCY_DEGRADE_THRESHOLD) {
-    log({
-      event: "concurrency-timeout-suspected",
-      account_key: accountKey,
-      provider,
-      slot,
-      answer_seen: seen,
-      recent: recent.length,
-    });
-    return false;
-  }
-
-  concurrencyDegraded.add(identity);
-  log({
-    event: "concurrency-degraded",
-    account_key: accountKey,
-    provider,
-    slot,
-    answer_seen: seen,
-    window_ms: CONCURRENCY_DEGRADE_WINDOW_MS,
-    from_slots: safety.accountSlots,
-    to_slots: 1,
-  });
-  return true;
-}
 
 /**
  * 这个账号可以同时跑几个浏览器。
@@ -534,14 +472,14 @@ function noteConcurrencyTimeout(accountKey, provider, slot, errorDetails) {
  * （有凭证的账号被账号级 advisory lock 串行化，理由是防止同一登录态被并发击穿）；
  * 现在这个决定交给配置，账号锁在 slots > 1 时按槽位放行，取舍写在 distributed-lock.js。
  *
- * 触发过并发降级的账号返回 1，见 concurrencyDegraded。
+ * 硬上限 MAX_ACCOUNT_SLOTS：配置写多少都会被钳到 2。并发度不再有「降级」这回事 ——
+ * 成对超时靠的是提交节流与硬上限提前规避，不靠事后把账号降下来。
  */
 function slotsFor(provider, accountKey = null) {
-  if (accountKey && concurrencyDegraded.has(accountIdentity(accountKey, provider))) return 1;
   const anonymous = isCredentialFreeSurface(provider);
   const override = safety.anonymousAccountSlots;
-  if (anonymous && Number.isInteger(override)) return override;
-  return safety.accountSlots;
+  const configured = anonymous && Number.isInteger(override) ? override : safety.accountSlots;
+  return Math.min(configured, MAX_ACCOUNT_SLOTS);
 }
 
 /**
@@ -577,8 +515,8 @@ function slotPoolFor(accountKey, provider, expectedSlots = null) {
 /**
  * 提交节流：保证同一个账号的两次「提交提问」之间有最小间隔。
  *
- * 与 noteConcurrencyTimeout 的降级兜底是配套的两层 —— 那个是事后止损（已经丢了一条数据才降级），
- * 这个是事前预防（让触发条件根本不出现）。
+ * 这是**按账号**串行的（submitGateFor 用 accountIdentity 做键），所以多个槽位不会把
+ * 间隔压缩成 1/N：四槽位各等 60s，平台看到的仍是每 60s 一次提交。
  *
  * 触发条件是**提交时刻撞车**，不是并发本身：实测两个槽位同时 job-start 会同时跑到预算耗尽，
  * 而单槽位下同样的任务正常完成。本值远小于单条耗时（约 270s），所以错开不会改变吞吐量级，
@@ -929,11 +867,6 @@ async function handleJob(job, token) {
     }
 
     await refreshBatchProgress(pool, batchId);
-    // 并发超时的兜底：只有 TIMEOUT 且「平台整段预算内一个字符都没给出」才计入，
-    // 累计到阈值就把这个账号降到单槽位。详见 noteConcurrencyTimeout 的注释。
-    if (code === ErrorCode.TIMEOUT) {
-      noteConcurrencyTimeout(accountKey, provider, slot, outcome.normalized?.details ?? null);
-    }
     log({
       event: "job-failed",
       batch_id: batchId,
@@ -1274,8 +1207,12 @@ async function main() {
   console.log("OneGl 后台采集 Worker 已启动");
   console.log(`  队列前缀      : ${prefix}`);
   console.log(`  监听账号队列  : ${accounts.join(", ") || "（暂无账号）"}`);
+  // 打印**生效值**而不是配置值：配置写 4、被 MAX_ACCOUNT_SLOTS 钳到 2 的情况下，
+  // 打配置值会让人以为跑的是 4 个槽位，排查并发问题时从这里开始就全错了。
   console.log(`  单账号并发    : ${safety.accountParallelism}（有凭证账号，跨进程数据库锁）`);
-  console.log(`  匿名账号槽位  : ${safety.accountSlots}（无凭证面，每槽位独立浏览器与指纹）`);
+  console.log(
+    `  槽位上限      : ${MAX_ACCOUNT_SLOTS}（配置 ${safety.accountSlots}，已钳到上限）`,
+  );
   console.log(`  引用页分析    : ${sourceIntelligenceQueueName()}（并发 ${SOURCE_INTELLIGENCE_CONCURRENCY}）`);
   console.log(
     `  请求间隔      : ${safety.minDelayMs}–${safety.maxDelayMs} ms（随机）`,
