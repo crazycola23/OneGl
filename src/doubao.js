@@ -123,9 +123,11 @@ async function waitForTextbox(page, timeoutMs = 30_000) {
  * 而匹配文案会漏掉会话页（那里没有「有什么我能帮你的吗」）。
  */
 async function waitForHydration(page, timeoutMs = HYDRATION_WAIT_MS) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
   let previousLength = -1;
   let stablePolls = 0;
+  let lastLength = 0;
   // 连续 3 次持平才判稳（原来是 2 次）。并发下 CPU 被分摊，水合中途可能出现
   // 「这一轮没长」的采样间隙，2 次持平会把它误判成就绪 —— 判早的代价是
   // fill/click 落空，而多等一轮的代价只是几秒。
@@ -134,17 +136,30 @@ async function waitForHydration(page, timeoutMs = HYDRATION_WAIT_MS) {
     const length = await page
       .evaluate(() => (document.body?.innerText || "").trim().length)
       .catch(() => 0);
+    lastLength = length;
     // 文本量增长中 → 还在水合；连续 N 次持平 → 认为稳定。
     // 绝对下限用来排除「骨架屏里那点固定文本也稳定」的情况。
     if (length > 200 && length === previousLength) {
       stablePolls += 1;
-      if (stablePolls >= REQUIRED_STABLE_POLLS) return true;
+      if (stablePolls >= REQUIRED_STABLE_POLLS) {
+        // 实测区间 13.3–14.7 秒（单跑）/ 更高（并发）。把实际值打出来，
+        // 因为「水合上限够不够」只能靠这些数字判断 —— 之前只有一行
+        // 「未在 30000ms 内完成水合」，看不出是差多少。
+        console.log(
+          `[doubao] hydration ok ${Date.now() - startedAt}ms textLength=${length}`,
+        );
+        return true;
+      }
     } else {
       stablePolls = 0;
     }
     previousLength = length;
     await page.waitForTimeout(400);
   }
+  console.warn(
+    `[doubao] hydration timeout ${Date.now() - startedAt}ms textLength=${lastLength} ` +
+      `timeout=${timeoutMs}ms（骨架屏的 textLength 通常 < 50）`,
+  );
   return false;
 }
 
@@ -1192,35 +1207,60 @@ async function submitPrompt(page, prompt) {
   //
   // 第二次是 2026-10-06 补的：批次 2 的三条 34 秒失败（fill 成功但点不到按钮）
   // 就是弹窗在 fill 期间弹出、而当时只在开头清了一次造成的。
+  //
+  // ── 埋点（2026-10-06） ──────────────────────────────────────────────
+  // 今天四次诊断全靠 artifact 截图反推：弹窗有没有被关掉、fill 成功没有、
+  // 按钮点到了没有、等确认等到了没有 —— worker 日志里一个都没有，
+  // 而截图只能反映**那一刻**的状态，答不出「过程中发生了什么」。
+  //
+  // 所以这里逐步记录，让「为什么提交失败」下次能从日志直接读出来，
+  // 而不是再翻一遍截图。字段刻意保持扁平（都是标量），
+  // 因为结构化日志按 JSON 落盘，嵌套对象在排查时要多解一层。
+  const trace = {
+    promoBeforeFill: 0,
+    promoAfterFill: 0,
+    sentByButton: false,
+    retriedAfterPromo: false,
+    submittedByEnter: false,
+    confirmationWaitMs: 0,
+  };
+
   const dismissedBeforeFill = await dismissPromoDialog(page);
+  trace.promoBeforeFill = dismissedBeforeFill;
   if (dismissedBeforeFill > 0) await page.waitForTimeout(600);
 
   await fillVerifiedPrompt(page, prompt);
 
   const dismissedAfterFill = await dismissPromoDialog(page);
+  trace.promoAfterFill = dismissedAfterFill;
   if (dismissedAfterFill > 0) await page.waitForTimeout(600);
 
   const baselineAnswers = await answerTexts(page);
   const sentByButton = await tryClickSend(page);
+  trace.sentByButton = sentByButton;
   if (!sentByButton) {
     // 点不到按钮时**再清一次弹窗**并重试一次：全屏遮罩是点不到按钮的已知原因之一，
     // 而重试比直接落 Enter 更有价值 —— 按钮提交才带得出引用区（实测 enter_key 组
     // 34 条全部零引用、expected_citation_count 全为 0；send_button 组 19 条里 12 条有引用）。
     const afterRetryClear = await dismissPromoDialog(page);
+    trace.promoAfterFailedClick = afterRetryClear;
     if (afterRetryClear > 0) {
       await page.waitForTimeout(500);
       const retried = await tryClickSend(page);
       if (retried) {
-        return finishSubmit(page, prompt, baselineAnswers, true);
+        trace.retriedAfterPromo = true;
+        trace.sentByButton = true;
+        return finishSubmit(page, prompt, baselineAnswers, true, trace);
       }
     }
     const fresh = await waitForTextbox(page, 10_000);
     if (fresh) {
       await fresh.press("Enter", { timeout: 5_000 }).catch(() => undefined);
+      trace.submittedByEnter = true;
     }
   }
 
-  return finishSubmit(page, prompt, baselineAnswers, sentByButton);
+  return finishSubmit(page, prompt, baselineAnswers, sentByButton, trace);
 }
 
 /**
@@ -1229,13 +1269,29 @@ async function submitPrompt(page, prompt) {
  * 抽成独立函数是为了让「首轮点按钮」与「清弹窗后重试点按钮」两条路径共用同一套确认逻辑 ——
  * 否则重试路径很容易漏掉确认，于是把「没发出去」记成成功。
  */
-async function finishSubmit(page, prompt, baselineAnswers, sentByButton) {
+async function finishSubmit(page, prompt, baselineAnswers, sentByButton, trace = null) {
+  const confirmStart = Date.now();
   const baselineUrl = page.url();
-  if (!(await waitForSubmissionConfirmation(page, prompt, baselineAnswers, baselineUrl))) {
+  const confirmed = await waitForSubmissionConfirmation(page, prompt, baselineAnswers, baselineUrl);
+  if (trace) trace.confirmationWaitMs = Date.now() - confirmStart;
+
+  // 提交链的逐步结果 —— 下次排查「为什么没发出去」直接读这一行，
+  // 不必再翻 artifact 截图（截图只能反映失败那一刻，反映不了过程）。
+  // 成功时也打：那样才能对比「成功路径 vs 失败路径」的差异。
+  console.log(
+    `[doubao] submit ${JSON.stringify({
+      sentByButton,
+      ...(trace ?? {}),
+      confirmed,
+      urlChanged: conversationUrlChanged(baselineUrl, page.url()),
+    })}`,
+  );
+
+  if (!confirmed) {
     throw new DoubaoMvpError(
       ErrorCode.SUBMISSION_FAILED,
       "The send action fired but the page did not confirm submission. The MVP will not auto-resubmit to avoid duplicates.",
-      { sentByButton },
+      { sentByButton, ...(trace ?? {}) },
     );
   }
 
@@ -1333,6 +1389,15 @@ async function waitForAnswer(page, baselineAnswers, config) {
     ) {
       // 与超时分开报：两者都是「没拿到答案」，但一个等多久都没用，一个是预算不够。
       // 混在一起就会重演 2026-09-26 那次误判（把零输出读成额度问题，然后去改配额而不是改判据）。
+      //
+      // 埋点（2026-10-06）：成功路径有 first-token 日志，失败路径此前**一条都没有** ——
+      // 于是「提交后零输出」只能靠事后看 error_details 猜。今天的 from_logout
+      // 那一串就是这么查了半天才定位的。
+      console.log(
+        `[doubao] no-first-token waited=${Math.round((Date.now() - submittedAt) / 1000)}s`
+          + ` answerLength=${best.length} generating=${running}`
+          + ` url=${page.url().slice(0, 80)}`,
+      );
       throw new DoubaoMvpError(
         ErrorCode.ANSWER_NOT_FOUND,
         `豆包提交后 ${Math.round((Date.now() - submittedAt) / 1000)}s 内没有产出任何字符，`
