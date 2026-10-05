@@ -54,6 +54,27 @@ export function assignmentsByAccount(assignments) {
   return byAccount;
 }
 
+/**
+ * 每个 job 的最大尝试次数（含首次）。
+ *
+ * 默认 3 = 首次 + 2 次重试，保持原有行为。设为 1 即关闭重试。
+ *
+ * 设为 1 的判据见 `enqueueBatch` 里 attempts 处的注释：重试把请求量放大 59%
+ * （44 问题 → 70 次请求）却几乎不改变成功率（47.4% vs 45.5%），
+ * 而平台侧的引用能力在累积请求数到 33 次附近就归零。
+ * 配额稀缺时，重试会用掉配额与阈值，却换不来成功率。
+ *
+ * 下限 1 —— 0 会让 BullMQ 直接拒绝入队，而写错成 0 应当被夹到 1 而不是整批失败。
+ */
+export function jobAttempts(env = process.env) {
+  const raw = env.ONEGL_JOB_ATTEMPTS;
+  if (raw == null || String(raw).trim() === "") return 3;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) return 3;
+  // 夹到 5：再多也没有意义，而一个手滑的 1000 次会真的重试 1000 次
+  return Math.min(parsed, 5);
+}
+
 export async function enqueueBatch(pool, batchId, { log = console.log } = {}) {
   if (!isQueueConfigured()) {
     return { started: false, reason: "REDIS_URL 未配置，无法使用后台队列" };
@@ -117,7 +138,20 @@ export async function enqueueBatch(pool, batchId, { log = console.log } = {}) {
         opts: {
           jobId: runTokenFor(batchId, assignment.selectionIndex),
           // 首次 + 2 次重试；不可重试的错误会在处理器里抛 UnrecoverableError
-          attempts: 3,
+          //
+          // 2026-10-06：可重试次数改为可配，默认仍是 3。
+          //
+          // 背景是实测出的代价（docs 第十八节）：重试**几乎没有收益** ——
+          // 第 1 次尝试成功率 47.4%、第 2 次 45.5%，基本相同；而请求量被放大：
+          //   44 个问题 → sum(attempt)=70 次请求（+59%）
+          // 而平台侧的引用能力在**累积请求数**到 33 次附近就归零了
+          // （日志口径：44 问题 / 70 请求 / 后 10 条引用全 0）。
+          // 也就是说重试本身把总量推过了那个阈值。
+          //
+          // 所以在「配额稀缺且引用已衰减」的窗口里，把 attempts 设为 1
+          // 能让每次问题只花一次请求 —— 用一次请求换一次判据，
+          // 而不是让重试把配额和阈值一起吃掉。
+          attempts: jobAttempts(),
           backoff: { type: "exponential", delay: 5_000 },
           removeOnComplete: false,
           removeOnFail: false,
@@ -253,7 +287,9 @@ export async function refreshBatchProgress(pool, batchId) {
             failed_jobs = $3,
             status = $4,
             last_heartbeat_at = now(),
-            started_at = CASE WHEN $4 = 'running' THEN COALESCE(started_at, now()) ELSE started_at END,
+            started_at = COALESCE(started_at,
+              (SELECT min(r.started_at) FROM runs r WHERE r.sampling_batch_id = $1),
+              CASE WHEN $4 = 'running' THEN now() END),
             finished_at = CASE WHEN $5 THEN COALESCE(finished_at, now()) ELSE finished_at END
       WHERE id = $1`,
     [batchId, completed, failed, status, finished],
