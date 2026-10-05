@@ -37,13 +37,33 @@ test("水合判据用文本量稳定 + 绝对下限，不用文案匹配", () =>
   assert.match(body, /length\s*>\s*200/, "应有绝对下限，排除骨架屏里那点固定文本也「稳定」");
   assert.match(
     body,
-    /stablePolls\s*>=\s*2/,
-    "应要求连续两次持平才判稳（单次持平可能是采样间隙）",
+    /REQUIRED_STABLE_POLLS\s*=\s*3/,
+    "应要求连续 3 次持平才判稳 —— 并发下 CPU 被分摊，2 次会把采样间隙误判成就绪",
   );
+  assert.match(body, /stablePolls\s*>=\s*REQUIRED_STABLE_POLLS/, "判稳阈值应引用常量");
   assert.doesNotMatch(
     body,
     /有什么我能帮你的吗/,
     "不能靠首页文案判水合 —— 会话页没有这句，会误判成永远没水合",
+  );
+});
+
+test("水合上限要容得下并发下的真实耗时（单跑 13–15s 不代表并发）", () => {
+  const start = source.indexOf("const HYDRATION_WAIT_MS");
+  const body = source.slice(start, source.indexOf("\n})();", start));
+  // 批次 6 实测：两个浏览器同时跑时 30 秒不够，日志出现
+  // 「页面未在 30000ms 内完成水合」—— 单跑时的 13–15 秒是独占 CPU 的数据
+  assert.match(
+    body,
+    /return 60_000/,
+    "默认上限应为 60 秒 —— 30 秒在并发下不够，而多等 20 秒不影响吞吐",
+  );
+  const jsdocStart = source.lastIndexOf("/**", start);
+  const jsdoc = source.slice(jsdocStart, start);
+  assert.match(
+    jsdoc,
+    /批次 6|并发/,
+    "应记录「单跑数据不代表并发」这个教训，否则会被当成随手调大的等待",
   );
 });
 

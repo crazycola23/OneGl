@@ -126,15 +126,19 @@ async function waitForHydration(page, timeoutMs = HYDRATION_WAIT_MS) {
   const deadline = Date.now() + timeoutMs;
   let previousLength = -1;
   let stablePolls = 0;
+  // 连续 3 次持平才判稳（原来是 2 次）。并发下 CPU 被分摊，水合中途可能出现
+  // 「这一轮没长」的采样间隙，2 次持平会把它误判成就绪 —— 判早的代价是
+  // fill/click 落空，而多等一轮的代价只是几秒。
+  const REQUIRED_STABLE_POLLS = 3;
   while (Date.now() < deadline) {
     const length = await page
       .evaluate(() => (document.body?.innerText || "").trim().length)
       .catch(() => 0);
-    // 文本量增长中 → 还在水合；连续两次持平 → 认为稳定。
+    // 文本量增长中 → 还在水合；连续 N 次持平 → 认为稳定。
     // 绝对下限用来排除「骨架屏里那点固定文本也稳定」的情况。
     if (length > 200 && length === previousLength) {
       stablePolls += 1;
-      if (stablePolls >= 2) return true;
+      if (stablePolls >= REQUIRED_STABLE_POLLS) return true;
     } else {
       stablePolls = 0;
     }
@@ -147,15 +151,22 @@ async function waitForHydration(page, timeoutMs = HYDRATION_WAIT_MS) {
 /**
  * 页面水合等待上限。
  *
- * 实测四轮整页就绪在 13.3–14.7 秒，取 30 秒留足余量（网络慢、冷启动、
- * 并发两个浏览器抢 CPU 时都会更慢）。超过它仍没就绪就往下走 ——
- * 与 waitForTextbox 一样不抛错，交给下游 fail-closed 判定。
+ * 实测四轮整页就绪在 13.3–14.7 秒。**但那是单浏览器、无竞争时的数据。**
+ * 2026-10-06 批次 6 实测（日志里出现 `页面未在 30000ms 内完成水合`）：
+ * 两个浏览器同时跑时 CPU 与带宽被分摊，水合耗时明显超过单跑时的 13–15 秒。
+ *
+ * 30 秒在并发下不够 —— 而「没等够」的代价是后续 fill/click 全部落空
+ * （run_b4_i6 的 21 秒 UNKNOWN_ERROR）。这里宁可多等：
+ * 并发只有 2，而单条本来就要 180–200 秒，多等 20 秒不影响吞吐。
+ *
+ * 超过它仍没就绪就往下走 —— 与 waitForTextbox 一样不抛错，交给下游
+ * fail-closed 判定（保留错误语义，只让页面有机会加载完）。
  */
 const HYDRATION_WAIT_MS = (() => {
   const raw = process.env.ONEGL_HYDRATION_WAIT_MS;
-  if (raw == null || raw === "") return 30_000;
+  if (raw == null || raw === "") return 60_000;
   const parsed = Number(raw);
-  return Number.isInteger(parsed) && parsed >= 5_000 ? parsed : 30_000;
+  return Number.isInteger(parsed) && parsed >= 5_000 ? parsed : 60_000;
 })();
 
 export async function openDoubao(page, config) {
@@ -982,7 +993,92 @@ async function fillVerifiedPrompt(page, prompt, attempts = 3) {
  *
  * 只关推广弹窗，不误伤功能性弹窗（引用面板、确认框）—— 判据取弹窗自身文案。
  */
-const PROMO_DIALOG_TEXT = /下载豆包电脑版|免费领取\s*30\s*天|立即下载/;
+/**
+ * 推广弹窗的存在性判据。
+ *
+ * <p><b>2026-10-06 修正：不能靠文案。</b> 同一个全屏弹窗，按钮文案在不同实验分组下
+ * 分别是「下载豆包电脑版」和「下载豆包<strong>工作</strong>」—— 两个 tag 的页面各占一半。
+ * 靠文案匹配就会漏掉其中一组，于是它盖住 composer、fill 能写进去而按钮点不到
+ * （run_b5_i5 就是这一组）。
+ *
+ * <p>判据改成**结构 + 几何**（与 17.17 的水合判据同一条思路：找形态无关的信号）：
+ * <ol>
+ *   <li>全屏浮层节点存在（{@code dialogOverlay-*} / {@code dialogContent-*} / {@code dialogMask-*}
+ *       / {@code fullscreenPopup-*} 这几个 class 的 hash 后缀会随构建变，用前缀匹配）；</li>
+ *   <li><b>并且</b>它的矩形面积接近视口（全屏特征，实测 {@code h-full w-full}）。</li>
+ * </ol>
+ * 文案只作为**附加**条件保留 —— 用来排除正常的对话框，而不是唯一依据。
+ *
+ * <p>为什么必须用几何：弹窗是全屏（h-full w-full + overlay pointer-events:auto），
+ * 所以「它盖住了 composer」这件事可以直接量出来 —— 量 composer 中心的
+ * {@code elementFromPoint} 是不是它自己。这比猜它叫什么名字可靠得多。
+ */
+const PROMO_DIALOG_TEXT = /下载豆包|免费领取|立即下载|领\s*30\s*天/;
+
+/** 全屏浮层的 class 前缀（hash 后缀随构建变，只匹配前缀）。 */
+const FULLSCREEN_OVERLAY_CLASSES = [
+  "dialogOverlay-",
+  "dialogContent-",
+  "dialogMask-",
+  "fullscreenPopup-",
+  "fullscreenContent-",
+];
+
+/**
+ * 页面当前是否被全屏浮层挡住 composer。
+ *
+ * 返回 `{ covered, overlayFound, textMatched, hitTest }`：
+ *   covered      —— composer 中心点的命中元素不是 composer 本身（这是「挡住」的硬证据）
+ *   overlayFound —— 存在全屏浮层节点
+ *   textMatched  —— 浮层文本命中推广词（附加判据）
+ *   hitTest      —— 命中元素的 class/文本，用于 artifact 诊断
+ */
+async function inspectFullscreenCover(page) {
+  return page
+    .evaluate((classPrefixes) => {
+      const norm = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      const composer = document.querySelector("textarea")
+        ?? document.querySelector('[contenteditable="true"]')
+        ?? document.querySelector('div[role="textbox"]');
+      if (!composer) {
+        return { covered: false, overlayFound: false, textMatched: false, hitTest: null, reason: "no-composer" };
+      }
+
+      const viewportArea = window.innerWidth * window.innerHeight;
+      // 找面积接近视口的浮层（≥ 70% 视口面积），且带那几个 class 前缀之一
+      let overlay = null;
+      for (const el of document.querySelectorAll("div,section")) {
+        const cls = String(el.className || "");
+        if (!classPrefixes.some((p) => cls.includes(p))) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width * rect.height >= viewportArea * 0.7) {
+          overlay = el;
+          break;
+        }
+      }
+
+      const box = composer.getBoundingClientRect();
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      const top = document.elementFromPoint(cx, cy);
+      const covered = !!top && !composer.contains(top) && top !== composer;
+
+      return {
+        covered,
+        overlayFound: !!overlay,
+        textMatched: overlay ? /下载豆包|免费领取|立即下载|领\s*30\s*天/.test(norm(overlay.innerText)) : false,
+        hitTest: top
+          ? {
+              tag: top.tagName,
+              cls: String(top.className || "").slice(0, 120),
+              text: norm(top.innerText).slice(0, 60),
+            }
+          : null,
+        composerRect: [Math.round(box.x), Math.round(box.y), Math.round(box.width), Math.round(box.height)],
+      };
+    }, FULLSCREEN_OVERLAY_CLASSES)
+    .catch(() => ({ covered: false, overlayFound: false, textMatched: false, hitTest: null, reason: "evaluate-failed" }));
+}
 
 /**
  * 关掉「下载电脑版 / 领 30 天订阅」这类推广弹窗。
@@ -1022,74 +1118,68 @@ const PROMO_DIALOG_TEXT = /下载豆包电脑版|免费领取\s*30\s*天|立即�
  * 而点发送按钮必须过 actionability，于是被全屏遮罩挡住 → {@code tryClickSend} 返回 false
  * → 8 秒轮询 + 20 秒等确认 + 6 秒准备 ≈ 34 秒后 SUBMISSION_FAILED。
  *
- * <p>因此判据从「有没有 role=dialog」改成<strong>「有没有那段推广文案」</strong>，
- * 关闭顺序是「找关闭控件 → 点遮罩 → Escape」，每一步都重新判定文案是否还在。
+ * <p>因此判据是<strong>「有没有全屏浮层盖住 composer」</strong>（结构 + 几何），
+ * 关闭顺序是「找关闭控件 → 点遮罩 → Escape」，每一步都重新判定。
+ *
+ * <p><b>2026-10-06 第二次修正：文案判据不可靠。</b> 同一个全屏弹窗，按钮文案在不同
+ * 实验分组下分别是「下载豆包电脑版」与「下载豆包<strong>工作</strong>」——
+ * `run_b5_i5` 与 `run_b5_i3` 的截图右上角标签不同，而按「下载豆包电脑版」匹配的
+ * 那一版会漏掉另一半。改判据后不再依赖任何具体文案。
  */
 async function dismissPromoDialog(page) {
-  const probe = () => page.evaluate((pattern) => {
-    const re = new RegExp(pattern);
-    const norm = (value) => String(value || "").replace(/\s+/g, " ").trim();
-    // 按文案找，不按 role —— 实测弹窗主体没有 role=dialog。
-    const hit = [...document.querySelectorAll("div,section,aside")]
-      .map((el) => ({ el, text: norm(el.innerText) }))
-      .filter((x) => re.test(x.text) && x.text.length < 400)
-      // 取最内层（文本最短）的那个，避免拿到 <body> 级别的大容器
-      .sort((a, b) => a.text.length - b.text.length)[0]?.el ?? null;
-    return {
-      present: !!hit,
-      // 关闭控件：data-slot=dialog-close 之类。实测豆包没有，所以只是候选之一。
-      closeSelector: hit
-        ? ([
-            hit.querySelector('[data-slot="dialog-close"]'),
-            hit.querySelector('button[aria-label="关闭"]'),
-            hit.querySelector('button[aria-label="close"]'),
-            hit.querySelector('svg[class*="close" i]')?.closest("button,div[role=button]"),
-          ].filter(Boolean).length > 0)
-        : false,
-    };
-  }, PROMO_DIALOG_TEXT.source).catch(() => ({ present: false, closeSelector: false }));
-
-  const before = await probe();
-  if (!before.present) return 0;
+  // 判据：结构 + 几何，而不是文案 —— 详见 PROMO_DIALOG_TEXT 上方的说明。
+  const before = await inspectFullscreenCover(page);
+  if (!before.overlayFound && !before.covered) return 0;
 
   // ① 优先点真实的关闭控件（最贴近真人行为）
-  if (before.closeSelector) {
-    const closed = await page.evaluate((pattern) => {
-      const re = new RegExp(pattern);
-      const norm = (v) => String(v || "").replace(/\s+/g, " ").trim();
-      const hit = [...document.querySelectorAll("div,section,aside")]
-        .map((el) => ({ el, text: norm(el.innerText) }))
-        .filter((x) => re.test(x.text) && x.text.length < 400)
-        .sort((a, b) => a.text.length - b.text.length)[0]?.el ?? null;
-      if (!hit) return false;
-      const btn = hit.querySelector('[data-slot="dialog-close"]')
-        ?? hit.querySelector('button[aria-label="关闭"]')
-        ?? hit.querySelector('button[aria-label="close"]')
-        ?? hit.querySelector('svg[class*="close" i]')?.closest("button,div[role=button]");
-      if (!btn) return false;
-      btn.click();
-      return true;
-    }, PROMO_DIALOG_TEXT.source).catch(() => false);
-    if (closed) {
-      await page.waitForTimeout(400);
-      if (!(await probe()).present) return 1;
+  const closed = await page.evaluate((classPrefixes) => {
+    const viewportArea = window.innerWidth * window.innerHeight;
+    for (const el of document.querySelectorAll("div,section")) {
+      const cls = String(el.className || "");
+      if (!classPrefixes.some((p) => cls.includes(p))) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width * rect.height < viewportArea * 0.7) continue;
+      const btn = el.querySelector('[data-slot="dialog-close"]')
+        ?? el.querySelector('button[aria-label="关闭"]')
+        ?? el.querySelector('button[aria-label="close"]')
+        ?? el.querySelector('svg[class*="close" i]')?.closest("button,div[role=button]")
+        // 右上角那个 ×：全屏弹窗里它通常没有可访问名，只能按位置找
+        ?? [...el.querySelectorAll("svg,button,div[role=button]")]
+          .filter((c) => {
+            const r = c.getBoundingClientRect();
+            // 右上角、边长 16–56px 的小控件
+            return r.width >= 16 && r.width <= 56
+              && r.top < 120 && r.right > window.innerWidth - 160;
+          })
+          .sort((a, b) => a.getBoundingClientRect().width - b.getBoundingClientRect().width)[0];
+      if (btn) {
+        btn.click();
+        return true;
+      }
     }
+    return false;
+  }, FULLSCREEN_OVERLAY_CLASSES).catch(() => false);
+  if (closed) {
+    await page.waitForTimeout(400);
+    const after = await inspectFullscreenCover(page);
+    if (!after.overlayFound && !after.covered) return 1;
   }
 
   // ② 点遮罩本体：radix 的 fullscreen dialog 通常把 overlay 绑成点击即关闭。
-  //    实战测点遮罩比 Escape 可靠 —— 弹窗是 h-full，点遮罩等于点它自己。
-  const overlay = page.locator('[data-slot="dialog-overlay"]').first();
-  if (await overlay.count().catch(() => 0)) {
+  //    实测点遮罩比 Escape 可靠 —— 弹窗是 h-full，点遮罩等于点它自己。
+  if (await page.locator('[data-slot="dialog-overlay"]').first().count().catch(() => 0)) {
     // 遮罩是 fixed inset-0，点它的左上角（避开弹窗内容本体）
     await page.mouse.click(8, 8).catch(() => undefined);
     await page.waitForTimeout(500);
-    if (!(await probe()).present) return 1;
+    const after = await inspectFullscreenCover(page);
+    if (!after.overlayFound && !after.covered) return 1;
   }
 
   // ③ Escape 兜底（radix dialog 响应 Escape，且不需要定位控件，对改版更耐受）
   await page.keyboard.press("Escape").catch(() => undefined);
   await page.waitForTimeout(400);
-  if (!(await probe()).present) return 1;
+  const after = await inspectFullscreenCover(page);
+  if (!after.overlayFound && !after.covered) return 1;
 
   return 0;
 }

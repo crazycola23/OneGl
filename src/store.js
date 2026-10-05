@@ -96,18 +96,33 @@ export class RunStore {
     // 全部按耗时做的统计与判据都被污染（与教训 8.6「artifact 里的旧格式
     // 会毒化重放」同源 —— 这里是旧 run.json 毒化了新 run）。
     //
-    // 修法：**批次不一致时丢弃 previous**。不同批次的 runToken 撞名只是
-    // 编号重排的巧合，不构成「同一条 run 的上一次尝试」。
+    // ★ 第二次修正（批次 6 实测）：只比 `samplingBatchId` **不够**。
+    // `run_b6_i1` 的残留目录里 `samplingBatchId` 恰好也是 6（9 月也有批次 6），
+    // 于是第一次的判据判不出差异，`started_at` 又被沿用成 09-18 12:52:42。
+    //
+    // 补一道**项目**判据：残留那份属于旧项目（`probe-真实引用验证`），
+    // 本次是新项目（`probe-真实引用验证r6`）。项目名是人为起的、
+    // 批次 id 是数据库序列 —— 后者会因清库而重排，前者不会。
+    //
+    // 三者（批次 / 项目 / 账号）任一不一致即视为「不是同一条 run」。
+    const sameBatch =
+      previous != null && Number(previous.samplingBatchId) === Number(samplingBatchId);
+    const sameProject = previous != null && String(previous.project ?? "") === String(project);
+    const sameAccount =
+      previous != null && String(previous.accountKey ?? "") === String(accountKey);
+
     const previousBelongsToThisBatch =
       previous != null &&
       (deterministicBatchRun
-        ? Number(previous.samplingBatchId) === Number(samplingBatchId)
+        ? sameBatch && sameProject && sameAccount
         : true);
 
     if (previous && !previousBelongsToThisBatch) {
       console.warn(
-        `[store] 丢弃跨批次的 run 状态：${runId} 本批次=${samplingBatchId} ` +
-          `磁盘上那份属于批次=${previous.samplingBatchId}（runToken 重排撞名）`,
+        `[store] 丢弃跨批次的 run 状态：${runId} ` +
+          `本批次=${samplingBatchId} 本项目=${project} ` +
+          `磁盘那份 批次=${previous.samplingBatchId} 项目=${previous.project} ` +
+          `账号=${previous.accountKey}（runToken 重排撞名）`,
       );
     }
 
