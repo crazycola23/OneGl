@@ -919,14 +919,54 @@ async function tryClickSend(page) {
  * 只有「出现 /chat/local_<id>」才算真的换了会话 —— 而那正是「平台接收了这条提问」
  * 的直接证据。
  */
+/**
+ * 归一化会话 URL，取出「会话 id」这一部分。
+ *
+ * 返回 `null` 表示**当前不在任何会话里**（chat 根页）。
+ * 返回字符串表示在某个具体会话里。
+ *
+ * 2026-10-06 修正：会话 id 的形态有**三种**，原先只认前两种：
+ *
+ *   /chat/local_9672152282099622   ← run_b2_i2 失败时的 error_details.url
+ *   /chat/c_xxxxxxxx               ← 另一形态
+ *   /chat/38445659053922818        ← 实际成功的那些（纯数字，24 条）
+ *
+ * 只认 `local_` / `c_` 前缀的后果很严重：成功的会话页被归一化成
+ * `page:/chat`，与 chat 根页 `page:/chat` **判成同一个页面** ——
+ * 于是「URL 变了」这个判据对数字 id 完全失效，
+ * 而它正是「平台接收了这条提问」最直接的证据。
+ * 后果是 19 条「从未建会话」的失败要白等 180 秒才被判死，
+ * 且误以为提交成功了（conversationResetConfirmed=true）。
+ *
+ * 所以这里判据是**形态**（末段是不是像 id），不是前缀：
+ * 根页的 pathname 就是 `/chat`，它没有末段。
+ * `from_logout` 等查询参数在 pathname 里，天然被排除。
+ */
+export function conversationIdOf(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    const path = parsed.pathname.replace(/\/+$/, "");
+    const segments = path.split("/").filter(Boolean);
+    // /chat 本身不是会话；/chat/<任何末段> 都是
+    if (segments.length < 2) return null;
+    const last = segments[segments.length - 1];
+    // 末段至少要像个 id：不能是纯中文/纯符号，长度 ≥ 6
+    if (last.length < 6 || !/[a-zA-Z0-9_]/.test(last)) return null;
+    return last;
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeConversationUrl(raw) {
   const value = String(raw || "").trim();
   if (!value) return "";
   try {
     const parsed = new URL(value);
     const path = parsed.pathname.replace(/\/+$/, "") || "/";
-    // 会话 id 是唯一可靠的「换了一个对话」信号
-    const conversationId = path.match(/\/chat\/(local_[^/]+|c_[^/]+)/)?.[1] ?? null;
+    const conversationId = conversationIdOf(value);
     return conversationId ? `conversation:${conversationId}` : `page:${path}`;
   } catch {
     return `raw:${value}`;
@@ -1283,6 +1323,11 @@ async function submitPrompt(page, prompt) {
     confirmationWaitMs: 0,
   };
 
+  // ★ 提交**前**的 URL。它是「是否建了会话」这个判据的基准，
+  //   必须在点发送之前取 —— 提交后页面可能已经跳进 /chat/{id}，
+  //   那样就永远答不出「建没建」。
+  const urlBeforeSend = page.url();
+
   const dismissedBeforeFill = await dismissPromoDialog(page);
   trace.promoBeforeFill = dismissedBeforeFill;
   if (dismissedBeforeFill > 0) await page.waitForTimeout(600);
@@ -1308,7 +1353,7 @@ async function submitPrompt(page, prompt) {
       if (retried) {
         trace.retriedAfterPromo = true;
         trace.sentByButton = true;
-        return finishSubmit(page, prompt, baselineAnswers, true, trace);
+        return finishSubmit(page, prompt, baselineAnswers, true, trace, urlBeforeSend);
       }
     }
     const fresh = await waitForTextbox(page, 10_000);
@@ -1318,7 +1363,7 @@ async function submitPrompt(page, prompt) {
     }
   }
 
-  return finishSubmit(page, prompt, baselineAnswers, sentByButton, trace);
+  return finishSubmit(page, prompt, baselineAnswers, sentByButton, trace, urlBeforeSend);
 }
 
 /**
@@ -1327,7 +1372,7 @@ async function submitPrompt(page, prompt) {
  * 抽成独立函数是为了让「首轮点按钮」与「清弹窗后重试点按钮」两条路径共用同一套确认逻辑 ——
  * 否则重试路径很容易漏掉确认，于是把「没发出去」记成成功。
  */
-async function finishSubmit(page, prompt, baselineAnswers, sentByButton, trace = null) {
+async function finishSubmit(page, prompt, baselineAnswers, sentByButton, trace = null, urlBeforeSend = null) {
   const confirmStart = Date.now();
   const baselineUrl = page.url();
   const confirmed = await waitForSubmissionConfirmation(page, prompt, baselineAnswers, baselineUrl);
@@ -1353,7 +1398,7 @@ async function finishSubmit(page, prompt, baselineAnswers, sentByButton, trace =
     );
   }
 
-  return { baselineAnswers, sentByButton };
+  return { baselineAnswers, sentByButton, urlBeforeSend };
 }
 
 /**
@@ -1380,7 +1425,30 @@ const DOUBAO_FIRST_TOKEN_MS_DEFAULT = 180_000;
  */
 const MIN_ANSWER_CHARS = 12;
 
-async function waitForAnswer(page, baselineAnswers, config) {
+/**
+ * 「提交后多久仍没建会话就放弃」的判据。
+ *
+ * 2026-10-06 实测（.ops/confirm-session-rootpage.sh，六批 52 条）：
+ *
+ *   停在根页 /chat/?from_logout=1   19 条   有答案 0 条   最长答案 0 字
+ *   进了会话页 /chat/{id}           33 条   有答案 24 条   最长答案 1701 字
+ *
+ * 「停在根页」是**从来没有过任何一个字符**，不是「暂时没读到」。
+ * 豆包没为这次提问开出会话，提问悬在 chat 根页不落地 —— 那是平台侧没受理。
+ * 继续等满 firstTokenWindow（180s）不会有任何变化：
+ * 19 × 180s ≈ 57 分钟纯耗在等一个已知不会来的答案上，
+ * 而每日配额只有 40 次。
+ *
+ * 取 20 秒而不是更短：实测从提交到进会话需要 2–8 秒，但并发下 CPU 被分摊，
+ * 可能更慢。20 秒给足了余量，而它仍然把失败路径从 180 秒压到 20 秒。
+ *
+ * ⚠️ 这只是**快路径**：真正判定「没答」的仍然是下面的零输出判据。
+ *   这里提前退出的前提是 `best` 为空 —— 一旦读到过任何字符，
+ *   这个分支就不生效，交给原有的完整等待。
+ */
+const CONVERSATION_LANDING_WAIT_MS = 20_000;
+
+async function waitForAnswer(page, baselineAnswers, config, baselineUrlForLanding = null) {
   const baseline = new Set(baselineAnswers.map(normalizeText));
   // 计时起点是 submitPrompt 刚返回的时刻：提交动作已经完成，前面的页面准备与随机延迟都不占这条预算。
   const submittedAt = Date.now();
@@ -1434,6 +1502,53 @@ async function waitForAnswer(page, baselineAnswers, config) {
     const running = usable.some((item) => item.streaming) || (await isGenerating(page));
 
     if (answer.length > best.length) best = answer;
+    // ★ 2026-10-06 新增：**未建会话就快速失败**，不再白等 180 秒。
+    //
+    // 实测（.ops/confirm-session-rootpage.sh，六批 52 条）：
+    //
+    //   停在根页 /chat/?from_logout=1   19 条   有答案 0 条   最长答案 0 字
+    //   进了会话页 /chat/{id}           33 条   有答案 24 条   最长答案 1701 字
+    //
+    // 「停在根页」指的是**从来没有过任何一个字符**，不是「暂时没读到」。
+    // 豆包没有为这次提问开出会话，提问悬在 chat 根页不落地 ——
+    // 那是平台侧没受理，而 waitForSubmissionConfirmation 的 URL 判据
+    // 本来能区分，只是这条路径没利用它。
+    //
+    // 只在「**当前已经不在会话页**」时才提前退出：
+    //   - baselineUrlForLanding 本身就是会话页（一问一换窗口里不该发生，
+    //     但不能因此误杀已经进会话的情况）
+    //   - 或者当前 URL 归一化后不是 conversation:（还在根页）
+    // 这样「确实在生成但 URL 还没跳」的慢情况不会被误杀。
+    const landedInConversation = conversationIdOf(page.url()) !== null;
+    if (!landedInConversation && !best && baselineUrlForLanding) {
+      const waitedMs = Date.now() - submittedAt;
+      if (waitedMs >= CONVERSATION_LANDING_WAIT_MS) {
+        console.log(
+          `[doubao] no-conversation waited=${Math.round(waitedMs / 1000)}s`
+            + ` baseline=${String(baselineUrlForLanding).slice(0, 60)}`
+            + ` current=${page.url().slice(0, 60)}（仍在根页，未建会话）`,
+        );
+        throw new DoubaoMvpError(
+          ErrorCode.ANSWER_NOT_FOUND,
+          `豆包提交后 ${Math.round(waitedMs / 1000)}s 仍未建立会话（URL 停在 ${page.url().slice(0, 60)}），`
+            + "判定这次提问没有被平台受理，提前退出"
+            + `（不再空耗 ${Math.round(config.timeoutMs / 1000)}s 预算）。`,
+          {
+            stage: "generating",
+            url: page.url(),
+            promptSubmitted: true,
+            conversationLanded: false,
+            answerSeen: 0,
+            generating: running,
+            waitedMs,
+            conversationLandingWaitMs: CONVERSATION_LANDING_WAIT_MS,
+            firstTokenWindowMs,
+            budgetMs: config.timeoutMs,
+          },
+        );
+      }
+    }
+
     // 零输出判据。best 是「见过的最长答案」，一旦非空就永久关闭这条路径（语义见 no-first-token.js）——
     // 页面重渲染让某次采样读到 0 不算「没答」。
     if (best.length > 0 && firstTokenMs === null) firstTokenMs = Date.now() - submittedAt;
@@ -1987,7 +2102,15 @@ export async function executeDoubaoPrompt(page, prompt, config) {
 
     submitting = true;
     const submission = await submitPrompt(page, prompt);
-    const answer = await waitForAnswer(page, submission.baselineAnswers, config);
+    // baselineUrlForLanding 必须是**提交前**的 URL —— 提交后页面可能已经跳进会话，
+    // 那样「是否建了会话」这个问题就永远答不出「建了」。
+    // 它的实际取值是 submitPrompt 里记录的 urlBeforeSend。
+    const answer = await waitForAnswer(
+      page,
+      submission.baselineAnswers,
+      config,
+      submission.urlBeforeSend ?? null,
+    );
     const citationResult = await extractVisibleCitations(page);
 
     if (!submission.sentByButton) {
