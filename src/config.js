@@ -143,6 +143,19 @@ export function loadConfig(overrides = {}) {
       overrides.viewportWidth ?? intEnv("ONEGL_BROWSER_VIEWPORT_WIDTH", 1_440, 320),
     viewportHeight:
       overrides.viewportHeight ?? intEnv("ONEGL_BROWSER_VIEWPORT_HEIGHT", 900, 240),
+    // The screen the browser claims, deliberately separate from the viewport above.
+    //
+    // browserforge silently drops a screen constraint it cannot satisfy together with
+    // the user agent it already sampled, so pinning the screen to the viewport size
+    // (1440x900) produced a 30% hit rate and otherwise a MacBook-Pro-sized screen
+    // under a Win32 UA. 1920x1080 is the mainstream Windows desktop resolution and
+    // hit 5/5 across repeated launches. Measured in tools/fp-screen-guard.mjs.
+    camoufoxScreenWidth:
+      overrides.camoufoxScreenWidth ??
+      intEnv("ONEGL_CAMOUFOX_SCREEN_WIDTH", 1_920, 320),
+    camoufoxScreenHeight:
+      overrides.camoufoxScreenHeight ??
+      intEnv("ONEGL_CAMOUFOX_SCREEN_HEIGHT", 1_080, 240),
     camoufoxPython:
       overrides.camoufoxPython ??
       process.env.ONEGL_CAMOUFOX_PYTHON ??

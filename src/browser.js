@@ -30,16 +30,42 @@ payload = json.loads(os.environ["ONEGL_CAMOUFOX_PAYLOAD"])
 # launch_options() takes a Screen object, not a dict, and Camoufox otherwise derives the
 # screen from the physical monitor. Under the virtual Xvfb display that monitor is 1x1, so
 # the reported screen contradicted the viewport Playwright pins on the context.
+#
+# 2026-10-05 实测：这里原本按 viewport 钉成 Screen(min=max=viewport)，**约束从未生效**。
+# 现象是每次启动的 screen 在 1440x900 / 1600x900 / 1920x1080 / 2560x1440 / 3072x1728 /
+# 5120x1440 之间跳，而 UA 与 navigator.platform 恒为 Win32 —— 其中 3072x1728 是
+# MacBook Pro 的 retina 逻辑分辨率，于是形成了「自称 Windows 却报 Mac 屏幕」的
+# 自相矛盾指纹，正是这类内部不一致会被平台风控单独盯上。
+#
+# 根因（browserforge generator.py:204-220）：UA 是**先**随机抽出来的，之后才去问
+# 「有没有同时满足 UA 与 screen 约束的解」。约束一旦与已抽中的 UA 无解，
+# generator 在 strict 为假时静默执行 filtered_values = {}（把 screen 约束整个丢掉），
+# 重新采样一个不受约束的指纹 —— 不报错、不告警。所以 pin 写了等于没写。
+#
+# 两条修法都实测过（每次 5 轮，看 CAMOU_CONFIG_1 里实际落库的 screen）：
+#   - Screen(min=max=viewport 1440x900)      -> 5/5 越界
+#   - Screen(min=max=1920x1080)              -> 5/5 精确命中
+# viewport 尺寸（1440x900）在采样库里对应 361 条候选，但它们几乎全带
+# devicePixelRatio=2 / colorDepth=30|32，与 Windows+Firefox 的其余字段无法共存，
+# 于是每次都走「无解 -> 丢约束」分支。1920x1080 则是采样库里的主流桌面组合。
+#
+# 因此这里钉的是「与声明 OS 相符的常见桌面分辨率」，而不是「与 viewport 相等的尺寸」。
+# 两者的区别不是美观问题：前者让屏幕与 UA/platform/WebGL 互相自洽，后者做不到。
+# 具体尺寸取自 config 的 camoufoxScreenWidth/Height（默认 1920x1080），可由
+# ONEGL_CAMOUFOX_SCREEN_WIDTH/HEIGHT 覆盖，**不再与 viewport 复用同一个值**。
 screen_size = payload.pop("screen_size", None)
 if screen_size:
     width = int(screen_size["width"])
     height = int(screen_size["height"])
+    # 约束失效是 browserforge 的静默降级（不抛异常），所以必须在生成后复核，
+    # 否则「pin 了但没生效」在运行日志里完全不可见 —— 前三轮指纹审计就漏在这里。
     payload["screen"] = Screen(
         min_width=width,
         max_width=width,
         min_height=height,
         max_height=height,
     )
+    payload["_screen_guard"] = {"width": width, "height": height}
 
 # Camoufox otherwise downloads its default uBlock add-on on the first launch.
 # Production containers must not depend on runtime access to AMO (and a failed
@@ -72,24 +98,45 @@ else:
 # 并非覆盖所有组合 —— 偶发抛 "No WebGL data found"。实测 8 次里 0 次、另一次 1 次
 # 命中，属随机波动而非确定性失败。重试若干次再放弃，避免一次偶发拖垮整轮采集。
 # 每次重试都会重新随机种子，所以重试不会退化成「同一个指纹」。
+#
+# 2026-10-05 追加：screen 约束在同一循环里复核。约束失效是 browserforge 的静默
+# 降级（generator.py:216 的 filtered_values = {}），不抛异常，只能拿结果反查。
+# 不复核的后果是「pin 了但没生效」这种故障在运行日志里完全不可见 —— 前三轮
+# 指纹审计就是漏在这里。
 import time as _time
 
+_screen_guard = payload.pop("_screen_guard", None)
 _last_error = None
+_succeeded = False
 for _attempt in range(6):
     try:
         options = launch_options(**payload)
         _last_error = None
+        _succeeded = True
         break
     except ValueError as _exc:
         if "No WebGL data found" not in str(_exc):
             raise
         _last_error = _exc
         _time.sleep(0.2)
-else:
+
+if not _succeeded:
     raise RuntimeError(
         "Camoufox could not pick a usable WebGL fingerprint after 6 attempts: "
         f"{_last_error}"
     )
+
+if _screen_guard is not None:
+    _got = json.loads(options["env"]["CAMOU_CONFIG_1"])
+    _w = _got.get("screen.width")
+    _h = _got.get("screen.height")
+    if _w != _screen_guard["width"] or _h != _screen_guard["height"]:
+        raise RuntimeError(
+            "Camoufox could not honour the pinned screen constraint: requested "
+            f"{_screen_guard['width']}x{_screen_guard['height']}, generated {_w}x{_h}. "
+            "browserforge silently drops unsatisfiable screen constraints, so this must "
+            "fail loudly instead of launching a self-contradictory fingerprint."
+        )
 
 # 2026-10-05 实测记录（这里曾经有一段错误的「修复」，已按A/B 对照结果移除）：
 #
@@ -124,6 +171,13 @@ print(json.dumps(options))
  * could present a macOS user agent over Linux font metrics, on a zh-CN/Shanghai context.
  * Fingerprint noise seeds (canvas/audio/font spacing) still rotate per launch; that is
  * Camoufox's own default and is not device identity.
+ *
+ * The claimed screen is deliberately **not** the viewport. A screen constraint only takes
+ * effect if it is satisfiable together with the user agent browserforge sampled first, and
+ * an unsatisfiable one is dropped silently: pinning the screen to the 1440x900 viewport hit
+ * that constraint 12/40 times and otherwise reported 3072x1728 - a MacBook Pro resolution -
+ * under a Win32 user agent. `camoufoxScreenWidth/Height` defaults to 1920x1080, which landed
+ * 5/5 across repeated launches.
  */
 export function camoufoxLaunchPayload(
   config,
@@ -140,12 +194,36 @@ export function camoufoxLaunchPayload(
   }
   const resolvedMode = mode ?? resolveCamoufoxMode(config);
 
+  // The claimed screen is not the viewport. browserforge can only satisfy a screen
+  // constraint that is consistent with the user agent it sampled, and it drops the
+  // constraint silently when it is not — measured hit rate for the viewport size was
+  // 12/40, while 1920x1080 landed 5/5. Defaults come from config so an operator can
+  // move to another mainstream resolution without touching this file.
+  const screenWidth = Number(config.camoufoxScreenWidth);
+  const screenHeight = Number(config.camoufoxScreenHeight);
+  if (!Number.isInteger(screenWidth) || screenWidth < 1 || !Number.isInteger(screenHeight) || screenHeight < 1) {
+    throw new DoubaoMvpError(
+      ErrorCode.UNKNOWN_ERROR,
+      `Camoufox screen must be a positive integer size (got ${JSON.stringify([screenWidth, screenHeight])}).`,
+      { stage: "camoufox_launch_options" },
+    );
+  }
+  // The window cannot be larger than the screen it claims, or the geometry is
+  // self-contradictory in a different way (outerWidth > screen.width).
+  if (screenWidth < width || screenHeight < height) {
+    throw new DoubaoMvpError(
+      ErrorCode.UNKNOWN_ERROR,
+      `Camoufox screen ${screenWidth}x${screenHeight} is smaller than the window ${width}x${height}.`,
+      { stage: "camoufox_launch_options" },
+    );
+  }
+
   return {
     headless: resolvedMode === "headless",
     os: config.camoufoxOs,
     locale: config.locale,
     window: [width, height],
-    screen_size: { width, height },
+    screen_size: { width: screenWidth, height: screenHeight },
     ...(virtualDisplay ? { virtual_display: virtualDisplay } : {}),
   };
 }

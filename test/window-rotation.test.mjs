@@ -32,7 +32,11 @@ test("Camoufox launch payload agrees with the Playwright context it feeds", () =
   assert.equal(payload.os, config.camoufoxOs);
   assert.equal(payload.locale, config.locale);
   assert.deepEqual(payload.window, [1440, 900]);
-  assert.deepEqual(payload.screen_size, { width: 1440, height: 900 });
+  // The claimed screen is NOT the viewport. browserforge drops a screen constraint it
+  // cannot satisfy alongside the user agent it already sampled, and it does so silently:
+  // pinning 1440x900 (the viewport) landed only 12/40 launches on it and reported
+  // 3072x1728 - a MacBook Pro resolution - the rest, under a Win32 user agent.
+  assert.deepEqual(payload.screen_size, { width: 1920, height: 1080 });
   assert.equal(
     payload.screen_size.width >= config.viewportWidth,
     true,
@@ -47,9 +51,31 @@ test("screen is pinned explicitly instead of inherited from the 1x1 Xvfb display
   });
   assert.equal(payload.virtual_display, ":42");
   assert.equal(payload.headless, false, "virtual mode runs a real window on Xvfb");
-  assert.deepEqual(
+  // Deliberately not equal to the window: the screen must look like a real desktop, and
+  // it must be a resolution browserforge can satisfy together with a Windows user agent.
+  assert.deepEqual([payload.screen_size.width, payload.screen_size.height], [1920, 1080]);
+  assert.notDeepEqual(
     [payload.screen_size.width, payload.screen_size.height],
     [payload.window[0], payload.window[1]],
+    "reusing the viewport size as the screen is what browserforge silently discards",
+  );
+});
+
+test("the claimed screen is overridable and still validated against the window", () => {
+  const custom = browserConfig({ camoufoxScreenWidth: 2560, camoufoxScreenHeight: 1440 });
+  assert.deepEqual(camoufoxLaunchPayload(custom, { mode: "headless" }).screen_size, {
+    width: 2560,
+    height: 1440,
+  });
+
+  // A screen smaller than the window it claims is a different kind of self-contradiction.
+  assert.throws(
+    () => camoufoxLaunchPayload(browserConfig({ camoufoxScreenWidth: 1024, camoufoxScreenHeight: 768 })),
+    /smaller than the window/,
+  );
+  assert.throws(
+    () => camoufoxLaunchPayload(browserConfig({ camoufoxScreenWidth: 0 })),
+    /positive integer size/,
   );
 });
 
