@@ -68,7 +68,50 @@ elif ublock_explicit or sys.platform.startswith("linux"):
 else:
     print(f"CAMOUFOX_UBLOCK_UNAVAILABLE::{ublock_path}", file=sys.stderr)
 
-options = launch_options(**payload)
+# launch_options 内部 sample_webgl 会随机抽 vendor/renderer 组合，而本地采样库
+# 并非覆盖所有组合 —— 偶发抛 "No WebGL data found"。实测 8 次里 0 次、另一次 1 次
+# 命中，属随机波动而非确定性失败。重试若干次再放弃，避免一次偶发拖垮整轮采集。
+# 每次重试都会重新随机种子，所以重试不会退化成「同一个指纹」。
+import time as _time
+
+_last_error = None
+for _attempt in range(6):
+    try:
+        options = launch_options(**payload)
+        _last_error = None
+        break
+    except ValueError as _exc:
+        if "No WebGL data found" not in str(_exc):
+            raise
+        _last_error = _exc
+        _time.sleep(0.2)
+else:
+    raise RuntimeError(
+        "Camoufox could not pick a usable WebGL fingerprint after 6 attempts: "
+        f"{_last_error}"
+    )
+
+# 2026-10-05 实测记录（这里曾经有一段错误的「修复」，已按A/B 对照结果移除）：
+#
+# 当时的判断是「canvas 指纹没换」，理由是 _build_init_script() 按驼峰键名
+# （canvasSeed）找值，而 CAMOU_CONFIG_1 里存的是冒号键名（canvas:seed），
+# 于是编译出的 init script 只有 104 字节、噪声 setter 一个都没进去。
+#
+# 那个判断是错的。做法：把冒号键名映射成驼峰、用 Playwright 的
+# context.addInitScript() 注入重新编译的 init script。随后做 A/B 对照 ——
+# 把这段完整移除后重跑 4 轮，页面侧 canvasHash 仍然 4/4 在变，与「修复」后
+# 逐项相同。也就是说这段代码从未影响过任何页面读数。
+#
+# 真正生效的路径是 CAMOU_CONFIG_1 环境变量：Camoufox 把整份配置交给浏览器内部
+# 的 C++ 层直接消费（utils.py:96 把配置切成 CAMOU_CONFIG_N 环境变量）。
+# _build_init_script() 是「不经该环境变量、直接用 Playwright 开 camoufox」时的
+# 备用路径，我们不走它 —— 所以键名对不上在这里不构成 bug。
+#
+# 保留 onegl_fingerprint_config 回传：它是审计工具做「配置 vs 页面」双向对照
+# 的唯一可靠数据源（走 /proc 读子进程 environ 会因权限失败：worker 以 onegl
+# 用户运行读不到，而用 root 起浏览器会被 Camoufox 拒绝）。
+cfg = json.loads(options["env"]["CAMOU_CONFIG_1"])
+options["onegl_fingerprint_config"] = cfg
 print(json.dumps(options))
 `;
 
@@ -402,6 +445,8 @@ export async function launchBrowserSession(
   let profilesBefore = new Set();
   let profilesAfter = new Set();
   let profilePath = null;
+  // 本次启动注入的指纹原样保留，供审计工具核对「配置 vs 页面」。
+  let camoufoxFingerprintConfig = null;
   const headless = forceHeadful ? false : config.headless;
   // Validate the encryption contract even for a fresh remote-auth session. Otherwise a browser
   // could accept a login and only discover at save time that the required key is absent/invalid.
@@ -420,6 +465,7 @@ export async function launchBrowserSession(
         mode,
         virtualDisplay: virtualDisplay?.display ?? null,
       });
+      camoufoxFingerprintConfig = options.onegl_fingerprint_config ?? null;
       // 记录启动前的 profile 目录集合，启动后 diff 出本次会话专属的那个。
       // 这是回收整棵 camoufox 进程树（含 Playwright 不管理的 contentproc）的唯一钥匙。
       profilesBefore = await listProfileDirs();
@@ -449,8 +495,15 @@ export async function launchBrowserSession(
     page.setDefaultTimeout(15_000);
     page.setDefaultNavigationTimeout(60_000);
 
+    // 这里曾经挂过 context.addInitScript(camoufoxInitScript)，试图补上 Camoufox 的
+    // canvas/audio/font 噪声注入。A/B 对照证明它对页面读数零影响（移除前后
+    // canvasHash 都是 4/4 在变），故已移除。噪声实际由 CAMOU_CONFIG_1 环境变量
+    // 交给浏览器内部 C++ 层完成，详见 CAMOUFOX_OPTIONS_SCRIPT 里的实测记录。
+
     const session = {
       browser,
+      /** 本次启动注入的指纹配置（CAMOU_CONFIG_1），供审计工具核对。 */
+      camoufoxFingerprintConfig,
       // Getters, not snapshots: rotateContext() replaces both objects and every caller must
       // see the live page rather than the one it captured at launch.
       get context() {
