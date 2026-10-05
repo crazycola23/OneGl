@@ -49,20 +49,22 @@ test("成功与失败都要打点（否则无法对比两条路径）", () => {
   assert.match(body, /\{ sentByButton, \.\.\.\(trace \?\? \{\}\) \}/, "错误详情应带上 trace");
 });
 
-test("水合等待打出实际耗时与文本量", () => {
+test("水合等待打出实际耗时与关键信号", () => {
   const start = source.indexOf("async function waitForHydration");
   const body = source.slice(start, source.indexOf("\n}", start));
 
+  // 成功时：耗时 + 文本量 + 组件就绪 + 是否被遮挡
   assert.match(
     body,
-    /hydration ok \$\{Date\.now\(\) - startedAt\}ms textLength=/,
-    "成功时要打耗时与文本量 —— 「上限够不够」只能靠这些数字判断",
+    /\[doubao\] hydration ok \$\{Date\.now\(\) - startedAt\}ms/,
+    "成功时要打耗时 —— 「上限够不够」只能靠这些数字判断",
   );
-  assert.match(
-    body,
-    /hydration timeout .*textLength=/,
-    "超时时也要打数值，否则看不出是差 1 秒还是差 40 秒",
-  );
+  assert.match(body, /hydration ok[\s\S]*?textLength=/, "应打出文本量");
+  assert.match(body, /hydration ok[\s\S]*?composerReady=/, "应打出 composer 是否就绪");
+  assert.match(body, /hydration ok[\s\S]*?covered=/, "应打出是否被遮挡");
+  // 超时时也要打数值，否则看不出是差 1 秒还是差 40 秒
+  assert.match(body, /hydration timeout[\s\S]*?textLength=/, "超时时也要打数值");
+  assert.match(body, /hydration timeout[\s\S]*?composerReady=/, "超时时也要打组件状态");
 });
 
 test("零输出路径要有日志（成功路径有 first-token，失败路径此前一条都没有）", () => {

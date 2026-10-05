@@ -29,22 +29,58 @@ test("必须存在独立的「等水合」函数，不能只等输入框", () =>
   );
 });
 
-test("水合判据用文本量稳定 + 绝对下限，不用文案匹配", () => {
+test("水合判据用「组件就绪」而不是「文本够多」（首页文本只有 49–67 字）", () => {
   const start = source.indexOf("async function waitForHydration");
   const body = source.slice(start, source.indexOf("\n}", start));
+  // 注释里会说明「为什么废弃 200 那个下限」（要提到那个数字），
+  // 所以判断「代码是否还在用它」时必须排除注释行。
+  const code = body
+    .split("\n")
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .join("\n");
 
-  assert.match(body, /innerText/, "应读 body.innerText 的长度");
-  assert.match(body, /length\s*>\s*200/, "应有绝对下限，排除骨架屏里那点固定文本也「稳定」");
+  // ★ 2026-10-06 实测：首页 innerText 全程 49–67 字，**从未超过 200**。
+  //   原来的 `length > 200` 判据在首页永远不成立 ——
+  //   实测三轮里第 2 轮从未满足（null），另两轮满足时已比真实就绪晚 2.3 秒。
+  assert.doesNotMatch(
+    code,
+    /length\s*>\s*200/,
+    "200 这个下限是从会话页取的，首页只有 49–67 字，用它会让判据永不成立",
+  );
+
+  // 改成组件就绪：composer 可见 + 未被全屏浮层遮挡
+  assert.match(code, /composerReady/, "应判 composer 是否就绪，而不是文本够不够多");
+  assert.match(code, /elementFromPoint/, "应做命中测试 —— 挡住就不算就绪");
+  assert.match(code, /!state\.covered/, "被遮挡时不算就绪（弹窗会盖住 composer）");
+
+  // 文本量降级为辅助信号
+  assert.match(code, /length\s*>\s*0/, "文本量只做辅助，不设高下限");
   assert.match(
-    body,
+    code,
     /REQUIRED_STABLE_POLLS\s*=\s*3/,
     "应要求连续 3 次持平才判稳 —— 并发下 CPU 被分摊，2 次会把采样间隙误判成就绪",
   );
-  assert.match(body, /stablePolls\s*>=\s*REQUIRED_STABLE_POLLS/, "判稳阈值应引用常量");
+  assert.match(code, /stablePolls\s*>=\s*REQUIRED_STABLE_POLLS/, "判稳阈值应引用常量");
+});
+
+test("水合判据不依赖任何具体文案（会话页没有首页那句）", () => {
+  const start = source.indexOf("async function waitForHydration");
+  const body = source.slice(start, source.indexOf("\n}", start));
+  // 注释里会解释「为什么不用文案」（要提到那些词），所以只看代码行
+  const code = body
+    .split("\n")
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .join("\n");
+
   assert.doesNotMatch(
-    body,
-    /有什么我能帮你的吗/,
-    "不能靠首页文案判水合 —— 会话页没有这句，会误判成永远没水合",
+    code,
+    /有什么我能帮你的吗|为你推荐|PPT 生成/,
+    "不能靠文案判水合 —— 会话页没有这些，判据会在会话页失效",
+  );
+  assert.match(
+    code,
+    /elementFromPoint/,
+    "应改用组件就绪 + 几何判据（与 dismissPromoDialog 同一套）",
   );
 });
 
@@ -65,6 +101,20 @@ test("水合上限要容得下并发下的真实耗时（单跑 13–15s 不代�
     /批次 6|并发/,
     "应记录「单跑数据不代表并发」这个教训，否则会被当成随手调大的等待",
   );
+});
+
+test("实测数字写进注释（首页只有 49–67 字这件事必须留着）", () => {
+  const start = source.indexOf("async function waitForHydration");
+  const jsdocStart = source.lastIndexOf("/**", start);
+  const jsdoc = source.slice(jsdocStart, start);
+  assert.ok(jsdoc.length > 300, "水合函数应有成段的实测说明");
+  assert.match(
+    jsdoc,
+    /49|67/,
+    "应记录首页 innerText 的实测长度 —— 那是判据从 200 改成组件就绪的直接原因",
+  );
+  assert.match(jsdoc, /骨架屏/, "应记录失败时页面是骨架屏这一事实");
+  assert.match(jsdoc, /会话页/, "应记录 200 那个下限是从会话页取的");
 });
 
 test("openDoubao 必须等水合，不能只等 composer", () => {

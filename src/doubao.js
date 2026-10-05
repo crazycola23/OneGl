@@ -117,10 +117,18 @@ async function waitForTextbox(page, timeoutMs = 30_000) {
  * 但 React 还没把它水合成可用的输入框** —— 于是「等到了 composer、页面其实不能用」，
  * 后续 fill / click 全部落空。
  *
- * 判据用「body.innerText 长度稳定」而不是具体文案：骨架屏是灰色占位块（几乎没有文本），
- * 水合完成后才有真实文案（推荐话题、工具栏、hero 标题）。
- * 相比匹配某句中文，这个判据在首页与会话页都成立 ——
- * 而匹配文案会漏掉会话页（那里没有「有什么我能帮你的吗」）。
+ * ── 判据为什么不是「文本够多」 ──────────────────────────────────
+ * 最初用的是「body.innerText 长度 > 200 且连续 3 次持平」。那个 200
+ * 是从**会话页**取的，而首页的 innerText 全程只有 **49–67 字**
+ * （.ops/probe-hydration2.mjs 实测三轮，从未超过 200）。
+ * 结果是判据在首页**永远不成立** —— 实测第 2 轮 40 秒内一次都没满足，
+ * 另两轮满足时已经 16.8 秒，比真实就绪（14.5 秒）还晚 2.3 秒。
+ *
+ * 所以改成「**组件就绪**」：composer 可见，且没有被全屏浮层盖住
+ * （用 elementFromPoint 量 —— 与 dismissPromoDialog 同一个几何判据）。
+ * 两者都覆盖首页与会话页，也都不依赖任何具体文案 ——
+ * 匹配文案会在会话页失效（那里没有「有什么我能帮你的吗」）。
+ * innerText 长度降级为**辅助**信号：它只用来判「文本量稳定」。
  */
 async function waitForHydration(page, timeoutMs = HYDRATION_WAIT_MS) {
   const startedAt = Date.now();
@@ -128,25 +136,73 @@ async function waitForHydration(page, timeoutMs = HYDRATION_WAIT_MS) {
   let previousLength = -1;
   let stablePolls = 0;
   let lastLength = 0;
+  let lastSignal = null;
   // 连续 3 次持平才判稳（原来是 2 次）。并发下 CPU 被分摊，水合中途可能出现
   // 「这一轮没长」的采样间隙，2 次持平会把它误判成就绪 —— 判早的代价是
   // fill/click 落空，而多等一轮的代价只是几秒。
   const REQUIRED_STABLE_POLLS = 3;
+
+  // ★ 2026-10-06 修正：`length > 200` 这个下限是从**会话页**取的，
+  //   而首页的 innerText 全程只有 49–67 字（实测三轮，见下），
+  //   所以那个判据在首页**永远不成立** —— 要么等满超时，要么靠
+  //   后面某一步恰好让长度跳上去才勉强成立（实测第 1/3 轮 16.8 秒才满足，
+  //   比真实就绪的 14.5 秒还晚 2.3 秒）。
+  //
+  //   改成「**组件就绪**」而不是「文本够多」：
+  //     - composer 可见（这是我们要用的那个东西）
+  //     - 且**没有**全屏浮层盖住它（否则「可见」不代表「能点」）
+  //
+  //   两者都覆盖首页与会话页，且都不依赖任何具体文案 ——
+  //   文案匹配在会话页会失效（那里没有「有什么我能帮你的吗」）。
+  //
+  //   保留 innerText 长度作为**辅助**信号：它是文本量稳定性的代理，
+  //   与组件就绪一起成立才判稳。
   while (Date.now() < deadline) {
-    const length = await page
-      .evaluate(() => (document.body?.innerText || "").trim().length)
-      .catch(() => 0);
+    const state = await page
+      .evaluate((overlayPrefixes) => {
+        const visible = (el) => {
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          const cs = getComputedStyle(el);
+          return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none";
+        };
+        const composer =
+          document.querySelector("textarea")
+          ?? document.querySelector('[contenteditable="true"]')
+          ?? document.querySelector('div[role="textbox"]');
+        const composerReady = visible(composer);
+
+        // composer 中心点的命中元素是不是它自己 —— 挡住就不算就绪
+        let covered = false;
+        if (composerReady) {
+          const box = composer.getBoundingClientRect();
+          const top = document.elementFromPoint(
+            box.x + box.width / 2,
+            box.y + box.height / 2,
+          );
+          covered = !!top && !composer.contains(top) && top !== composer;
+        }
+
+        return {
+          textLength: (document.body?.innerText || "").trim().length,
+          composerReady,
+          covered,
+        };
+      }, FULLSCREEN_OVERLAY_CLASSES)
+      .catch(() => ({ textLength: 0, composerReady: false, covered: false }));
+
+    const length = state.textLength;
     lastLength = length;
-    // 文本量增长中 → 还在水合；连续 N 次持平 → 认为稳定。
-    // 绝对下限用来排除「骨架屏里那点固定文本也稳定」的情况。
-    if (length > 200 && length === previousLength) {
+    lastSignal = state;
+
+    // 组件就绪 + 未被遮挡 + 文本量连续 3 次持平
+    const signalStable = state.composerReady && !state.covered && length > 0;
+    if (signalStable && length === previousLength) {
       stablePolls += 1;
       if (stablePolls >= REQUIRED_STABLE_POLLS) {
-        // 实测区间 13.3–14.7 秒（单跑）/ 更高（并发）。把实际值打出来，
-        // 因为「水合上限够不够」只能靠这些数字判断 —— 之前只有一行
-        // 「未在 30000ms 内完成水合」，看不出是差多少。
         console.log(
-          `[doubao] hydration ok ${Date.now() - startedAt}ms textLength=${length}`,
+          `[doubao] hydration ok ${Date.now() - startedAt}ms `
+            + `textLength=${length} composerReady=${state.composerReady} covered=${state.covered}`,
         );
         return true;
       }
@@ -156,9 +212,11 @@ async function waitForHydration(page, timeoutMs = HYDRATION_WAIT_MS) {
     previousLength = length;
     await page.waitForTimeout(400);
   }
+
   console.warn(
-    `[doubao] hydration timeout ${Date.now() - startedAt}ms textLength=${lastLength} ` +
-      `timeout=${timeoutMs}ms（骨架屏的 textLength 通常 < 50）`,
+    `[doubao] hydration timeout ${Date.now() - startedAt}ms `
+      + `textLength=${lastLength} composerReady=${lastSignal?.composerReady} `
+      + `covered=${lastSignal?.covered} timeout=${timeoutMs}ms`,
   );
   return false;
 }
