@@ -426,6 +426,24 @@ export const AVAILABILITY = Object.freeze({
  * (`pacing.pauseMs`), together with what the account has already spent in that window
  * (`burst.runsInWindow` / `burst.newestRunAt`). Null means no burst limit has been measured.
  */
+/**
+ * 匿名面里**已被实测出平台侧限速**的那些通道 —— 它们要走节流闸门。
+ *
+ * 判据是「有没有直接的降级证据」，不是「是不是匿名面」：
+ *
+ *   doubao  2026-10-06 实测：单一出口 IP 下连续采集，引用数从平均 9.3 条
+ *           单调归零到 0，而成功率（4–6/10）与答案字数（~1150）都没变。
+ *           `expected_citation_count=0` 说明平台自己没渲染引用角标。
+ *           那是平台按 IP+行为做的降级 —— 只能靠「我们自己少发」来避。
+ *
+ *   qianwen 不在此列：2026-09-14 实测里匿名面在四道闸门全部触发时仍然正常，
+ *           至今没有出现过限速迹象。给它加节流属于凭空收紧。
+ *
+ * **新增平台必须先有实测证据**，不要因为「它也是匿名面」就加进来 ——
+ * 凭空收紧会让那条通道变慢，却换不来任何稳定性。
+ */
+const ANONYMOUS_SURFACES_THAT_RATE_LIMIT = new Set(["doubao"]);
+
 export function classifyAccountState(state, { config = safetyConfig(), now = new Date(), pacing = null, burst = null } = {}) {
   if (!state) return { kind: AVAILABILITY.AVAILABLE, reason: null, retryAt: null };
 
@@ -461,7 +479,88 @@ export function classifyAccountState(state, { config = safetyConfig(), now = new
   // the caps, the spacing and the failure cooldown exist to keep a *real* account from being
   // blocked by the platform. Only the operator's enabled flag still gates such a lane (and a
   // manual pause is expressed by disabling it).
+  //
+  // ★ 2026-10-06 修正：这个前提在豆包匿名面上**不成立**，而且后果已经实测出来。
+  //
+  // 原判断是「匿名面不吃账号额度，所以配额检查对它是多余的」。但账号额度本来就是
+  // 我们内部的计数器 —— 平台侧并不看它。平台看的是**同一出口 IP + 同一行为模式**，
+  // 而那正是会被限速的东西：
+  //
+  //   2026-10-06 实测：runs_today=79 ≥ 上限 40，classifyAccountState 仍返回 available。
+  //   连带 hourly limit（env=6）也一样从未执法 —— worker 日志里
+  //   「已达每小时上限」与 job-delayed 都是 0 次，而实测滑动窗计数最高 17。
+  //
+  //   也就是说：今天能跑到 79 次，正是因为这道豁免。配额闸门形同虚设。
+  //
+  //   修法：豁免**不再一刀切**。仍然免于「账号被烧」的判定（没有账号可烧），
+  //   但对**已被平台实测出限速**的那条通道补上节流闸门。
+  //
+  // 为什么不是所有匿名面都补：risk-control.test.mjs 里那条
+  // 「a credential-free surface is exempt from the caps」是实测支撑的 ——
+  // 千问匿名面在 2026-09-14 的一批里四道闸门全触发时仍正常，
+  // 而千问至今没有出现过限速迹象。给它加节流属于凭空收紧。
+  //
+  // 豆包不同：2026-10-06 有直接的实测证据表明它在按 IP+行为降级
+  // （引用从 9.3 条单调归零到 0，而答案字数与成功率没变）。
+  // 那种降级只能靠「我们自己少发」来避，所以节流必须执法。
+  const throttleAnonymousSurface = ANONYMOUS_SURFACES_THAT_RATE_LIMIT.has(state.provider);
+
+if (isCredentialFreeSurface(state.provider) && !throttleAnonymousSurface) {
+    return { kind: AVAILABILITY.AVAILABLE, reason: null, retryAt: null };
+  }
+
+  // 匿名面走这里：它不该参与「账号被烧」的判定（没有账号可烧），
+  // 但节流闸门必须执法 —— 否则平台侧的限速会由我们自己的节奏去撞。
+  //
+  // ⚠️ 顺序要求：**手动暂停优先于额度**。暂停是运维的显式意图，
+  //    而额度只是自动节流 —— 把自动的判在前，会让「已暂停」的账号
+  //    报成「超额度」，运维看到的是错误原因，恢复动作也会走错分支。
+  //    （2026-10-06 实测发现的顺序问题）
   if (isCredentialFreeSurface(state.provider)) {
+    if (state.paused_at && !state.cooldown_until) {
+      return {
+        kind: AVAILABILITY.PERMANENT,
+        reason: state.pause_reason ?? "账号已暂停",
+        retryAt: null,
+      };
+    }
+
+    const today = accountDayKey(now);
+    const runsToday =
+      dateKeyOf(state.runs_today_date) === today ? Number(state.runs_today) || 0 : 0;
+    if (config.accountDailyLimit > 0 && runsToday >= config.accountDailyLimit) {
+      return {
+        kind: AVAILABILITY.TEMPORARY,
+        reason: `已达每日上限 ${config.accountDailyLimit} 次（匿名面同样计入）`,
+        retryAt: nextAccountDayStart(now),
+      };
+    }
+
+    const hourlyLimit = Number(config.accountHourlyLimit ?? Number.POSITIVE_INFINITY);
+    const runsLastHour = Number(state.runs_last_hour ?? 0);
+    if (Number.isFinite(hourlyLimit) && runsLastHour >= hourlyLimit) {
+      const oldest = state.hour_window_oldest ? new Date(state.hour_window_oldest) : now;
+      const retryAt = new Date(oldest.getTime() + 60 * 60_000 + 1_000);
+      return {
+        kind: AVAILABILITY.TEMPORARY,
+        reason: `已达每小时上限 ${hourlyLimit} 次（匿名面同样计入）`,
+        retryAt: retryAt > now ? retryAt : new Date(now.getTime() + 60_000),
+      };
+    }
+
+    const minInterRunMs = Number(config.minInterRunMs ?? 0);
+    const lastRunAt = state.last_run_at ? new Date(state.last_run_at) : null;
+    if (lastRunAt && minInterRunMs > 0) {
+      const retryAt = new Date(lastRunAt.getTime() + minInterRunMs);
+      if (retryAt > now) {
+        return {
+          kind: AVAILABILITY.TEMPORARY,
+          reason: `距离上次提交过近，至少间隔 ${Math.ceil(minInterRunMs / 1000)} 秒（匿名面同样计入）`,
+          retryAt,
+        };
+      }
+    }
+
     return { kind: AVAILABILITY.AVAILABLE, reason: null, retryAt: null };
   }
 
