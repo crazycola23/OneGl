@@ -1,4 +1,10 @@
-# 指纹轮换与远程部署的踩坑记录（2026-09-24）
+# 指纹轮换与远程部署的踩坑记录（2026-09-24 起）
+
+> **2026-10-06 起新增：任何采集失败，先看 artifact 截图与 `page.html`，再看错误码。**
+> 理由见第十七节：错误码只说「没发出去」，截图说「为什么」；
+> 而间歇性故障不必现场复现 —— 上一次失败已经把现场存在 artifact 里了。
+> 具体入口：`/var/lib/onegl/runs/<runToken>/attempts/<n>/` 下的
+> `screenshot.png`、`page.html`、`dom-observation.json`。
 
 本次目标：让千问在使用时**每 2 次提问重置一次指纹、打开新窗口**，并保证 100 条采样能完整跑完。
 
@@ -988,3 +994,299 @@ sourceType: ALLOWED_SOURCE_TYPES.has(citation.sourceType) ? citation.sourceType 
 - `src/db/persist.js` 的 `normalizeLegacyCitationEnums` —— 历史枚举值兼容层（见 14.2）
 - `.ops/verify-pool.sh` / `.ops/final-check.sh` —— 池上限修复的验证与一次性总览
 - `.ops/resume-only.sh` —— 单独恢复队列消费（后台脚本里的 resume 输出会被缓冲，排障时要单独跑）
+
+---
+
+## 十七、修好一个故障之后，它解锁的下游会开始跑（2026-10-06）
+
+### 17.1 现象：修复「有效」了，成功率却从 3/6 掉到 0/6
+
+第十六节修掉 Xvfb 1×1 屏之后，线上验证确实成立（rAF 43–119 帧、常规 click 95–155ms）。
+于是跑了一个批次做前后对照 —— 结果：
+
+| | 批次 1（修复前） | 批次 2（修复后） |
+| --- | --- | --- |
+| 成功 | 3/6 | **0/6** |
+| `ANSWER_NOT_FOUND` | 3 | 3 |
+| `DOUBAO_SUBMISSION_FAILED` | 0 | **2** |
+| `UNKNOWN_ERROR` | 0 | **1** |
+| 单条耗时 | 845–1081s（全部） | **34 / 35 / 37s**（新形态） |
+
+**修复本身是对的**（四档实测、页面读数零差异、批内 `clickedNewConversation` 从恒 false 变 true），
+但**失败形态整个换了**：从 800–1000 秒的重量级超时，变成 34 秒的秒级失败。
+
+### 17.2 决定性证据不是错误码，是截图
+
+三条秒级失败的 `error_details` 长得一样：
+
+```json
+{"stage": "submit", "sentByButton": false, "promptSubmitted": true}
+```
+
+`DOUBAO_SUBMISSION_FAILED` 的定义是「发送动作触发了但页面没确认提交」，而 `sentByButton: false`
+说明**根本没点成按钮**。看到这个组合，只该去查「为什么点不到按钮」，不需要猜。
+
+于是去拿 artifact（`attempts/1/screenshot.png`）——**这一步是决定性的**：
+
+```
+┌────────────────────────────────────────┐
+│      下载豆包电脑版 免费领取 30 天订阅    │
+│      工作模式升级，PPT/Excel/文档/代码…  │
+│                    [ 立即下载 ]   [×] │
+└────────────────────────────────────────┘
+   ↑ 占 y=170–728，盖住推荐话题 + 整个 composer
+```
+
+**不是验证码，是推广弹窗。** 全屏、半透明、直接压在输入框上。
+
+### 17.3 从截图反查 DOM：原实现为什么完全无效
+
+抓不到活弹窗（6 轮 reload 都没命中，间歇出现），于是改从**失败现场的 `page.html`**反查 ——
+这是教训 8.4「静态快照看不到折叠内容」的反面：**抓不到时，失败现场的快照就是唯一证据**。
+
+```html
+<div data-slot="dialog-overlay" class="fixed inset-0 z-50 ... dialogOverlay-v_86B7">
+  <div class="dialogContent-BoNHR6 top-0 left-0 z-2000 h-full w-full ...">
+    <div class="dialogMask-eE93D4">
+      <div class="fullscreenPopup-VgLjBm"><div class="fullscreenContent-Git1NX">
+        <h2 data-slot="dialog-title">下载豆包电脑版 免费领取 30 天订阅</h2>
+```
+
+三个让 `dismissPromoDialog` 彻底失效的事实：
+
+| 实测 | 计数 | 原实现 |
+| --- | --- | --- |
+| `dialog-close` | **0 次** | 首选的关闭按钮选择器 |
+| `role="dialog"` | 1 处（不在主体上） | **唯一的遍历入口** |
+| `aria-modal` | 0 | — |
+
+它遍历 `[role="dialog"]`，而弹窗主体是 `dialogContent-*`、遮罩是 `dialogOverlay-*`，
+**两层都没有 `role=dialog`** —— 所以它遍历不到，等于什么都没做。这个函数从写下来那天起就没生效过。
+
+而 `h-full w-full` 解释了全部现象：**它不是浮层，是全屏**。
+配合 overlay 上的 `pointer-events: auto`，命中测试全部失败。
+
+### 17.4 34 秒这个数字是怎么来的
+
+```
+8s   tryClickSend 轮询找不到按钮
+20s  waitForSubmissionConfirmation 等不到确认
+6s   打开页面 + 清弹窗 + 填入
+= 34s
+```
+
+**耗时能对上，才说明归因对了。** 这一条值得单独强调：
+`34 秒` 这个数字在拿到截图之前只是「一个很快的失败」，
+拿到截图后它变成一道算术题，而算术题答案是唯一的。
+
+### 17.5 `fill()` 成功 + 按钮点不到，这个组合本身就是签名
+
+```
+fill()  →  keyboard.insertText 文本通道 → 不经命中测试 → ✅ 成功
+click() →  命中测试 + actionability     → 被全屏遮罩挡 → ❌ 超时
+```
+
+所以「文字填进去了但发送按钮点不动」**不是矛盾**，它精确指向「有一个盖住页面的东西」。
+这一条此前被误读成「fill 对受控组件无效」，绕了很久。
+
+### 17.6 修法：三处，缺一不可
+
+1. **判据从「有没有 `role=dialog`」改成「有没有那段推广文案」** —— 按文本找主体，取最内层那个。
+2. **关闭顺序三路兜底**：关闭控件 → 点遮罩左上角（radix fullscreen dialog 绑定了点击关闭）→ Escape。
+   每一步后**重新判定文案是否还在**，而不是假定成功。
+3. **清理时机分两次**：填入前 + **填入后**。弹窗是页面加载后异步弹出的，
+   只在 `submitPrompt` 开头清一次拦不住「填入期间弹出」的那种 ——
+   而这正是批次 2 的形态（`fill` 成功、按钮点不到）。
+   另外「点不到按钮」之后也要再清一次并**重试点按钮**，因为按钮提交才带得出引用区
+   （实测 enter_key 组 34 条全部零引用、send_button 组 19 条里 12 条有引用）。
+
+### 17.7 一条更普适的教训
+
+**修好 A 之后，A 解锁的下游动作会开始跑 —— 而那条路径可能从来没被验证过。**
+
+```
+rAF 修好 → click 成功 → composer 真被点到 → 豆包把 textarea 换成 ProseMirror
+         → 刚提上去的 textarea 选择器 count=0 → 15 秒超时
+```
+
+修 `click` 之前应该先问一句：**click 成功之后页面状态会变成什么，那个状态下的选择器还能不能命中。**
+
+这条与 8.2「用失败采集结果反推采集机制」同源 ——
+**在异常路径上待久了，会把「从没走过的正常路径」当成不存在。**
+
+### 17.8 三条可推广的
+
+- **失败先看截图，再看错误码。** 错误码只说「没发出去」，截图说「为什么」。
+  artifact 里的 `screenshot.png` 与 `page.html` 是失败时的唯一现场，应当先翻它们。
+- **耗时能对上，才说明归因对了。** 34 = 8 + 20 + 6，三段之和精确吻合；
+  这种吻合是最便宜的正确性验证，缺了它就容易接受一个「看起来合理」的归因。
+- **抓不到活体时，用失败现场的快照。** 间歇性故障不必现场复现 ——
+  上一条失败已经把现场存下来了（8.6 说过 artifact 里的旧格式会毒化重放，
+  这里则是：artifact 是间歇故障唯一可靠的证据来源）。
+
+### 17.9 相关文件
+
+- `src/doubao.js` —— `dismissPromoDialog` 按文案判存在性 + 三路关闭；`submitPrompt` 两次清理 + 重试点按钮；`finishSubmit` 抽出共用确认
+- `test/promo-dialog-dismiss.test.mjs` —— 弹窗判据、关闭顺序、清理时机、重试次序四条契约
+- `.ops/probe-promo-dialog.mjs` —— 弹窗 DOM 探测（间歇出现，6 轮未命中，改走快照反查）
+- `.ops/inspect-promo-html.sh` —— 从 `page.html` 反查结构与选择器计数
+- `.ops/get-batch2-shots.sh` —— 取回 artifact 截图
+
+### 16.1 症状：一个持续三天、没人怀疑环境的故障
+
+豆包采集稳定出现 `DOUBAO_SUBMIT_DEGRADED`，日志写着"提问通过回车提交，未触发豆包渲染引用区"。
+按字面读，这是"发送按钮点不到、退化成了回车"，于是自然地归因到选择器失效 ——
+`tryClickSend` 里五个选择器全试过、都查不到，于是又去补选择器。
+
+**补了三个版本，一个都没用。** 真实原因是**环境级的**：
+
+```
+Xvfb -displayfd 3 -screen 0 1x1x24      ← 容器内虚拟屏 1×1 像素
+页面静止时合成器不出帧 → rAF 每 2 秒只推进 1 帧（0.5 fps）
+playwright-core 的 click() 前置校验 checkElementStates(["visible","stable"])
+  → _checkElementIsStable 用 requestAnimationFrame 轮询矩形稳定性
+  → 帧推不动 → stable 永不 resolve → click 无限重试到超时
+```
+
+**实测四档（`.ops/compare-xvfb-screens.mjs`）**：
+
+| Xvfb 屏 | 静置 2s 帧数 | 常规 click |
+| --- | --- | --- |
+| 1x1x24 | **1** | ❌ 超时 5004ms |
+| 1440x900x24 | **119** | ✅ 237ms |
+| 1920x1080x24 | 55 | ✅ 258ms |
+| 2560x1440x24 | 17 | ✅ 406ms |
+
+`click({force:true})` 190ms 成功、`page.mouse.click` 116ms 成功 —— 两者都绕开 actionability，
+所以「换个点击手法就好了」是真的，但它掩盖了原因。
+
+### 16.2 三个被这次故障一起证伪的判断
+
+**「`fill()` 对受控组件无效」。** textarea 根本不是 React 受控的：没有 `_valueTracker`、
+没有 `_reactProps`、fill 之后 `defaultValue` 跟着变。`fill()` 对 `<textarea>` 走
+`selectText()` + `keyboard.insertText()`，**天然绕开命中测试与 stable 判定**，所以它一直能用。
+看起来"fill 静默失败"的那些探针，其实是在 `click()` 超时后整个 try 块被中断，fill 压根没执行。
+
+**「同名容器 count=2 是 actionability 陷阱」。** 那 2 个容器里有一个只是恰好不可见；
+真正的原因是整个页面的 rAF 都在饿死，与容器数量无关。
+
+**「`bringToFront()` 能唤醒渲染」。** 实测 35.8 → **4.2 fps**，反而更差。有效的只有
+`page.mouse.move`（→ 59.3 fps）—— 它产生真实的指针事件，让合成器恢复出帧。
+
+### 16.3 改屏尺寸会不会改指纹：一个必须先回答的前置问题
+
+直觉上"屏尺寸是指纹的一部分"（`config.js:146-150` 的注释确实这么写），
+所以改 Xvfb 尺寸之前必须先验证它进不进 `CAMOU_CONFIG_1`。
+
+**验证方法**：读三次启动的 `onegl_fingerprint_config`，逐字段 diff。结论是
+**页面侧零差异**（`screen`/`outer`/`inner`/`colorDepth` 与几何自洽判据四档全一致），
+声明的 screen 由 `camoufoxScreenWidth/Height` 独立钉在 1920×1080。
+所以改 Xvfb 尺寸修的是**交互**，不碰指纹。
+
+顺带被推翻的一个推断：曾以为"1×1 屏让 Camoufox 采样塌陷"（配置侧 GPU 假、CPU=2 核、
+字体仅 54 项）。**实测否掉了** —— 四档下核数是 8/16/32 随机波动、字体数 63–86，
+屏尺寸只有 4 档而核数出现 3 种值，这个分布说明不了因果。那些差异是**逐次启动的随机采样**，
+不是屏尺寸的效应。**差点因为一个假因果把一个真问题当成指纹问题处理。**
+
+### 16.4 同一次故障里踩到的第二个坑：修好一个动作会触发另一个
+
+rAF 恢复之后，`click()` 能成功了 —— 于是 composer **真的被点到了**，
+而豆包的 composer 是**同一个输入框的两种实现、点击时切换**：
+
+```
+首屏   <textarea placeholder="发消息...">        可见可编辑
+       <div contenteditable class="tiptap ProseMirror">   visibility:hidden
+点击后 <textarea>                                从 DOM 移除（count 0）
+       <div contenteditable class="...ProseMirror-focused">  可见可编辑
+```
+
+于是按"textarea 更可靠"把它提到选择器链首位，结果点击后前四条 textarea 选择器**全部 count=0**，
+`waitForTextbox` 15 秒超时。修好 A 直接弄坏了 B。
+
+最终形态是**通用形态优先、具体形态兜底**：
+
+```
+textarea              ← 首屏形态
+[contenteditable]     ← 点击后形态
+div[role=textbox]
+...具体形态兜底
+```
+
+**教训**：一个动作被修好之后，**它解锁的下游动作会开始跑**。修 `click` 之前，
+应该先问"click 成功之后页面状态会变成什么，那个状态下的选择器还能不能命中"。
+
+顺带一条：那条曾被提到首位的 `textarea[data-testid="chat_input_input"]` ——
+**textarea 根本没有这个 testid**（实测 count=0，testid 挂在另外两个节点上）。
+形态类选择器必须实测，不许按名字推。
+
+### 16.5 三条可推广的
+
+- **症状指向选择器时，先怀疑环境。** "点不到"可能是"整个页面不产帧"，而不是"元素不可点"。
+  判据很便宜：静置 2 秒数一次 `requestAnimationFrame` 推进了几帧。
+- **区分「同一个元素不可点」与「所有元素都不可点」。** 前者查选择器与遮挡，
+  后者查环境。前者补选择器，后者补选择器只会越补越错。
+- **凡是在真实页面里被验证过的形态，都要连同「它为什么是这样」一起写进注释。**
+  `src/doubao.js` 的 `firstVisibleEditable` 与 `src/browser.js` 的 `virtualScreenSize`
+  都带着实测数字与结论；没有这些，下一个读代码的人会把 `1440x900x24`
+  当成随手挑的默认值，于是"改成更小的省资源"。
+
+### 16.6 同一个根因在 16 天前已经被撞见过，但归因错了
+
+`src/api/remote-auth.js:298-306` 记着一次 2026-09-20 的实测，结论与本次**同源**：
+
+```
+★ camoufox（生产默认引擎）下 locator.click() 持续超时 —— 豆包登录按钮的
+ class 带自定义动画（samantha-button-…），Playwright 的「稳定性 + 可命中性」预检永远等不过去
+  实测四种策略对比：
+    locator.click()            → 超时，二维码不出现
+    locator.click({force:true}) → ✅ 浮层 + 二维码
+    page.mouse.click(x, y)     → 点击落空，无浮层
+    dispatchEvent("click")     → ✅ 浮层 + 二维码
+```
+
+那次把它归因成**「按钮 class 带自定义动画」**，并用 `force: true` 绕过 —— 绕法是对的，
+所以登录路径至今正常。但根因其实是 **Xvfb 1×1 屏让 rAF 饿死**（见 16.1），
+与 class 无关。十六天里没人把这两件事联系起来，因为**登录有 force 兜底、采集没有**。
+
+**教训**：一个绕法生效不等于根因被找到。「force 之后就正常了」很容易让人就此收手，
+而真相是 force 恰好绕开了那道 actionability 校验 —— 它同时也会绕开别的校验。
+**绕法要连同「它绕开了什么」一起写进注释**，否则下一个同类故障还会再绕一次、
+仍然归因错。`remote-auth.js` 那段注释写了四种策略的对比（这很好），
+但没写「为什么常规 click 不行」—— 那正是缺的那一半。
+
+### 16.7 为什么只有豆包重灾：取决于平台是否「必须点按钮」
+
+同一次部署影响全部平台（共用 `launchBrowserSession`），但暴露程度差三个数量级：
+
+| 平台 | 提交路径 | 降级层数 | 影响 |
+| --- | --- | --- | --- |
+| 千问 | `dispatch_event` → `Enter` → `click` → `force_click`（`qianwen.js:743-759`） | 4 级 | 几乎不受影响 |
+| 智谱 | 只走 `composer.press("Enter")`（`zhipu.js:332`） | 1 级（但 Enter 本就是唯一测通路径） | 不受影响 |
+| 文心 | 只走 `composer.press("Enter")`（`wenxin.js:450`） | 1 级（同上） | 不受影响 |
+| 豆包 | `tryClickSend` 五选择器 → Enter 回退（`doubao.js:616-664`） | 1 级有效 | **重灾区** |
+
+原因不是实现质量，而是**平台是否依赖 click 才能拿到目标数据**：
+
+- 千问的引用来自展开面板后的 `data-click-extra` 属性，键盘提交同样能拿到；
+- 豆包的引用区**只在按钮提交时渲染**（实测 enter_key 组 34 条全部零引用、
+  `expected_citation_count` 全为 0，而 send_button 组 19 条里 12 条有引用），
+  所以 click 失败对它等于**引用维度整体失效**。
+
+**因此「哪些平台需要 force 兜底」不能按平台重要性排，要按「它的产出是否依赖 click」排。**
+一个只在 3% 失败里丢引用的平台和一个让整个引用维度归零的平台，优先级完全不同。
+
+顺带一处已经错了的注释：`safety.js:288-292` 写「重试几乎必然改走发送按钮」——
+在 1×1 屏环境下这个假设不成立（重试多少次都是 false，因为 rAF 饿死是环境级的）。
+这类「关于重试行为的推断」与「环境参数」耦合，改环境时必须一并复核。
+
+### 16.8 相关文件
+
+- `src/browser.js` —— `virtualScreenSize`：Xvfb 默认屏从 `1x1x24` 改为 `1440x900x24`（注释含四档实测）
+- `src/doubao.js` —— `firstVisibleEditable` 选择器链排序（通用优先）；`clickByCoordinates` 兜底
+- `src/api/remote-auth.js:298-306` —— 十六天前同源故障的记录（本节补上了它缺的那一半归因）
+- `test/virtual-display-size.test.mjs` —— 屏尺寸契约（含"注释必须记实测数字"这一条）
+- `test/composer-selector-order.test.mjs` —— 选择器排序契约（含"不得依赖不存在的 testid"）
+- `test/doubao-newchat-locator.test.mjs` —— 新对话定位与 `resetConfirmed` 闸门
+- `.ops/compare-xvfb-screens.mjs` —— 四档屏尺寸的帧数/click/指纹对比
+- `.ops/probe-composer-shape.mjs` —— composer 两种形态与点击切换的实测
+- `.ops/composer-diagnosis.md` —— 完整诊断报告（含 A/B/C/D/E 五组填入对照）

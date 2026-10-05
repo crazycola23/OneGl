@@ -377,11 +377,35 @@ async function startVirtualDisplay() {
     );
   }
 
+  // Xvfb 屏尺寸：2026-10-05 实测（四档对比，见 .ops/compare-xvfb-screens.mjs）
+  //
+  // 原值是 "1x1x24"，照抄自 Camoufox 的默认值，代价是**页面静止时合成器不出帧**：
+  //   1x1x24        静置 2s 推进 1 帧 → Playwright click() 的 stable 判定用 rAF 轮询
+  //                              → 永远过不去 → 死等到超时
+  //   1440x900x24   静置 2s 推进 119 帧 → click 237ms 成功
+  //   1920x1080x24  55 帧 → click 258ms
+  //   2560x1440x24  17 帧 → click 406ms
+  //
+  // 这就是 tryClickSend 恒返回 false、全部落进 Enter 回退的直接原因：不是选择器不对，
+  // 是那一道 stable 校验永远不 resolve。1×1 屏下整套 UI 交互都不可用。
+  //
+  // 取 1440×900 的理由（全部实测，非推断）：
+  //   - rAF 帧数最高、click 最快；
+  //   - 与 config.js 的 viewport 默认值同源，窗口恰好铺满声称的屏幕，几何关系自洽；
+  //   - **不改变页面侧读数**：四档实测下 screen/outer/inner/colorDepth 与几何自洽判据
+  //     全部一致（声明的 screen 仍由 camoufoxScreenWidth/Height 钉在 1920×1080，
+  //     由 CAMOUFOX_OPTIONS_SCRIPT 里的 _screen_guard 复核），所以它修的是交互，
+  //     不碰指纹。1×1 屏曾被怀疑「让 Camoufox 采样塌陷」，实测否掉了：核数与字体数
+  //     在四档之间随机波动（8/16/32、63–86），与屏尺寸无因果关系。
+  //
+  // 保留环境变量覆盖，便于回到旧值对照。
+  const virtualScreenSize = process.env.CAMOUFOX_VIRTUAL_DISPLAY_SIZE || "1440x900x24";
+
   // Mirror Camoufox's virtual-display defaults, but keep Xvfb owned by the Node
   // browser session. Xvfb chooses a free display atomically via -displayfd.
   const args = [
     "-displayfd", "3",
-    "-screen", "0", process.env.CAMOUFOX_VIRTUAL_DISPLAY_SIZE || "1x1x24",
+    "-screen", "0", virtualScreenSize,
     "-ac",
     "-nolisten", "tcp",
     "-extension", "RENDER",

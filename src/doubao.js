@@ -41,21 +41,33 @@ function allowedDoubaoUrl(raw) {
 }
 
 async function firstVisibleEditable(page) {
-  // 2026-10-05 实测：豆包把输入框从 textarea 换成 tiptap/ProseMirror 的
-  // contenteditable div，而 data-testid="chat_input_input" 现在挂在一个**不可编辑的
-  // 容器**上。原列表第一条命中该容器，isEditable() 为false 就整条链放弃，
-  // 于是 fill 卡在 "waiting for element to be editable" —— 输入框定位失败连带
-  // 发送按钮不出现（它只在有内容时才渲染），最终报 DOUBAO_SUBMISSION_FAILED。
+  // 2026-10-05 实测（.ops/probe-composer-shape.mjs）：豆包的 composer 是**同一个输入框的
+  // 两种实现，点击时切换**，不是两个编辑器并存：
   //
-  // 因此把真正可编辑的编辑器本体排在最前，并把容器 testid 降级为兜底。
+  //   首屏：<textarea placeholder="发消息..."> 可见可编辑
+  //         <div contenteditable class="tiptap ProseMirror"> visibility:hidden
+  //   点击后：textarea 从 DOM 移除（count 0）
+  //         <div contenteditable class="tiptap ProseMirror ProseMirror-focused"> 可见可编辑
+  //
+  // 而且 textarea **没有** data-testid="chat_input_input"（那个 testid 挂在两个别的节点上），
+  // 所以 `textarea[data-testid="chat_input_input"]` 这类具体形态的选择器不可靠 ——
+  // 曾在 2026-10-05 被提到首位，结果点击后 textarea 消失，整条链 4 次查询全空而超时。
+  //
+  // 因此排序原则是**通用形态优先、具体形态兜底**：先试 `textarea`（首屏形态），
+  // 再试 `[contenteditable="true"]`（点击后形态）。两者都能通过 isVisible+isEditable 校验，
+  // 链因此对「点过 composer」和「没点过」两种页面状态都成立。
+  //
+  // 保留具体形态是为了改版兜底：某一版真的只留 tiptap 或只留带 testid 的容器时还有路可走。
   const selectors = [
-    '.tiptap.ProseMirror[contenteditable="true"]',
-    '[contenteditable="true"][role="textbox"]',
+    // ---- 通用形态：覆盖两种页面状态 ----
+    "textarea",
+    '[contenteditable="true"]',
+    'div[role="textbox"]',
+    // ---- 具体形态兜底 ----
     'textarea[placeholder*="发消息"]',
     'textarea[placeholder*="输入"]',
-    'div[role="textbox"]',
-    'textarea',
-    '[contenteditable="true"]',
+    '.tiptap.ProseMirror[contenteditable="true"]',
+    '[contenteditable="true"][role="textbox"]',
     '[data-testid="chat_input_input"]',
   ];
 
@@ -367,33 +379,108 @@ export async function requireHealthySession(page, config) {
   );
 }
 
+/**
+ * 在可见候选里点第一个；点不动就让位给下一个候选。
+ *
+ * `click()` 不设 force：豆包页面上同名容器有 2 个（实测 count=2），其中被遮挡/折叠的那一个
+ * 会让 Playwright 的 actionability 检查永远等不到，从而抛 Timeout。2026-10-05 实测中
+ * 内层 role=button 与外层容器都因此死等 6 秒 —— 现象是「新对话点不动」，而坐标点击穿过去
+ * 就生效了。所以这里把异常吃掉并返回 false，让调用方继续尝试下一个候选/下一个手法，
+ * 而不是把一次点击失败变成整条采集失败。
+ */
 async function clickFirstVisible(locator) {
   const count = Math.min(await locator.count(), 10);
   for (let index = 0; index < count; index += 1) {
     const candidate = locator.nth(index);
-    if (await candidate.isVisible().catch(() => false)) {
-      await candidate.click();
+    if (!(await candidate.isVisible().catch(() => false))) continue;
+    try {
+      await candidate.click({ timeout: 5_000 });
       return true;
+    } catch {
+      // 点不动（被遮挡 / actionability 不满足）就试下一个。
+    }
+  }
+  return false;
+}
+
+/**
+ * 用坐标点元素的中心 —— Playwright 的 actionability 检查全部绕开。
+ *
+ * 存在的理由很具体：豆包侧栏那个「新对话」有 2 个同名容器，其中一个永远等不到可点状态，
+ * 于是 locator.click() 死等超时；实测坐标点击（140, 106）立刻生效。
+ * 这不是「强行点」，而是「当语义定位指向了一个不可点的替身时，用几何位置兜底」。
+ *
+ * page 显式传入而不是取 locator.page()：调用方已经有 page，且 page 替身不必实现
+ * locator.page()（测试面更小）。
+ */
+async function clickByCoordinates(page, locator) {
+  const count = Math.min(await locator.count(), 10);
+  for (let index = 0; index < count; index += 1) {
+    const candidate = locator.nth(index);
+    if (!(await candidate.isVisible().catch(() => false))) continue;
+    const box = await candidate.boundingBox().catch(() => null);
+    if (!box || box.width <= 0 || box.height <= 0) continue;
+    try {
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      return true;
+    } catch {
+      // 试下一个候选。
     }
   }
   return false;
 }
 
 export async function startCleanConversation(page, config) {
-  const candidates = [
-    page.getByRole("button", { name: "新对话", exact: true }),
-    page.getByText("新对话", { exact: true }),
-  ];
-
+  // 2026-10-05 实测（服务器探针，见 .ops/probe-two-turns.mjs）：
+  //   - 按钮的可访问名是「新对话 Ctrl Shift K」—— 快捷键提示是按钮内的兄弟文本节点，
+  //     不在 title / aria-label 上，所以 `exact: true` 精确匹配必然落空；
+  //   - testid 是 `create_conversation_button`，但**页面上有两个**同名容器，
+  //     locator.click() 在其中一个上死等 actionability 直到超时；
+  //   - 坐标点击能穿过，且点击后会话真的被清空（answerCount 归零）。
+  //
+  // 稳定抓手是 testid，所以先按 testid 定位，再取其内的 role=button（真正挂事件的那个），
+  // 语义定位只作兜底（testid 会随改版变，语义名在无快捷键后缀时仍有效）。
+  const byTestId = page.locator('[data-testid="create_conversation_button"]');
   let clicked = false;
-  for (const candidate of candidates) {
-    try {
-      if (await clickFirstVisible(candidate)) {
-        clicked = true;
-        break;
+  try {
+    // 先点容器内真正可点的 role=button；它不存在时退回点容器本身。
+    // 两条都在 try 内：定位层面的任何异常（选择器不被支持、page 替身缺方法）
+    // 都必须降级成「没点到」，而不是冒泡成 UNKNOWN_ERROR 把整条采集打成失败 ——
+    // 下面的兜底与 assertFreshConversation 才是判定「能不能发问」的地方。
+    if (await clickFirstVisible(byTestId.locator('[role="button"]')) ||
+        await clickFirstVisible(byTestId)) {
+      clicked = true;
+    }
+  } catch {
+    // 落到下面的语义兜底。
+  }
+
+  // 语义定位兜底：覆盖 testid 改版后的形态。
+  if (!clicked) {
+    const candidates = [
+      // 非精确匹配：覆盖「新对话 Ctrl Shift K」这类带快捷键后缀的形态。
+      page.getByRole("button", { name: /^新对话/ }),
+      page.getByRole("button", { name: /^新建对话/ }),
+    ];
+    for (const candidate of candidates) {
+      try {
+        if (await clickFirstVisible(candidate)) {
+          clicked = true;
+          break;
+        }
+      } catch {
+        // Try the next semantic candidate.
       }
+    }
+  }
+
+  // 坐标兜底：locator.click() 死等 actionability 时，几何位置仍能命中真正可点的那一个。
+  // 顺序刻意放在最后 —— 先试语义，只有语义全部走不通才动用几何。
+  if (!clicked) {
+    try {
+      clicked = await clickByCoordinates(page, byTestId);
     } catch {
-      // Try the next semantic candidate.
+      clicked = false;
     }
   }
 
@@ -418,7 +505,20 @@ export async function startCleanConversation(page, config) {
 
   const settleMs = config?.conversationSettleMs ?? 15_000;
   const resetConfirmed = await waitForEmptyConversation(page, settleMs);
-  return { clickedNewConversation: clicked, resetConfirmed };
+
+  // clickedNewConversation 只表示「我们发出过一次点击」，**不表示新对话真的建立了**。
+  //
+  // 2026-10-05 实测：坐标点击发出去了，clicked=true，但 chatId 没变、答案区也没清空 ——
+  // 于是第二问变成对第一问的追问（实测答案是「就1个」，16 字），可见性维度被系统性污染。
+  // 之前 clickedNewConversation 被当成成功信号，是因为 clickFirstVisible 只看 isVisible()；
+  // 现在真正生效的那一位是 resetConfirmed，assertFreshConversation 也只认它。
+  return {
+    clickedNewConversation: clicked,
+    resetConfirmed,
+    // 对话标识：变了才真的换了会话。它是 resetConfirmed 之外的第二份证据，
+    // 供上层观测用（本次没变但答案区已空时，说明平台换了实现方式而非没换会话）。
+    conversationUrl: page.url(),
+  };
 }
 
 async function waitForEmptyConversation(page, timeoutMs) {
@@ -766,68 +866,151 @@ const PROMO_DIALOG_TEXT = /下载豆包电脑版|免费领取\s*30\s*天|立即�
  * 找不到就按 Escape —— radix dialog 响应 Escape，且不需要定位具体控件，
  * 对改版更耐受。两条都失败才算放弃。</p>
  */
+/**
+ * 关掉「下载电脑版 / 领 30 天订阅」这类推广弹窗。
+ *
+ * <p><b>2026-10-06 实测（从批次 2 的失败现场 page.html 反查）</b>：这个弹窗的真实结构是
+ *
+ * <pre>
+ * &lt;div data-slot="dialog-overlay" class="fixed inset-0 z-50 ... dialogOverlay-v_86B7"&gt;
+ *   &lt;div class="dialogContent-BoNHR6 top-0 left-0 z-2000 h-full w-full ..."&gt;
+ *     &lt;div class="dialogMask-eE93D4"&gt;
+ *       &lt;div class="fullscreenPopup-VgLjBm"&gt;&lt;div class="fullscreenContent-Git1NX"&gt;
+ *         &lt;h2 data-slot="dialog-title"&gt;下载豆包电脑版 免费领取 30 天订阅&lt;/h2&gt;
+ * </pre>
+ *
+ * 三个让此前实现完全失效的事实：
+ * <ol>
+ *   <li><b>`dialog-close` 在页面上出现 0 次</b> —— 原实现首选的关闭按钮选择器不存在；</li>
+ *   <li><b>弹窗主体没有 {@code role="dialog"}</b>（实测 role=dialog 只有 1 处、aria-modal 为 0），
+ *       而原实现只遍历 {@code [role="dialog"]} —— 于是它遍历不到弹窗，等于什么都没做；</li>
+ *   <li><b>主体是 {@code h-full w-full} 全屏</b>，不是浮层。它不是「挡住输入框」，
+ *       是「盖住整个页面」，而 overlay 上的 {@code pointer-events: auto} 让命中测试全部失败。</li>
+ * </ol>
+ *
+ * <p>这个组合精确解释了那 34 秒的失败：{@code fill()} 走
+ * {@code keyboard.insertText} 文本通道、<b>不经命中测试</b>，所以文字能填进去；
+ * 而点发送按钮必须过 actionability，于是被全屏遮罩挡住 → {@code tryClickSend} 返回 false
+ * → 8 秒轮询 + 20 秒等确认 + 6 秒准备 ≈ 34 秒后 SUBMISSION_FAILED。
+ *
+ * <p>因此判据从「有没有 role=dialog」改成<strong>「有没有那段推广文案」</strong>，
+ * 关闭顺序是「找关闭控件 → 点遮罩 → Escape」，每一步都重新判定文案是否还在。
+ */
 async function dismissPromoDialog(page) {
-  const closed = await page
-    .evaluate((pattern) => {
-      const re = new RegExp(pattern);
-      const norm = (value) => String(value || "").replace(/\s+/g, " ").trim();
-      let count = 0;
-      for (const dialog of document.querySelectorAll('[role="dialog"]')) {
-        const text = norm(dialog.innerText).slice(0, 200);
-        if (!re.test(text)) continue;
-        const button =
-          dialog.querySelector('[data-slot="dialog-close"]')
-          ?? dialog.querySelector('button[aria-label="关闭"]')
-          ?? dialog.querySelector('button[aria-label="close"]')
-          ?? dialog.querySelector('[class*="closeButton"]');
-        if (button) {
-          button.click();
-          count += 1;
-        } else {
-          count += 100; // 标记成「有弹窗但没找到按钮」，交给 Escape 兜底
-        }
-      }
-      return count;
-    }, PROMO_DIALOG_TEXT.source)
-    .catch(() => 0);
+  const probe = () => page.evaluate((pattern) => {
+    const re = new RegExp(pattern);
+    const norm = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    // 按文案找，不按 role —— 实测弹窗主体没有 role=dialog。
+    const hit = [...document.querySelectorAll("div,section,aside")]
+      .map((el) => ({ el, text: norm(el.innerText) }))
+      .filter((x) => re.test(x.text) && x.text.length < 400)
+      // 取最内层（文本最短）的那个，避免拿到 <body> 级别的大容器
+      .sort((a, b) => a.text.length - b.text.length)[0]?.el ?? null;
+    return {
+      present: !!hit,
+      // 关闭控件：data-slot=dialog-close 之类。实测豆包没有，所以只是候选之一。
+      closeSelector: hit
+        ? ([
+            hit.querySelector('[data-slot="dialog-close"]'),
+            hit.querySelector('button[aria-label="关闭"]'),
+            hit.querySelector('button[aria-label="close"]'),
+            hit.querySelector('svg[class*="close" i]')?.closest("button,div[role=button]"),
+          ].filter(Boolean).length > 0)
+        : false,
+    };
+  }, PROMO_DIALOG_TEXT.source).catch(() => ({ present: false, closeSelector: false }));
 
-  // 有弹窗却找不到关闭控件（或弹窗遮罩仍在）时用 Escape 收尾。
-  let remaining = 0;
-  try {
-    remaining = await page.evaluate(() => document.querySelectorAll('[role="dialog"]').length);
-  } catch {
-    return closed > 0 ? 1 : 0;
-  }
-  if (remaining > 0) {
-    await page.keyboard.press("Escape").catch(() => undefined);
-    await page.waitForTimeout(400);
-    try {
-      remaining = await page.evaluate(
-        () => document.querySelectorAll('[role="dialog"]').length,
-      );
-    } catch {
-      remaining = 0;
+  const before = await probe();
+  if (!before.present) return 0;
+
+  // ① 优先点真实的关闭控件（最贴近真人行为）
+  if (before.closeSelector) {
+    const closed = await page.evaluate((pattern) => {
+      const re = new RegExp(pattern);
+      const norm = (v) => String(v || "").replace(/\s+/g, " ").trim();
+      const hit = [...document.querySelectorAll("div,section,aside")]
+        .map((el) => ({ el, text: norm(el.innerText) }))
+        .filter((x) => re.test(x.text) && x.text.length < 400)
+        .sort((a, b) => a.text.length - b.text.length)[0]?.el ?? null;
+      if (!hit) return false;
+      const btn = hit.querySelector('[data-slot="dialog-close"]')
+        ?? hit.querySelector('button[aria-label="关闭"]')
+        ?? hit.querySelector('button[aria-label="close"]')
+        ?? hit.querySelector('svg[class*="close" i]')?.closest("button,div[role=button]");
+      if (!btn) return false;
+      btn.click();
+      return true;
+    }, PROMO_DIALOG_TEXT.source).catch(() => false);
+    if (closed) {
+      await page.waitForTimeout(400);
+      if (!(await probe()).present) return 1;
     }
   }
-  return closed > 0 || remaining === 0 ? Math.max(closed, 1) : 0;
+
+  // ② 点遮罩本体：radix 的 fullscreen dialog 通常把 overlay 绑成点击即关闭。
+  //    实战测点遮罩比 Escape 可靠 —— 弹窗是 h-full，点遮罩等于点它自己。
+  const overlay = page.locator('[data-slot="dialog-overlay"]').first();
+  if (await overlay.count().catch(() => 0)) {
+    // 遮罩是 fixed inset-0，点它的左上角（避开弹窗内容本体）
+    await page.mouse.click(8, 8).catch(() => undefined);
+    await page.waitForTimeout(500);
+    if (!(await probe()).present) return 1;
+  }
+
+  // ③ Escape 兜底（radix dialog 响应 Escape，且不需要定位控件，对改版更耐受）
+  await page.keyboard.press("Escape").catch(() => undefined);
+  await page.waitForTimeout(400);
+  if (!(await probe()).present) return 1;
+
+  return 0;
 }
 
 async function submitPrompt(page, prompt) {
-  // 推广弹窗是全屏的，会挡住输入与发送；它会在采集过程中随时弹出，所以每次发送前都清一次。
-  const dismissed = await dismissPromoDialog(page);
-  if (dismissed > 0) await page.waitForTimeout(600);
+  // 推广弹窗是**全屏**的（h-full w-full + overlay pointer-events:auto），它会挡住
+  // 输入与发送；而它是在页面加载后异步弹出的，所以清理必须分两次：
+  //   第一次 填入之前 —— 清掉首屏就弹出的
+  //   第二次 填入之后 —— 清掉**在填入过程中弹出**的
+  //
+  // 第二次是 2026-10-06 补的：批次 2 的三条 34 秒失败（fill 成功但点不到按钮）
+  // 就是弹窗在 fill 期间弹出、而当时只在开头清了一次造成的。
+  const dismissedBeforeFill = await dismissPromoDialog(page);
+  if (dismissedBeforeFill > 0) await page.waitForTimeout(600);
 
   await fillVerifiedPrompt(page, prompt);
+
+  const dismissedAfterFill = await dismissPromoDialog(page);
+  if (dismissedAfterFill > 0) await page.waitForTimeout(600);
 
   const baselineAnswers = await answerTexts(page);
   const sentByButton = await tryClickSend(page);
   if (!sentByButton) {
+    // 点不到按钮时**再清一次弹窗**并重试一次：全屏遮罩是点不到按钮的已知原因之一，
+    // 而重试比直接落 Enter 更有价值 —— 按钮提交才带得出引用区（实测 enter_key 组
+    // 34 条全部零引用、expected_citation_count 全为 0；send_button 组 19 条里 12 条有引用）。
+    const afterRetryClear = await dismissPromoDialog(page);
+    if (afterRetryClear > 0) {
+      await page.waitForTimeout(500);
+      const retried = await tryClickSend(page);
+      if (retried) {
+        return finishSubmit(page, prompt, baselineAnswers, true);
+      }
+    }
     const fresh = await waitForTextbox(page, 10_000);
     if (fresh) {
       await fresh.press("Enter", { timeout: 5_000 }).catch(() => undefined);
     }
   }
 
+  return finishSubmit(page, prompt, baselineAnswers, sentByButton);
+}
+
+/**
+ * 提交后的统一收尾：等页面确认「这条提问真的发出去了」。
+ *
+ * 抽成独立函数是为了让「首轮点按钮」与「清弹窗后重试点按钮」两条路径共用同一套确认逻辑 ——
+ * 否则重试路径很容易漏掉确认，于是把「没发出去」记成成功。
+ */
+async function finishSubmit(page, prompt, baselineAnswers, sentByButton) {
   const baselineUrl = page.url();
   if (!(await waitForSubmissionConfirmation(page, prompt, baselineAnswers, baselineUrl))) {
     throw new DoubaoMvpError(
@@ -1413,6 +1596,11 @@ export async function extractVisibleCitations(page) {
 
 export function assertFreshConversation(conversation, currentUrl = null) {
   if (conversation?.resetConfirmed === true) return;
+  // 这是「一问一换对话」这条采集契约的唯一闸门：会话没清空就提问，问出来的是
+  // 对上一问的追问，可见性维度被污染，而且**从报告里分辨不出来**。
+  //
+  // 刻意不因为「点了按钮」就放行：2026-10-05 实测里点击发出去了（clickedNewConversation
+  // 为 true）而会话没换，这时放行等于把污染写进数据。
   throw new DoubaoMvpError(
     ErrorCode.CONVERSATION_RESET_FAILED,
     "Could not confirm a fresh, empty conversation; the prompt was deliberately not sent.",
@@ -1420,6 +1608,8 @@ export function assertFreshConversation(conversation, currentUrl = null) {
       clickedNewConversation: conversation?.clickedNewConversation ?? false,
       resetConfirmed: conversation?.resetConfirmed ?? null,
       currentUrl,
+      // 点击后的 URL：与提问前的 chatId 对比能看出「新对话」是否换了会话标识。
+      conversationUrlAfterReset: conversation?.conversationUrl ?? null,
       promptSubmitted: false,
       stage: "pre-submit",
     },
