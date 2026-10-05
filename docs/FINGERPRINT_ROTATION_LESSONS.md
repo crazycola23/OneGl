@@ -1124,7 +1124,205 @@ rAF 修好 → click 成功 → composer 真被点到 → 豆包把 textarea 换
   上一条失败已经把现场存下来了（8.6 说过 artifact 里的旧格式会毒化重放，
   这里则是：artifact 是间歇故障唯一可靠的证据来源）。
 
-### 17.9 相关文件
+### 17.9 「有没有引用」这个判据本身会误导，要拆成三问
+
+这次跑验证时踩到一件事：**「10 条里有几条成功」不足以判断采集是否健康。**
+
+拆开看是三个独立的问题：
+
+| 问题 | 判据 | 为什么不能合并 |
+| --- | --- | --- |
+| 能不能问出去 | `status='success'` | 答案能出来 |
+| 引用区渲不渲染 | `expected_citation_count > 0` | **平台自己说的**「N 篇来源」角标 |
+| 我们抓不抓得到 | `captured_citation_count > 0` | 我们的抓取是否有效 |
+
+只用第一个会漏掉最关键的一种失败：
+
+```
+批次 1（修复前）  status 分布      send_button 19 / enter_key 34
+                   we_missed = 0   ← 我们从没漏抓过
+                   platform_none: send_button 7 / enter_key 34
+```
+
+**`we_missed` 那一列全是 0** —— 抓不到的时候，是平台自己没渲染，不是我们的抓取逻辑坏了。
+而 `status='success'` 有 53 条，看起来很健康。
+
+所以验证引用能力时，判据必须是这三列一起看：
+
+```sql
+SELECT submission_method,
+       count(*) AS runs,
+       count(*) FILTER (WHERE COALESCE(expected_citation_count,0) > 0) AS platform_says_has_refs,
+       count(*) FILTER (WHERE captured_citation_count = 0
+                          AND COALESCE(expected_citation_count,0) > 0)     AS we_missed,
+       count(*) FILTER (WHERE captured_citation_count > 0)                 AS captured_ok
+  FROM runs ... GROUP BY 1;
+```
+
+**`we_missed` 才是「我们的锅」的那一列。** 它为 0 时不要去改抓取逻辑 ——
+2026-10-05 差点因为这个改了一轮。
+
+另一条与「真实引用」直接相关的：**验证问题必须是能触发深度搜索的真实问题。**
+「测试问题一」这类文本常常只拿到短答案、零引用，那样测出来的 0 引用分不清是
+抓取问题还是平台没给。所以验证批次要用地域/服务/品牌类问题 ——
+实测这类问题的引用率显著高于泛问句。
+
+### 17.11 关键词扫描会骗人：同一份 page.html，两次扫出相反结论（2026-10-06）
+
+批次 3 出了一个人机验证，我据此准备停机。但**判定「哪几条撞了验证」时栽了两次**：
+
+**第一次：扫不出验证。** 用关键词表扫 `page.html`，六条全部报「无」。
+而同一条的 `screenshot.png` 里明明有一个 3×3 图片网格的「请选择所有符合上文描述的图片，
+并拖拽到下方」——**点选 + 拖拽**验证，附带 `刷新 / 反馈 / 提交` 和一串追踪号
+`202610060144050FE3T7387670DBBA32ACA`。截图是亲眼确认过的，所以是**扫描手段失效**。
+
+**第二次（更糟）：扩表后全是命中，于是差点全判成有验证。** 加上 `slide` / `verify` /
+`captcha` 之后，六条**每一条**都报 40+ 次命中 —— 因为这些词命中的是**页面里打包的
+第三方库代码**（滑块组件的实现、uBlock 规则、验证码 SDK 的接口定义），不是验证组件本身。
+按这个结果会把六条全判成有验证，等于**误停机**。
+
+两次错的方向相反，根因是同一个：**拿「关键词在页面里出现」当「组件在页面上可见」。**
+
+- 验证组件的**可见文本**在 `screenshot.png` 里，也在 DOM 的 `innerText` 里，
+  但**不在 `page.html` 的静态源码里** —— 它是运行时由 JS 渲染的
+  （与 8.4「静态快照看不到折叠内容」同源，这次是**弹窗**不是折叠）；
+- 而 `slide`/`verify`/`captcha` 这些词在**静态源码**里到处都有，因为库被打包进来了。
+
+所以判据只能是**可见性**：
+
+```
+✅ 可信：screenshot.png（亲眼看）、DOM 的 innerText（运行时求值）
+❌ 不可信：page.html 上的 grep（静态源码，命中库代码而非组件）
+```
+
+一条可操作的替代：`grep` 之后再用「该词是否出现在 `<body>` 的可见文本里」复核，
+或者直接对 `document.body.innerText` 求值。后者脚本化成本更高，但不会骗人。
+
+**教训（与 8.4 合并成一条）**：**静态快照只能回答「源码里有什么」，不能回答
+「页面上现在显示了什么」。** 折叠内容、弹窗、运行时渲染的组件，三者都不在源码里 ——
+而这三样恰好是「页面现在是什么状态」最需要知道的东西。
+
+### 17.12 一次误判的代价：差点把正常页面当成风控
+
+上面那次扩表误判如果被采信，后果是**停掉一个本来健康的批次**：
+i5 实测拿到 29 条真实引用（平台自己说 35 条，`reference-count-mismatch:29/35`），
+i6 也成功、答案 1452 字 —— 批次里**存在完全健康的条目**。
+
+判断「是否撞了风控」必须给出**哪一条**的证据，而不是「批次里有没有出现过」。
+一条失败就断言全批被拦，会把本来能拿的数据也丢掉 ——
+这与 10.6「恢复必须自带次数上限」同源：**任何按批次做的判断，都要能定位到具体那一条。**
+
+### 17.14 「URL 变了 = 提交成功」是条会骗人的判据（2026-10-06）
+
+批次 3 的 10 条里有 3 条失败，形态很怪：**提问根本没发出去**，
+页面停在首页空态、侧栏「最近」里却有那条提问的记录（`run_b3_i4` 的截图看得最清楚）。
+
+查下来是 `waitForSubmissionConfirmation` 的最后一条判据：
+
+```js
+if (baselineUrl && page.url() !== baselineUrl) return true;   // 「URL 变了 = 提交成功」
+```
+
+而豆包会自己做两件与提交无关的 URL 改动：
+
+```
+https://www.doubao.com/chat/   →   https://www.doubao.com/chat        （少尾斜杠）
+https://www.doubao.com/chat/   →   https://www.doubao.com/chat/?from_logout=1
+```
+
+实测（`.ops/probe-url-jitter.mjs`）：静置 10 秒稳定、连点 5 次「新对话」也稳定，
+只在一批特定时机发生一次。而**任何一次**都会让这条裸比较返回 true。
+
+**与失败的关联是决定性的**：
+
+```
+批次 1  failed 3  →  from_logout 命中 3 次
+批次 1 success 3  →  from_logout 命中 0 次
+批次 3  failed 4  →  from_logout 命中 1 次
+批次 3 success 6  →  has_conv_id 全部为 0（current_url 在成功时根本没填）
+```
+
+修法是**归一化后再比**，并且只认一种形态变化：
+
+```js
+normalizeConversationUrl()   // 剥尾斜杠、剥查询参数；/chat/local_<id> → conversation:<id>
+conversationUrlChanged()     // 只有 after 是 conversation: 形态才算变化
+```
+
+方向也要对：会话页 → 首页是点「新对话」清会话，**不是**提交，所以反向不算。
+
+顺带暴露的一个数据质量问题：`runs.current_url` 在**成功**条目上全部为空
+（`has_conv_id = 0`），只有失败条目才填。所以这列不能用来判断成功路径的 URL 形态 ——
+又一次「投影缺行」（第十节那类）。
+
+### 17.15 三条可推广的
+
+- **判据里出现「X 变了」时，先问「还有什么会让它变」。** 本例里同一个 URL
+  有两个与提交无关的变化源（尾斜杠归一化、登出重定向），
+  而判据只考虑了「提交会让它变」这一种。
+- **用来做判断的那一列，本身可能在该场景下没被写。** `current_url` 在成功时全空，
+  于是「按这列统计成功路径的形态」必然得出错误结论。
+- **形态类判据必须归一化。** URL、类名、文案、路径都有「等价的不同写法」，
+  裸比较会把等价形态判成变化 —— 与 13.4「换行符是 hash 的隐形变量」同一类问题。
+
+### 17.17 「元素存在」不等于「元素可用」：骨架屏骗过了等待逻辑（2026-10-06）
+
+批次 4 的 `run_b4_i6` 21 秒就 `UNKNOWN_ERROR`，截图是**骨架屏**：
+
+```
+灰色占位块 · 无推荐话题 · 无工具栏 · 无「有什么我能帮你的吗」
+```
+
+实测四轮的时间线（`.ops/probe-hydration.mjs`）：
+
+```
+新对话按钮可见    2.6 – 4.6 秒
+textarea 出现     7.0 – 11.1 秒    ← 骨架屏里已经占位！
+整页就绪         13.3 – 14.7 秒   ← React 水合完成
+```
+
+而 `openDoubao` 的等待是：
+
+```js
+await page.waitForTimeout(1_200);
+const composer = await waitForTextbox(page, COMPOSER_WAIT_MS);   // 只要 textarea 存在
+```
+
+它在 7–11 秒就认为「composer 到位」——**而那正是骨架屏里 textarea 占位的时刻**。
+于是「等到了输入框、页面其实不能用」，后续 fill / click 全部落空，
+最后以 `Target page has been closed` / `UNKNOWN_ERROR` 收场。
+
+**修法**：把「等水合」和「等输入框」分成两件事。判据用
+**`body.innerText` 长度稳定 + 绝对下限**（> 200 字符且连续两次持平），
+而**不是匹配某句中文** —— 首页有「有什么我能帮你的吗」但会话页没有，
+用文案会在会话页上永远判不成水合（这条在 17.9 引用的那批里已见过同类问题）。
+
+`startCleanConversation` 同样要等：按钮在 2.6 秒就可见，但事件处理器要等水合才挂上。
+
+**与 8.4 的关系**：8.4 记的是「静态快照看不到折叠内容」，
+这条是「**DOM 里存在 ≠ 渲染完成**」—— 更基础的一层。骨架屏的元素是真的、
+`isVisible()` 为真、`isEditable()` 也为真，只有交互还没接上。
+
+### 17.18 三条可推广的
+
+- **等待判据要问「好了没」，不是「在了没」。** 元素存在、可见、可编辑，
+  三者都不等于「能用」。凡是靠 `waitForSelector` / `isVisible` 判就绪的地方，
+  都要问一句：有没有一个「真的能用」的信号？
+- **实测时间线，别只看单个标记。** 这一轮如果只量「textarea 何时出现」，
+  会得出「7 秒就够了」的结论，而真实就绪是 13–15 秒 —— 差的那段正好是失败窗口。
+- **判据的适用面要覆盖所有页面形态。** 用首页文案判水合，会在会话页失效
+  （会话页没有那句）；这类「只在一种页面形态下正确」的判据，
+  应该换成与形态无关的信号（文本量、元素数量、尺寸稳定）。
+
+### 17.19 相关文件
+
+- `src/doubao.js` —— `waitForHydration` + `HYDRATION_WAIT_MS`；`openDoubao` 与 `startCleanConversation` 都接入
+- `src/doubao.js` —— `normalizeConversationUrl` / `conversationUrlChanged`（见 17.14）
+- `test/page-hydration.test.mjs` —— 水合判据六条契约（含「不用文案匹配」与「超时不抛错」）
+- `test/conversation-url-judgement.test.mjs` —— URL 形态判据七条契约
+- `.ops/probe-hydration.mjs` —— 四轮水合时间线实测
+- `.ops/probe-url-jitter.mjs` —— URL 尾斜杠与 from_logout 抖动实测
+- `.ops/probe-from-logout2.mjs` —— from_logout 来源穷举（本地五条路径均不产生它）
 
 - `src/doubao.js` —— `dismissPromoDialog` 按文案判存在性 + 三路关闭；`submitPrompt` 两次清理 + 重试点按钮；`finishSubmit` 抽出共用确认
 - `test/promo-dialog-dismiss.test.mjs` —— 弹窗判据、关闭顺序、清理时机、重试次序四条契约

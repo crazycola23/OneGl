@@ -78,6 +78,41 @@ export class RunStore {
     const deterministicBatchRun =
       previous?.samplingBatchId != null || String(previous?.runToken ?? "").startsWith("batch:");
 
+    // ★ 2026-10-06：磁盘上的 previous 只在**同一个批次**时才可继承。
+    //
+    // 症状：批次 5 的 run_b5_i1 报出 dur_s = 1522111 秒（约 17.6 天）。
+    // 真相：`runs.started_at` 是 09-18，而 created_at 是 10-06。
+    //
+    // 根因链：DB 清库后批次 id 从 1 重排，而 runToken 是「批次 id + 下标」，
+    // 于是新批次 5 的 run_b5_i1 撞上了 9 月批次 5 的同名目录
+    // `/var/lib/onegl/runs/run_b5_i1/`（created=2026-09-18 04:28），
+    // 那个目录里的 run.json 被当成「本次的上一次尝试」读了出来：
+    //
+    //   run.json  attemptStartedAt = 2026-10-05T19:13:44  ← 本次
+    //             startedAt       = 2026-09-18T04:28:20  ← 上次（9 月）
+    //             attemptHistory[0].finishedAt = 2026-09-18T04:28:26
+    //
+    // `startedAt: previous?.startedAt ?? now` 于是沿用了 9 月的时间，
+    // 全部按耗时做的统计与判据都被污染（与教训 8.6「artifact 里的旧格式
+    // 会毒化重放」同源 —— 这里是旧 run.json 毒化了新 run）。
+    //
+    // 修法：**批次不一致时丢弃 previous**。不同批次的 runToken 撞名只是
+    // 编号重排的巧合，不构成「同一条 run 的上一次尝试」。
+    const previousBelongsToThisBatch =
+      previous != null &&
+      (deterministicBatchRun
+        ? Number(previous.samplingBatchId) === Number(samplingBatchId)
+        : true);
+
+    if (previous && !previousBelongsToThisBatch) {
+      console.warn(
+        `[store] 丢弃跨批次的 run 状态：${runId} 本批次=${samplingBatchId} ` +
+          `磁盘上那份属于批次=${previous.samplingBatchId}（runToken 重排撞名）`,
+      );
+    }
+
+    const inherited = previousBelongsToThisBatch ? previous : null;
+
     // A deterministic batch run that is still marked running after the worker moved on to
     // a later attempt has an unknowable provider-submission boundary: the old process may
     // have died immediately after sending the prompt. Never overwrite that evidence and
@@ -85,43 +120,44 @@ export class RunStore {
     // promptSubmitted=false gate, while a completed run is handled by persist-only replay.
     // Generic/local RunStore callers without batch identity can still reuse one explicit run
     // directory across attempts; the provider exactly-once boundary is a batch-worker rule.
+    // 用 inherited 而不是 previous：跨批次的磁盘残留不该让今天的新 run 抛错。
     if (
       explicitRunId &&
       deterministicBatchRun &&
-      previous?.status === "running" &&
-      Number.isInteger(previous.attempt) &&
-      attempt > previous.attempt
+      inherited?.status === "running" &&
+      Number.isInteger(inherited.attempt) &&
+      attempt > inherited.attempt
     ) {
       const error = new Error(
-        `Run ${runId} attempt ${previous.attempt} did not settle; refusing automatic attempt ${attempt} because provider submission state is uncertain`,
+        `Run ${runId} attempt ${inherited.attempt} did not settle; refusing automatic attempt ${attempt} because provider submission state is uncertain`,
       );
       error.code = "RUN_STATE_UNCERTAIN";
       error.details = {
         runId,
-        previousAttempt: previous.attempt,
+        previousAttempt: inherited.attempt,
         requestedAttempt: attempt,
       };
       throw error;
     }
 
-    const attempts = [...new Set([...(previous?.attempts ?? []), attempt])].sort(
+    const attempts = [...new Set([...(inherited?.attempts ?? []), attempt])].sort(
       (a, b) => a - b,
     );
 
-    const settled = previous && previous.status && previous.status !== "running";
+    const settled = inherited && inherited.status && inherited.status !== "running";
     const previousHistory = settled
       ? [
           {
-            attempt: previous.attempt,
-            status: previous.status,
-            errorCode: previous.errorCode ?? null,
-            errorMessage: previous.errorMessage ?? null,
-            finishedAt: previous.completedAt ?? null,
-            artifactPath: previous.artifactPath ?? null,
+            attempt: inherited.attempt,
+            status: inherited.status,
+            errorCode: inherited.errorCode ?? null,
+            errorMessage: inherited.errorMessage ?? null,
+            finishedAt: inherited.completedAt ?? null,
+            artifactPath: inherited.artifactPath ?? null,
           },
         ]
       : [];
-    const attemptHistory = [...(previous?.attemptHistory ?? []), ...previousHistory].filter(
+    const attemptHistory = [...(inherited?.attemptHistory ?? []), ...previousHistory].filter(
       (entry, index, list) => list.findIndex((item) => item.attempt === entry.attempt) === index,
     );
 
@@ -139,7 +175,8 @@ export class RunStore {
       attemptHistory,
       status: "running",
       attemptStartedAt: new Date().toISOString(),
-      startedAt: previous?.startedAt ?? new Date().toISOString(),
+      // 只继承**同批次**的 startedAt —— 跨批次的磁盘残留会让它沿用几周前的时间。
+      startedAt: inherited?.startedAt ?? new Date().toISOString(),
       completedAt: null,
       answer: null,
       citationState: null,

@@ -103,6 +103,61 @@ async function waitForTextbox(page, timeoutMs = 30_000) {
   return null;
 }
 
+/**
+ * 等页面**真正水合完成**，而不是「输入框存在」。
+ *
+ * 2026-10-06 实测（.ops/probe-hydration.mjs，四轮）：
+ *
+ *   新对话按钮可见   2.6–4.6 秒
+ *   textarea 出现    7.0–11.1 秒
+ *   整页就绪        13.3–14.7 秒
+ *
+ * 而 `run_b4_i6` 的截图就是骨架屏（灰色占位块、无推荐话题、无工具栏），
+ * 21 秒后报 UNKNOWN_ERROR。**原因：textarea 在骨架屏里已经占位了，
+ * 但 React 还没把它水合成可用的输入框** —— 于是「等到了 composer、页面其实不能用」，
+ * 后续 fill / click 全部落空。
+ *
+ * 判据用「body.innerText 长度稳定」而不是具体文案：骨架屏是灰色占位块（几乎没有文本），
+ * 水合完成后才有真实文案（推荐话题、工具栏、hero 标题）。
+ * 相比匹配某句中文，这个判据在首页与会话页都成立 ——
+ * 而匹配文案会漏掉会话页（那里没有「有什么我能帮你的吗」）。
+ */
+async function waitForHydration(page, timeoutMs = HYDRATION_WAIT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let previousLength = -1;
+  let stablePolls = 0;
+  while (Date.now() < deadline) {
+    const length = await page
+      .evaluate(() => (document.body?.innerText || "").trim().length)
+      .catch(() => 0);
+    // 文本量增长中 → 还在水合；连续两次持平 → 认为稳定。
+    // 绝对下限用来排除「骨架屏里那点固定文本也稳定」的情况。
+    if (length > 200 && length === previousLength) {
+      stablePolls += 1;
+      if (stablePolls >= 2) return true;
+    } else {
+      stablePolls = 0;
+    }
+    previousLength = length;
+    await page.waitForTimeout(400);
+  }
+  return false;
+}
+
+/**
+ * 页面水合等待上限。
+ *
+ * 实测四轮整页就绪在 13.3–14.7 秒，取 30 秒留足余量（网络慢、冷启动、
+ * 并发两个浏览器抢 CPU 时都会更慢）。超过它仍没就绪就往下走 ——
+ * 与 waitForTextbox 一样不抛错，交给下游 fail-closed 判定。
+ */
+const HYDRATION_WAIT_MS = (() => {
+  const raw = process.env.ONEGL_HYDRATION_WAIT_MS;
+  if (raw == null || raw === "") return 30_000;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 5_000 ? parsed : 30_000;
+})();
+
 export async function openDoubao(page, config) {
   try {
     await page.goto(config.doubaoUrl, {
@@ -135,10 +190,18 @@ export async function openDoubao(page, config) {
   // 实测约 1.5s 后才出现第一个可见 textarea。此前只等固定 1200ms，
   // 冷启动（新 context + 空缓存）路径必然踩空，导致下游
   // front-end-guard 的 fail-closed 判定抛 PAGE_CHANGED。
-  //
-  // 超时不抛错：下游 front-end-guard 已有明确的 fail-closed 分支，
-  // 这里只负责「让页面有机会加载完」，不改变错误语义。
   await page.waitForTimeout(1_200);
+
+  // 2026-10-06 追加：**等整页水合**，不等只等 composer。
+  // 实测 textarea 在 7–11 秒就出现在 DOM 里（骨架屏里已占位），
+  // 但 React 要到 13–15 秒才把它水合成可用输入框。run_b4_i6 的截图
+  // 就是骨架屏：灰色占位块、无工具栏，21 秒后 UNKNOWN_ERROR。
+  // 「textarea 存在」不等于「页面能用」，这两件事必须分开等。
+  const hydrated = await waitForHydration(page);
+  if (!hydrated) {
+    console.warn(`[doubao] 页面未在 ${HYDRATION_WAIT_MS}ms 内完成水合，交由 front-end preflight 判定`);
+  }
+
   const composer = await waitForTextbox(page, COMPOSER_WAIT_MS);
   if (!composer) {
     console.warn(
@@ -431,6 +494,17 @@ async function clickByCoordinates(page, locator) {
 }
 
 export async function startCleanConversation(page, config) {
+  // 2026-10-06 追加：点「新对话」之前先等页面水合。
+  //
+  // 实测：新对话按钮在 2.6–4.6 秒就可见，但**可点**要等 React 水合之后；
+  // 而 click 的 stable 判定会一直等到水合完才通过（这次 rAF 已恢复出帧，
+  // 所以不再死等，但页面里若连按钮的事件处理器都没挂上，点了也没用）。
+  //
+  // 更关键的是 1.2 秒那个固定下限之后 —— 它只有 1.2 秒，
+  // 而实测整页就绪要 13–15 秒。原来靠 waitForTextbox 兜住 textarea，
+  // 但「textarea 在骨架屏里已占位」这件事让它误判（见 waitForHydration 的注释）。
+  await waitForHydration(page);
+
   // 2026-10-05 实测（服务器探针，见 .ops/probe-two-turns.mjs）：
   //   - 按钮的可访问名是「新对话 Ctrl Shift K」—— 快捷键提示是按钮内的兄弟文本节点，
   //     不在 title / aria-label 上，所以 `exact: true` 精确匹配必然落空；
@@ -737,6 +811,58 @@ async function tryClickSend(page) {
   return false;
 }
 
+/**
+ * URL 形态归一化 —— 用来判断「URL 是不是换了一个会话」。
+ *
+ * 2026-10-06 实测（.ops/probe-url-jitter.mjs）：豆包会自己把
+ * `https://www.doubao.com/chat/` 改写成 `https://www.doubao.com/chat`（**少尾斜杠**），
+ * 也会附加 `?from_logout=1`。这两类改动**都与提交无关**：
+ * 静置 10 秒稳定、连点 5 次「新对话」也稳定，只在特定时机发生一次。
+ *
+ * 而 waitForSubmissionConfirmation 原本用**裸比较**判「URL 变了 = 提交成功」：
+ *
+ *     if (baselineUrl && page.url() !== baselineUrl) return true;
+ *
+ * 于是 `/chat/` → `/chat` 这一步就返回 true，把「压根没发出去」记成「已提交」，
+ * 随后 180 秒等不到答案 → ANSWER_NOT_FOUND。
+ *
+ * 实测这与失败强相关（批次 1：3 条 from_logout 失败 / 3 条成功里 0 次）：
+ *
+ *   批次 1  failed 3 → from_logout=1 命中 3 次
+ *   批次 1 success 3 → from_logout=1 命中 0 次
+ *
+ * 归一化后 `/chat` 与 `/chat/` 视为同一个页面，`?from_logout` 被剥掉，
+ * 只有「出现 /chat/local_<id>」才算真的换了会话 —— 而那正是「平台接收了这条提问」
+ * 的直接证据。
+ */
+export function normalizeConversationUrl(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    const path = parsed.pathname.replace(/\/+$/, "") || "/";
+    // 会话 id 是唯一可靠的「换了一个对话」信号
+    const conversationId = path.match(/\/chat\/(local_[^/]+|c_[^/]+)/)?.[1] ?? null;
+    return conversationId ? `conversation:${conversationId}` : `page:${path}`;
+  } catch {
+    return `raw:${value}`;
+  }
+}
+
+/** URL 形态是否变了（归一化之后比较，尾斜杠与 from_logout 不算变化）。 */
+export function conversationUrlChanged(baseline, current) {
+  const before = normalizeConversationUrl(baseline);
+  const after = normalizeConversationUrl(current);
+  if (!before || !after) return false;
+  if (before === after) return false;
+  // 两种变化才算「这条提问真的被接收了」：
+  //   1. 非会话页 → 会话页：平台为这条提问建了新会话（提交成功的直接证据）
+  //   2. 会话页 A → 会话页 B：平台把它并进了另一个会话（同样说明平台处理了它）
+  // 反向（会话页 → 首页）是点「新对话」清会话，方向不对，不算。
+  if (after.startsWith("conversation:")) return true;
+  return false;
+}
+
 async function waitForSubmissionConfirmation(page, prompt, baselineAnswers, baselineUrl = "") {
   const deadline = Date.now() + 20_000;
   const target = normalizeText(prompt);
@@ -754,8 +880,11 @@ async function waitForSubmissionConfirmation(page, prompt, baselineAnswers, base
     if (await isGenerating(page)) return true;
 
     // 2026-10-05 实测：新版豆包提交后立刻把 /chat/ 换成 /chat/local_<id>，
-    // 这是「问题确实被平台接收」最直接的证据，比等气泡或回答都快且可靠。
-    if (baselineUrl && page.url() !== baselineUrl) return true;
+    // 这是「问题确实被平台接收」最直接的证据，比等气泡或回答都快。
+    //
+    // 2026-10-06 收紧：裸比较会被尾斜杠与 from_logout 重定向骗到（见
+    // normalizeConversationUrl 的注释），所以只认「非会话页 → 会话页」这一种变化。
+    if (conversationUrlChanged(baselineUrl, page.url())) return true;
 
     await page.waitForTimeout(400);
   }
