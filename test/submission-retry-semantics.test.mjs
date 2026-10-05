@@ -101,6 +101,37 @@ test("ANSWER_NOT_FOUND 2026-09-30 起放开重试：一问一换窗口下重发�
   assert.equal(canRetryOutcome("ANSWER_NOT_FOUND", { promptSubmitted: false }), true);
 });
 
+test("DOUBAO_SUBMIT_DEGRADED：回车提交导致引用区未渲染，必须走重试", () => {
+  // 2026-10-05 实测（批次 157–163，44 个 run）：
+  //   enter_key 提交 13 个 → 引用 0 条，13/13 全零
+  //   按钮提交 21 个     → 引用 11–39 条
+  // 零引用那批的 citationDiagnostics 全是 reference-block-not-found +
+  // inline-links-empty —— 豆包根本没渲染引用区，不是抓取漏了。
+  //
+  // 答案文本有效，但「0 引用」在这里是提交手段的产物。记成 success 会让报告
+  // 把采集缺陷读成「该问题不被豆包引用」，比缺一条数据更有害。
+  assert.ok(RETRYABLE_CODES.has("DOUBAO_SUBMIT_DEGRADED"),
+    "应进可重试集合");
+  assert.ok(!RESUBMIT_UNSAFE_CODES.has("DOUBAO_SUBMIT_DEGRADED"),
+    "重试落在全新窗口（round_prompt_limit=1 + 定期换指纹），不串上下文");
+  assert.equal(isRetryable("DOUBAO_SUBMIT_DEGRADED"), true);
+  assert.equal(canRetryOutcome("DOUBAO_SUBMIT_DEGRADED", { promptSubmitted: true }), true,
+    "重试通常就落到按钮上了 —— tryClickSend 会等 8s 等异步渲染的按钮");
+});
+
+test("executeDoubaoPrompt 在回车提交时抛 SUBMIT_DEGRADED 而不是返回 success", () => {
+  const start = doubao.indexOf("export async function executeDoubaoPrompt");
+  assert.ok(start >= 0, "应定义 executeDoubaoPrompt");
+  const body = doubao.slice(start);
+  assert.match(body, /if \(!submission\.sentByButton\)/,
+    "回车提交必须被识别为降级路径");
+  assert.match(body, /ErrorCode\.SUBMIT_DEGRADED/,
+    "降级路径必须抛错，不能把 0 引用当成功返回");
+  // 答案仍然写进 partialAnswer，不浪费已经跑出来的内容
+  assert.match(body, /partialAnswer: answer/,
+    "已拿到的答案文本应保留，供诊断使用");
+});
+
 test("DOUBAO_SUBMISSION_FAILED 仍在高危集合：是否真收到不确定，重复风险更高", () => {
   // 与 ANSWER_NOT_FOUND 分开处理：这一类是「发送动作触发了但页面没确认提交」，
   // 平台侧是否真的收到不确定；且实测里 sentByButton=false 占比高，

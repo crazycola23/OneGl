@@ -1,0 +1,16 @@
+{
+  "name": "doubao-2026-10-05-dropped",
+  "description": "Batch 163 attempt 1: Doubao silently dropped the prompt. Answer nodes never appeared, the /chat/ URL never became /chat/local_<id>. Frozen for the ANSWER_NOT_FOUND path.",
+  "prompt": "租房住智能锁和机械锁哪个更划算，搬家时智能锁能带走吗",
+  "sourceRunId": "run_b163_i6/attempts/1",
+  "capturedAt": "2026-10-05T05:19:08.078Z",
+  "expectedState": "none_visible",
+  "expectedCitations": 0,
+  "expectedCount": null,
+  "answerChars": 0,
+  "rawHtmlBytes": 397533,
+  "answerHead": "",
+  "sanitized": true,
+  "originalHtmlBytes": 395033,
+  "sanitizedHtmlBytes": 70188
+}

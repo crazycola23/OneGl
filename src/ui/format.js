@@ -79,6 +79,7 @@ const ERROR_LABELS = {
   DOUBAO_ACCESS_RESTRICTED: "账号被限制访问",
   DOUBAO_TIMEOUT: "等待回答超时",
   DOUBAO_SUBMISSION_FAILED: "提问未确认发送",
+  DOUBAO_SUBMIT_DEGRADED: "回车提交，未触发引用区（已重试）",
   ANSWER_NOT_FOUND: "未找到回答内容",
   CITATION_PARSE_FAILED: "引用数量与页面标注不一致",
   PAGE_CHANGED: "页面结构变化，无法确认输入框",

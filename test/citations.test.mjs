@@ -77,7 +77,22 @@ test("citation extraction reproduces the recorded result for every real DOM fixt
 
         // The extractor must always report *why* a declared count and a captured count
         // differ, so a mismatch is diagnosable from the run artifact alone.
-        assert.equal(typeof result.selectorUsed, "string", `${fixture.name}: selector provenance`);
+        // Provenance is only meaningful once an answer root was located: when the
+        // platform silently dropped the prompt there is no answer to attribute a
+        // selector to, and the extractor reports null rather than guessing.
+        if (result.answerRootFound) {
+          assert.equal(
+            typeof result.selectorUsed,
+            "string",
+            `${fixture.name}: selector provenance`,
+          );
+        } else {
+          assert.equal(
+            result.selectorUsed,
+            null,
+            `${fixture.name}: no answer root means no selector provenance`,
+          );
+        }
         assert.ok(result.counts, `${fixture.name}: structured counts`);
         assert.equal(
           result.counts.captured,

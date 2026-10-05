@@ -41,13 +41,22 @@ function allowedDoubaoUrl(raw) {
 }
 
 async function firstVisibleEditable(page) {
+  // 2026-10-05 实测：豆包把输入框从 textarea 换成 tiptap/ProseMirror 的
+  // contenteditable div，而 data-testid="chat_input_input" 现在挂在一个**不可编辑的
+  // 容器**上。原列表第一条命中该容器，isEditable() 为false 就整条链放弃，
+  // 于是 fill 卡在 "waiting for element to be editable" —— 输入框定位失败连带
+  // 发送按钮不出现（它只在有内容时才渲染），最终报 DOUBAO_SUBMISSION_FAILED。
+  //
+  // 因此把真正可编辑的编辑器本体排在最前，并把容器 testid 降级为兜底。
   const selectors = [
-    '[data-testid="chat_input_input"]',
+    '.tiptap.ProseMirror[contenteditable="true"]',
+    '[contenteditable="true"][role="textbox"]',
     'textarea[placeholder*="发消息"]',
     'textarea[placeholder*="输入"]',
     'div[role="textbox"]',
     'textarea',
     '[contenteditable="true"]',
+    '[data-testid="chat_input_input"]',
   ];
 
   for (const selector of selectors) {
@@ -579,34 +588,56 @@ async function clearEditable(locator) {
 }
 
 async function tryClickSend(page) {
+  // `send_message` 是 2026-09-30 在 run_b142_i8 的 page.html 里实测到的当前 testid。
+  //
+  // 之前四个选择器（`chat_input_send_button` / `flow-end-msg-send` / 两条 aria|title）
+  // 在同一份快照里**一次都没出现** —— 豆包改版后发送控件换了 testid，于是
+  // tryClickSend 恒返回 false、全部落到 Enter 回退分支。代价是可量化的：
+  // Enter 提交不触发引用区渲染，实测引用率 7.1%（1/14），而按钮提交是 78.6%（11/14）。
+  //
+  // 旧名字**故意保留**：它们不匹配时只是多一轮 locator 查询，代价可忽略；
+  // 而删掉它们会让下一次豆包再改版时连回退的机会都没有 —— 回车至少还能把问题发出去。
+  // 顺序即优先级：当前实测名字在前。
   const selectors = [
+    '[data-testid="send_message"]',
     'button[data-testid="chat_input_send_button"]',
     '#flow-end-msg-send',
     'button[aria-label*="发送"]',
     'button[title*="发送"]',
   ];
-  for (const selector of selectors) {
-    const locator = page.locator(selector);
-    const count = Math.min(await locator.count(), 10);
-    for (let index = count - 1; index >= 0; index -= 1) {
-      const button = locator.nth(index);
-      if (
-        (await button.isVisible().catch(() => false)) &&
-        (await button.isEnabled().catch(() => false))
-      ) {
-        try {
-          await button.click({ timeout: 5_000 });
-          return true;
-        } catch {
-          // Fall through and let the caller try Enter instead of failing the run.
+  // 2026-10-05 实测：新版发送按钮是**输入之后异步渲染**的 —— tiptap 状态更新之后
+  // 才挂上 button[data-testid="chat_input_send_button"]。fillVerifiedPrompt 回读确认
+  // 文本已就位只等700ms，按钮常常还没渲染，于是这里一次查不到就直接 false，
+  // 落进 Enter 分支（引用率 7.1% vs 按钮 78.6%）。
+  //
+  // 所以改成「在窗口内反复找」，而不是查一次就放弃。找不到才退Enter —— Enter 仍保留，
+  // 下一次豆包再改版时至少能把问题发出去。
+  const deadline = Date.now() + 8_000;
+  while (Date.now() < deadline) {
+    for (const selector of selectors) {
+      const locator = page.locator(selector);
+      const count = Math.min(await locator.count(), 10);
+      for (let index = count - 1; index >= 0; index -= 1) {
+        const button = locator.nth(index);
+        if (
+          (await button.isVisible().catch(() => false)) &&
+          (await button.isEnabled().catch(() => false))
+        ) {
+          try {
+            await button.click({ timeout: 5_000 });
+            return true;
+          } catch {
+            // 点不到（可能被弹层遮挡）就继续等下一轮，不立刻放弃。
+          }
         }
       }
     }
+    await page.waitForTimeout(300);
   }
   return false;
 }
 
-async function waitForSubmissionConfirmation(page, prompt, baselineAnswers) {
+async function waitForSubmissionConfirmation(page, prompt, baselineAnswers, baselineUrl = "") {
   const deadline = Date.now() + 20_000;
   const target = normalizeText(prompt);
   while (Date.now() < deadline) {
@@ -621,6 +652,11 @@ async function waitForSubmissionConfirmation(page, prompt, baselineAnswers) {
 
     if ((await answerTexts(page)).length > baselineAnswers.length) return true;
     if (await isGenerating(page)) return true;
+
+    // 2026-10-05 实测：新版豆包提交后立刻把 /chat/ 换成 /chat/local_<id>，
+    // 这是「问题确实被平台接收」最直接的证据，比等气泡或回答都快且可靠。
+    if (baselineUrl && page.url() !== baselineUrl) return true;
+
     await page.waitForTimeout(400);
   }
   return false;
@@ -717,25 +753,63 @@ async function fillVerifiedPrompt(page, prompt, attempts = 3) {
  *
  * 只关推广弹窗，不误伤功能性弹窗（引用面板、确认框）—— 判据取弹窗自身文案。
  */
+const PROMO_DIALOG_TEXT = /下载豆包电脑版|免费领取\s*30\s*天|立即下载/;
+
+/**
+ * 关掉「下载电脑版 / 领 30 天订阅」这类推广弹窗。
+ *
+ * 2026-10-05 实测：弹窗**间歇出现**（同一次探测里有时有、有时没有），且新版
+ * radix dialog 的遮罩（dialogMask-*）会拦截指针事件 —— 输入框点不动、
+ * Playwright 的 click 反复 retry 直到超时。因此必须主动清掉。
+ *
+ * <p>关闭方式两路兜底：先找关闭按钮（新版是 data-slot="dialog-close"），
+ * 找不到就按 Escape —— radix dialog 响应 Escape，且不需要定位具体控件，
+ * 对改版更耐受。两条都失败才算放弃。</p>
+ */
 async function dismissPromoDialog(page) {
-  return page
-    .evaluate(() => {
+  const closed = await page
+    .evaluate((pattern) => {
+      const re = new RegExp(pattern);
       const norm = (value) => String(value || "").replace(/\s+/g, " ").trim();
-      let closed = 0;
+      let count = 0;
       for (const dialog of document.querySelectorAll('[role="dialog"]')) {
         const text = norm(dialog.innerText).slice(0, 200);
-        if (!/下载豆包电脑版|免费领取\s*30\s*天|立即下载/.test(text)) continue;
+        if (!re.test(text)) continue;
         const button =
-          dialog.querySelector('button[aria-label="关闭"]')
+          dialog.querySelector('[data-slot="dialog-close"]')
+          ?? dialog.querySelector('button[aria-label="关闭"]')
           ?? dialog.querySelector('button[aria-label="close"]')
           ?? dialog.querySelector('[class*="closeButton"]');
-        if (!button) continue;
-        button.click();
-        closed += 1;
+        if (button) {
+          button.click();
+          count += 1;
+        } else {
+          count += 100; // 标记成「有弹窗但没找到按钮」，交给 Escape 兜底
+        }
       }
-      return closed;
-    })
+      return count;
+    }, PROMO_DIALOG_TEXT.source)
     .catch(() => 0);
+
+  // 有弹窗却找不到关闭控件（或弹窗遮罩仍在）时用 Escape 收尾。
+  let remaining = 0;
+  try {
+    remaining = await page.evaluate(() => document.querySelectorAll('[role="dialog"]').length);
+  } catch {
+    return closed > 0 ? 1 : 0;
+  }
+  if (remaining > 0) {
+    await page.keyboard.press("Escape").catch(() => undefined);
+    await page.waitForTimeout(400);
+    try {
+      remaining = await page.evaluate(
+        () => document.querySelectorAll('[role="dialog"]').length,
+      );
+    } catch {
+      remaining = 0;
+    }
+  }
+  return closed > 0 || remaining === 0 ? Math.max(closed, 1) : 0;
 }
 
 async function submitPrompt(page, prompt) {
@@ -754,7 +828,8 @@ async function submitPrompt(page, prompt) {
     }
   }
 
-  if (!(await waitForSubmissionConfirmation(page, prompt, baselineAnswers))) {
+  const baselineUrl = page.url();
+  if (!(await waitForSubmissionConfirmation(page, prompt, baselineAnswers, baselineUrl))) {
     throw new DoubaoMvpError(
       ErrorCode.SUBMISSION_FAILED,
       "The send action fired but the page did not confirm submission. The MVP will not auto-resubmit to avoid duplicates.",
@@ -826,7 +901,7 @@ async function waitForAnswer(page, baselineAnswers, config) {
         !baseline.has(normalizeText(item.text)) &&
         !PLACEHOLDER_ANSWERS.has(normalizeText(item.text)),
     );
-  // 过短的片段不是答案。
+  // 过短的片段、徽标、欢迎语与控件文案都不是答案。
   //
   // 实测（2026-09-29，匿名面）：问「What is the boiling point of water…」之后
   // 只读到 3 个字符的 "The"，而 status 被判为 success。
@@ -1345,6 +1420,33 @@ export async function executeDoubaoPrompt(page, prompt, config) {
     const submission = await submitPrompt(page, prompt);
     const answer = await waitForAnswer(page, submission.baselineAnswers, config);
     const citationResult = await extractVisibleCitations(page);
+
+    if (!submission.sentByButton) {
+      // 2026-10-05 实测（批次 157–163，44 个 run）：
+      //   enter_key  提交 13 个 → 引用 0 条，13/13 全零
+      //   按钮提交 21 个     → 引用 11–39 条
+      // 零引用那批的 citationDiagnostics 全是 reference-block-not-found +
+      // inline-links-empty：豆包根本没渲染引用区，不是抓取漏了。
+      //
+      // 答案文本有效，但「0 引用」在这里是提交手段的产物。记成 success 会让
+      // 报告把采集缺陷读成「该问题/品牌不被豆包引用」——比缺一条数据更有害。
+      // 所以按失败抛出，走重试；重试通常就落到按钮上了（tryClickSend 会等 8s
+      // 等异步渲染的按钮）。答案仍然写进 partialAnswer，不浪费已经跑出来的内容。
+      throw new DoubaoMvpError(
+        ErrorCode.SUBMIT_DEGRADED,
+        "提问通过回车提交，未触发豆包渲染引用区；该结果的引用维度不可用，请重试以走发送按钮。",
+        {
+          stage: "generating",
+          url: page.url(),
+          promptSubmitted: true,
+          submissionMethod: "enter_key",
+          answerChars: answer.length,
+          partialAnswer: answer,
+          citationState: citationResult.state,
+          citationCount: citationResult.citations.length,
+        },
+      );
+    }
 
     return {
       answer,

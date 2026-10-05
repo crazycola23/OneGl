@@ -1,0 +1,16 @@
+{
+  "name": "doubao-2026-10-05-cited",
+  "description": "Batch 163: the one question that triggered web search. Proves the current citation block markup and selector still work against a 2026-10-05 page.",
+  "prompt": "智能锁指纹识别经常失败是什么原因，怎么排查？",
+  "sourceRunId": "run_b163_i2",
+  "capturedAt": "2026-10-05T05:07:38.383Z",
+  "expectedState": "found",
+  "expectedCitations": 11,
+  "expectedCount": 23,
+  "answerChars": 2914,
+  "rawHtmlBytes": 424924,
+  "answerHead": "智能锁指纹识别经常失败的主要原因有以下几种",
+  "sanitized": true,
+  "originalHtmlBytes": 424924,
+  "sanitizedHtmlBytes": 111947
+}

@@ -1,0 +1,16 @@
+{
+  "name": "doubao-2026-10-05-no-search",
+  "description": "Batch 163: a fully successful 3331-char answer that carries zero citation blocks. Confirms none_visible is a platform outcome, not an extraction failure.",
+  "prompt": "预算不多的话，智能锁有哪些便宜且靠谱的功能可选？",
+  "sourceRunId": "run_b163_i8",
+  "capturedAt": "2026-10-05T05:21:58.859Z",
+  "expectedState": "none_visible",
+  "expectedCitations": 0,
+  "expectedCount": null,
+  "answerChars": 3331,
+  "rawHtmlBytes": 425882,
+  "answerHead": "预算有限，智能锁优先选哪些靠谱功能",
+  "sanitized": true,
+  "originalHtmlBytes": 421472,
+  "sanitizedHtmlBytes": 99226
+}
