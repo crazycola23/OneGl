@@ -1048,29 +1048,66 @@ async function sourceSnapshot(page, clickIfNeeded = false) {
           ).slice(0, 800),
         }));
 
+      /**
+       * 判断引用块是否属于「本轮答案」。
+       *
+       * 唯一的硬约束：**块必须排在答案之前**。
+       *
+       * 2026-10-05 实测（fixture doubao-2026-10-05-cited）：引用块是答案的
+       * 前置兄弟。旧代码向上爬祖先链时用 querySelectorAll 找后代，而祖先
+       * 容器同时装着「本轮引用块」和「下一轮内容（用户追问的答案与它的引用块）」，
+       * 于是 matches.length > 1 时 .at(-1) 会取到下一轮的块 —— 答案与引用错配。
+       * 页面末尾的全局 .at(-1) 兜底有同样的问题。
+       *
+       * DOM 规范方向（实测核对过 raw 值 4 / 2）：
+       *   element.compareDocumentPosition(answer) 返回 FOLLOWING
+       *     <=> answer 在 element 之后 <=> element 在 answer 之前。
+       */
+      const precedesAnswer = (element, anchorNode) =>
+        Boolean(element.compareDocumentPosition(anchorNode) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+      /**
+       * 取答案之前最近的引用块。祖先链与全局兜底共用的唯一定位规则。
+       */
+      const pickBlock = (scope) => {
+        let best = null;
+        for (const element of scope.querySelectorAll(sourceSelector)) {
+          if (!visible(element)) continue;
+          if (!precedesAnswer(element, anchorNodeFor)) continue;
+          if (!signal.test(norm(element.innerText || element.textContent || ""))) continue;
+          best = element; // 文档序后出现的更近，直接覆盖即得最近者
+        }
+        return best;
+      };
+
+      const anchorNodeFor = answer;
+
+      /**
+       * 唯一的选块判据。祖先链与全局兜底都必须过这一关。
+       *
+       * 保留唯一的例外：块嵌在答案节点内部（部分渲染形态），此时方向判据不适用。
+       */
+      const acceptable = (element) => {
+        if (anchorNodeFor.contains(element)) return true;
+        return precedesAnswer(element, anchorNodeFor);
+      };
+
       let source = null;
       let scope = answer;
       for (let depth = 0; depth < 8 && scope; depth += 1) {
         const matches = [...scope.querySelectorAll(sourceSelector)]
           .filter(visible)
-          .filter((element) => signal.test(norm(element.innerText || element.textContent || "")));
-        if (matches.length === 1) {
-          source = matches[0];
-          break;
-        }
-        if (matches.length > 1) {
+          .filter((element) => signal.test(norm(element.innerText || element.textContent || "")))
+          .filter(acceptable);
+        if (matches.length) {
           source = matches.at(-1);
           break;
         }
         scope = scope.parentElement;
       }
 
-      if (!source) {
-        const globalMatches = [...document.querySelectorAll(sourceSelector)]
-          .filter(visible)
-          .filter((element) => signal.test(norm(element.innerText || element.textContent || "")));
-        source = globalMatches.at(-1) || null;
-      }
+      // 祖先链没定案时，在整个文档里按同一判据取答案之前最近的块。
+      if (!source) source = pickBlock(document);
 
       if (!source) {
         return {

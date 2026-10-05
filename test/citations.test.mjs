@@ -121,3 +121,91 @@ test("citation extraction reproduces the recorded result for every real DOM fixt
     await session.close();
   }
 });
+
+/**
+ * 引用块必须归属「本轮答案」，不能靠「页面最后一个」猜。
+ *
+ * 2026-10-05 实测（基于 fixture doubao-2026-10-05-cited 注入第二个引用块）：
+ * 豆包把引用区渲染在**答案上方**，是答案的前置兄弟。而旧代码选块只有两条路：
+ * 向上爬祖先链 + 全局 .at(-1)，两处都不看位置。祖先链的作用域（消息容器）
+ * 同时装着本轮引用块与下一轮内容，于是 matches.at(-1) 会取到**下一轮**的块。
+ *
+ * 这个缺陷在计数上完全看不出来：抓错块和抓对块都是 11 条，counts 全部一致，
+ * 只有归属错了 —— 报告里会把 A 问的引用算到 B 的答案上。所以必须单独断言
+ * 「抓到的是哪一块」，不能只断言数量。
+ */
+test("citation block must belong to this answer, not the last one on the page", async () => {
+  const fixture = JSON.parse(
+    await readFile(path.join(FIXTURES_DIR, "doubao-2026-10-05-cited.json"), "utf8"),
+  );
+  const html = gunzipSync(
+    await readFile(path.join(FIXTURES_DIR, "doubao-2026-10-05-cited.html.gz")),
+  ).toString("utf8");
+
+  const STALE_HOST = "stale-next-turn.example.com";
+  const config = loadConfig({ browser: "chromium", headless: true });
+  const session = await launchBrowserSession(config, { headless: true });
+
+  try {
+    await session.page.route("**", (route) => route.abort().catch(() => undefined));
+    await session.page.setContent(html, { waitUntil: "domcontentloaded" });
+
+    // 在本轮答案之后插入一个「下一轮」的引用块，模拟追问场景。
+    // 插入点必须用与源码一致的答案选择逻辑（visible + isUserBubble 过滤），
+    // 否则造出来的场景与真实执行路径对不上 —— 这个坑踩过一次。
+    const setup = await session.page.evaluate((staleHost) => {
+      const visible = (el) => {
+        if (!(el instanceof HTMLElement)) return false;
+        const r = el.getBoundingClientRect();
+        const s = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+      };
+      const isUserBubble = (el) => {
+        let n = el;
+        for (let d = 0; n && d < 6; d += 1) {
+          const tokens = String(n.getAttribute("class") || "").split(/\s+/);
+          if (tokens.includes("justify-end")) return true;
+          n = n.parentElement;
+        }
+        return false;
+      };
+      const answers = [...document.querySelectorAll(
+        '.md-box-root, [class*="md-box-root"], [data-testid="message_text_content"], ' +
+        '[data-testid="message_content"], .flow-markdown-body',
+      )]
+        .filter(visible)
+        .filter((el) => !isUserBubble(el));
+      const answer = answers.at(-1);
+      const block = document.querySelector('[data-plugin-identifier*="block_type:10025"]');
+      if (!answer || !block) return { ok: false };
+      const stale = block.cloneNode(true);
+      const anchor = stale.querySelector("a[href]");
+      if (anchor) anchor.setAttribute("href", `https://${staleHost}/next-turn`);
+      answer.after(stale);
+      return { ok: true, blocks: document.querySelectorAll('[data-plugin-identifier*="block_type:10025"]').length };
+    }, STALE_HOST);
+    assert.ok(setup.ok, "fixture 应同时含答案节点与引用块");
+    assert.equal(setup.blocks, 2, "场景构造：页面里应有两个引用块");
+
+    const result = await extractVisibleCitations(session.page);
+
+    const leaked = result.citations.filter((c) => String(c.url).includes(STALE_HOST));
+    assert.equal(
+      leaked.length,
+      0,
+      "抓到的是「下一轮」的引用块 —— 答案与引用错配，报告里会把 A 问的引用算到 B 上",
+    );
+    assert.equal(
+      result.citations.length,
+      fixture.expectedCitations,
+      "数量不应因选块错误而变化（错块与对块条数相同，只有归属错）",
+    );
+    assert.equal(
+      result.citations[0]?.url,
+      "https://iveise.com/blogs/how-to/fingerprint-door-lock-not-working-troubleshooting-checklist",
+      "首条引用应来自本轮答案自己的引用块",
+    );
+  } finally {
+    await session.close();
+  }
+});
