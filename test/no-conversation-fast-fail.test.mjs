@@ -27,13 +27,30 @@ const rest = source.slice(waitStart);
 const endMatch = rest.match(/\n\}/);
 const waitBody = endMatch ? rest.slice(0, endMatch.index) : rest;
 
-test("快速失败阈值是 20 秒（不是 180 秒）", () => {
+test("快速失败阈值是 20 秒（实测进会话 6.5 秒）", () => {
   const m = source.match(/const CONVERSATION_LANDING_WAIT_MS\s*=\s*([\d_]+);/);
   assert.ok(m, "应定义 CONVERSATION_LANDING_WAIT_MS");
   assert.equal(
     Number(m[1].replace(/_/g, "")),
     20_000,
-    "实测提交到进会话要 2–8 秒，20 秒给足余量仍把失败从 180s 压到 20s",
+    "实测提交→进会话 6482ms（降级状态下测得），20 秒给约 3 倍余量",
+  );
+});
+
+test("阈值的依据与复核信号都写进注释", () => {
+  const jsdocStart = source.lastIndexOf("/**", source.indexOf("const CONVERSATION_LANDING_WAIT_MS"));
+  const jsdoc = source.slice(jsdocStart, source.indexOf("const CONVERSATION_LANDING_WAIT_MS"));
+  assert.match(jsdoc, /6482|6\.48/, "应记录实测的进会话耗时");
+  assert.match(
+    jsdoc,
+    /样本只有 1 条|有效样本只有 1/,
+    "★ 必须写明样本量 —— 只有 1 条有效样本这个事实不能被省略，" +
+      "否则下一个人会以为这是可靠分布",
+  );
+  assert.match(
+    jsdoc,
+    /no-conversation waited/,
+    "应写明复核信号：见到该日志就说明阈值偏小",
   );
 });
 
