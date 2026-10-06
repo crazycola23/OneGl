@@ -119,6 +119,32 @@ test("错误码不新增语义：三条失败路径都是 ANSWER_NOT_FOUND", () 
   );
 });
 
+test("★ 已知缺口写在注释里：零输出有两种形态，本判据只覆盖一种", () => {
+  const jsdocStart = source.lastIndexOf("/**", source.indexOf("const CONVERSATION_LANDING_WAIT_MS"));
+  const jsdoc = source.slice(jsdocStart, source.indexOf("const CONVERSATION_LANDING_WAIT_MS"));
+  assert.match(
+    jsdoc,
+    /已知未覆盖|已知缺口/,
+    "必须标明这是已知未覆盖，而不是漏了 —— 否则下一个人会去「修」它",
+  );
+  assert.match(jsdoc, /①[\s\S]*②/, "应列出两种零输出形态");
+  assert.match(
+    jsdoc,
+    /仍在白等|仍在白等 180/,
+    "应写明第二种形态仍在白等 180 秒",
+  );
+  assert.match(
+    jsdoc,
+    /generating.*全是 false|全是 `?false/,
+    "应写明 generating 不能当判据的理由：它在所有样本上取同一个值",
+  );
+  assert.match(
+    jsdoc,
+    /批次 2、3|批次 2、3（02:31/,
+    "应写明那 6 条来自哪个时段 —— 它们可能是历史残留而非当前问题",
+  );
+});
+
 test("实测数字留在注释里（避免被当成随手加的提前退出）", () => {
   const jsdocStart = source.lastIndexOf("/**", source.indexOf("const CONVERSATION_LANDING_WAIT_MS"));
   const jsdoc = source.slice(jsdocStart, source.indexOf("const CONVERSATION_LANDING_WAIT_MS"));
