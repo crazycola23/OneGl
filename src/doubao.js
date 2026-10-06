@@ -172,7 +172,25 @@ async function waitForHydration(page, timeoutMs = HYDRATION_WAIT_MS) {
           ?? document.querySelector('div[role="textbox"]');
         const composerReady = visible(composer);
 
-        // composer 中心点的命中元素是不是它自己 —— 挡住就不算就绪
+        // ★ 2026-10-06 修正：covered 这个判据在首页**恒为 true**，是假阴性。
+        //
+        // 实测（.ops/probe-composer-chain.mjs，同一时刻取两轮）：
+        //
+        //   composer = div[contenteditable="true"]  960x24 @380,800
+        //   composer.pointerEvents = "none"          ← ★ 它自己不吃指针事件
+        //   elementFromPoint(中心) 命中 = div.dialogMask-eE93D4
+        //   covered = true                          ← 恒为 true
+        //   #textarea 总数 = 0，innerText 长度 = 336（内容已加载完）
+        //
+        // 原因：`pointer-events: none` 的元素，命中测试**永远不会命中它** ——
+        // 所以 `!composer.contains(top) && top !== composer` 恒成立。
+        // 而那个 dialogMask 正是推广弹窗的遮罩，
+        // 它由 submitPrompt 里的 dismissPromoDialog 清理 ——
+        // **但那在 waitForHydration 之后**，于是等不到。
+        //
+        // 所以水合判据不能再管「现在能不能点」。它要回答的是
+        // 「页面加载完了吗」，而那由 composer 可见 + 文本量稳定回答。
+        // 浮层的处置已经有专门的一层，不在这里重复。
         let covered = false;
         if (composerReady) {
           const box = composer.getBoundingClientRect();
@@ -180,7 +198,16 @@ async function waitForHydration(page, timeoutMs = HYDRATION_WAIT_MS) {
             box.x + box.width / 2,
             box.y + box.height / 2,
           );
-          covered = !!top && !composer.contains(top) && top !== composer;
+          // ★ 排除「composer 自己不吃 pointer-events」这种假遮挡：
+          //   若 composer 是 pointer-events:none，那命中测试命中谁都不算「被挡」。
+          //   这不是放宽判据，而是修掉一个恒真的判据 —— 它从未提供过信息。
+          const composerIgnoresPointer =
+            getComputedStyle(composer).pointerEvents === "none";
+          covered =
+            !composerIgnoresPointer &&
+            !!top &&
+            !composer.contains(top) &&
+            top !== composer;
         }
 
         return {

@@ -29,6 +29,48 @@ test("必须存在独立的「等水合」函数，不能只等输入框", () =>
   );
 });
 
+test("★ covered 判据必须排除 pointer-events:none 的假遮挡", () => {
+  const start = source.indexOf("async function waitForHydration");
+  const body = source.slice(start, source.indexOf("\n}", start));
+  const code = body
+    .split("\n")
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .join("\n");
+
+  // ★ 实测（.ops/probe-composer-chain.mjs）：
+  //   composer = div[contenteditable="true"]  960x24 @380,800
+  //   composer.pointerEvents = "none"
+  //   elementFromPoint 命中 = div.dialogMask-eE93D4
+  //   covered = true（恒为 true，两次采样都是）
+  //   #textarea 总数 = 0，innerText 长度 = 336（页面早已加载完）
+  //
+  // 原因：pointer-events:none 的元素，命中测试永远不会命中它。
+  // 所以 `!composer.contains(top) && top !== composer` 恒成立。
+  // 而那个 dialogMask 是推广弹窗遮罩，由 submitPrompt 的
+  // dismissPromoDialog 清理 —— 但它在 waitForHydration 之后，于是等不到。
+  assert.match(
+    code,
+    /pointerEvents === "none"|pointer-events:none/,
+    "必须排除 composer 自己不吃指针事件的情况 —— 否则 covered 恒为 true",
+  );
+  assert.match(
+    code,
+    /composerIgnoresPointer/,
+    "该判断应有独立变量，便于日志与测试定位",
+  );
+});
+
+test("水合判据不重复处理浮层（那是 dismissPromoDialog 的职责）", () => {
+  const start = source.indexOf("async function waitForHydration");
+  const jsdocStart = source.lastIndexOf("/**", start);
+  const jsdoc = source.slice(jsdocStart, start);
+  assert.match(
+    jsdoc,
+    /dismissPromoDialog|浮层.*处置|处置.*浮层/,
+    "应写明浮层由专门的一层处理，水合不再管「能不能点」",
+  );
+});
+
 test("水合判据用「组件就绪」而不是「文本够多」（首页文本只有 49–67 字）", () => {
   const start = source.indexOf("async function waitForHydration");
   const body = source.slice(start, source.indexOf("\n}", start));
