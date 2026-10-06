@@ -1527,6 +1527,93 @@ PID=1447574  PPID=1  SID=1447574  TTY=(空)  STAT=Ss
 **教训：判据里出现「增长」「出现」这类动词时，先确认它的周期与观测窗口匹配。**
 
 ### 18.25 今天检查脚本自身误报的次数
+### 18.26 账号「available」的语义只到配额层，登录态由采集层管
+
+明天那批次的账号分配逐环验过（`.ops/check-account-assignment.sh`）：
+
+    t1_5b0  现在→temporary（已达每日上限 40 次）
+            明早→available ✅
+    t5_f52  明早→available   ← status=login_required
+    t6_e3f  明早→available   ← 同上
+
+`assignAccounts` 的分配是
+`ordered[(promptIndex + repeat) % ordered.length]`，
+而 `accounts` 只传了 t1 → `(0) % 1 = 0`，**全部落 t1，没有补位逻辑**。
+所以那两个 `login_required` 账号明天分不到任务。
+
+但上面那两行看着像 bug：`login_required` 的账号被判成 `available`。
+
+查下来是**有意的分层**：
+
+- `classifyAccountState` 管的是**配额与冷却**（次数、冷却期、间隔）
+- `requireHealthySession` 管的是**登录态与风控**，四个出口都在：
+
+```
+login_required        → LOGIN_REQUIRED / SESSION_EXPIRED（按有无存储登录态区分）
+verification_required → VERIFICATION_REQUIRED
+access_restricted     → ACCESS_RESTRICTED
+其余                   → PAGE_CHANGED
+```
+
+而且它对匿名面单独处理，那句注释正好对应今天观察到的现象：
+
+> 匿名面的豆包挂出了登录要求（通常是匿名额度用尽）。
+> 需要人工确认是继续匿名还是改用登录态。
+
+**「available」这个词有误导性 —— 它其实只表示「配额层面可用」。**
+
+#### 为什么今天的数据不能证明它工作正常
+
+`runs` 表里 t5/t6 两条 run 都没有，`runs_today=0`：
+
+```
+account_key | 条数 | 登录类错误 | 错误码
+(0 rows)
+```
+
+**它们从来没被分配过任务，所以那条路径从没被走到过。**
+
+这是「看起来对」与「验证过」的区别：数据为空既可能是「没问题」，
+也可能是「没跑过」。判据要分清这两种。
+
+### 18.27 明天的批次分配链路（第三轮就绪度确认）
+
+| 环节 | 结果 |
+|---|---|
+| 账号 key 与 accounts 表一致 | `t1_5b021e887029b8a785597bb6` 完全相同 |
+| 明早 t1 可用 | `available`（跨日自动归零，见 18.21） |
+| 分配不会落到 login_required 账号 | `(0) % 1 = 0`，全部 t1 |
+| 登录态拦截路径存在 | 四个出口齐全，匿名面单独处理 |
+
+至此明天那 4 条的完整链路已验三轮（18.21 八项、18.26 四项、18.22 进程形态）。
+
+### 18.28 ★ 用标题当 edit 锚点会吃掉标题 —— 今天第四次
+
+18.26/18.27 是**用 `### 18.25 今天检查脚本自身误报的次数` 当锚点插进去的，
+结果那一行的标题被替换掉了**，只剩正文。18.21 也发生过一次。
+
+今天四次同类操作失误（18.21、18.25 补回时、18.26、本次），
+症状都是「插入成功，但数量对不上」——
+`grep '^### '` 一看，某个编号不见了。
+
+**判据：每次改完带编号的文档，都要用脚本数一遍编号是否连续。**
+今天用的就是这一条：
+
+```powershell
+$h = Select-String -Path doc.md -Pattern '^### 18\.(\d+)' |
+     ForEach-Object { [int]$_.Matches[0].Groups[1].Value }
+$missing = (1..$h.Count) | Where-Object { $h -notcontains $_ }
+if ($missing) { "缺: $($missing -join ', ')" } else { "1-$($h.Count) 连续" }
+```
+
+**症状与原因不同，但可靠。** 而「肉眼看一遍标题」不可靠 ——
+今天四次都是肉眼看漏的。
+
+**根因是 `edit` 的语义**：`old_string` 被 `new_string` **替换**，
+不是「在它前面插入」。所以拿标题当锚点必然把标题吃掉。
+
+**修法：锚点用标题之后的正文首句，或用不含标题的行。**
+
 
 | 小节 | 检查脚本说 | 实际 |
 |---|---|---|
