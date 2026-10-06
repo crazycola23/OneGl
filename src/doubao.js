@@ -863,14 +863,27 @@ async function tryClickSend(page) {
     'button[aria-label*="发送"]',
     'button[title*="发送"]',
   ];
-  // 2026-10-05 实测：新版发送按钮是**输入之后异步渲染**的 —— tiptap 状态更新之后
-  // 才挂上 button[data-testid="chat_input_send_button"]。fillVerifiedPrompt 回读确认
-  // 文本已就位只等700ms，按钮常常还没渲染，于是这里一次查不到就直接 false，
-  // 落进 Enter 分支（引用率 7.1% vs 按钮 78.6%）。
+  // 2026-10-05 实测：新版发送按钮是**输入之后异步启用**的。
   //
-  // 所以改成「在窗口内反复找」，而不是查一次就放弃。找不到才退Enter —— Enter 仍保留，
+  // 2026-10-06 修正：当时的注释说「按钮还没渲染」，实测**不准确** ——
+  // 按钮一直在 DOM 里（count=1、visible=true），
+  // 只是 `enabled` 要过一段时间才变 true。复刻循环逐轮打印（.ops/probe-tryclicksend.mjs）：
+  //
+  //   第 1–13 轮   可见=true  enabled=false   → 跳过
+  //   第 14 轮     可见=true  enabled=true    → 点 ✅
+  //   耗时约 4.2 秒 / 14 轮（每轮 300ms）
+  //   结果 URL → /chat/38445625431828226（建了会话）
+  //
+  // ★ 而原来的窗口是 8 秒 —— 单跑够，**并发下不够**：
+  //   端到端预演（那个窗口里有两个浏览器）里它返回了 false，
+  //   于是退化成 Enter，而 Enter 的引用率是 7.1%、按钮是 78.6%（见下）。
+  //   CPU 被分摊时按钮 enable 更慢，8 秒的余量被吃掉。
+  //
+  // 所以窗口给到 20 秒：单跑实测 4.2 秒，5 倍余量；
+  // 而退 Enter 的代价是丢掉 10 倍产出 —— 这个不对称决定了宁可多等。
+  // 找不到才退 Enter；Enter 仍保留，
   // 下一次豆包再改版时至少能把问题发出去。
-  const deadline = Date.now() + 8_000;
+  const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     for (const selector of selectors) {
       const locator = page.locator(selector);
