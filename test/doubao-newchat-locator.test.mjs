@@ -105,6 +105,10 @@ function makePage({ byTestId = [], roleMatches = [], textMatches = [], answerCou
     // 就是靠它判 resetConfirmed。给一个稳定的非空数组（不会被清空）。
     async evaluate(callback) {
       const source = String(callback);
+      // 页面已就绪；定位测试不应等待真实的水合超时。
+      if (source.includes("composerReady") && source.includes("textLength")) {
+        return { textLength: 64, composerReady: true, covered: false };
+      }
       if (source.includes("md-box-root")) {
         return Array.from({ length: answerCount }, (_, i) => ({ innerText: `上一问答案${i}` }));
       }

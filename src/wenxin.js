@@ -1,4 +1,5 @@
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
+import { citationEvidenceState, conversationEvidence } from "./providers/web-evidence.js";
 import {
   citationDiagnostics,
   cleanAnswerText,
@@ -524,7 +525,7 @@ export async function executeWenxinPrompt(page, prompt, config, profile) {
   return {
     answer: settled.answer,
     citations: settled.citations,
-    citationState: settled.expectedCitationCount ? "self-reported-count" : "dom-only",
+    citationState: citationEvidenceState(settled.citations, settled.expectedCitationCount),
     expectedCitationCount: settled.expectedCitationCount ?? null,
     citationDiagnostics: settled.diagnostics,
     // 回答是怎么判定完成的。三种取值各有含义，下游必须能区分：
@@ -535,6 +536,7 @@ export async function executeWenxinPrompt(page, prompt, config, profile) {
     // 而不是宣称它们同样可靠。
     answerCompletion: settled.completedBy ?? "unknown",
     submissionMethod: "keyboard-enter",
+    ...conversationEvidence(reset),
     // 实测 14 轮 URL 始终停在 wenxin.baidu.com 根路径，会话状态只在页面内（不进路径），
     // 所以没有可回查的 conversationId —— 如实记 null，编一个比留空更糟。
     conversationId: null,

@@ -120,11 +120,9 @@ export const zhipuWebProfile = {
     // 「没观测到」和「不存在」是两回事 —— 前者不能当后者用。
     tier: CITATION_TIERS.SELF_REPORTED_COUNT,
     countPattern: /(\d+)\s*个来源/,
-    // 来源是**裸域名角标**（askci.com / lbkrs.com / biggo.com.tw），不是 <a> 标签：
-    // 实测 querySelectorAll("a[href^='http']") 恒为 0。所以没有可点击的来源块选择器，
-    // driver 改为从答案正文里解析域名，url 一律为 null —— 伪造 URL 比留空更糟，
-    // 下游会把它当成一条可回查的证据。
-    blockSelectors: [],
+    // 2026-09-30 保存的回答 DOM：角标的 data-url 含完整来源地址；同域名可有多篇文章。
+    // driver 按真实链接去重；未观察到来源属性的旧构建保留标明形态的域名证据。
+    blockSelectors: [".source-item[data-url]", ".source-item-num[data-url]"],
     wrapperRedirectHosts: [],
   },
 

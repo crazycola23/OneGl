@@ -1,0 +1,17 @@
+{
+  "name": "doubao-2026-10-05-b163-i1-no-search-button",
+  "description": "批次 163 第 1 条：提问走发送按钮提交，但豆包该轮根本没触发联网搜索。整页外部链接数为 0，不存在 block_type:10025 区块，也没有任何「搜索 N 个关键词」字样。所以 citations=0 是平台事实，不是抓取缺陷 —— 这条 fixture 用来防止把「平台没搜索」误判成「抓取漏了」而反复改解析逻辑。同批次的 i2 同样走发送按钮，却拿到了 11 条引用，两者构成对照。",
+  "prompt": "指纹锁识别不灵敏，用久了会不会越来越差，值得继续用吗",
+  "sourceRunId": "run_b163_i1",
+  "capturedAt": "2026-10-05T05:06:00.000Z",
+  "expectedState": "none_visible",
+  "expectedCitations": 0,
+  "expectedCount": 0,
+  "answerChars": 1321,
+  "rawHtmlBytes": 423927,
+  "answerHead": "",
+  "pageExternalLinkCount": 0,
+  "sanitized": true,
+  "originalHtmlBytes": 423927,
+  "sanitizedHtmlBytes": 106630
+}

@@ -167,3 +167,16 @@ ssxmod_itna2 = ""
 所以 `citation.tier` 升到 `SELF_REPORTED_COUNT`，`countPattern: /(\d+)\s*个来源/`。driver 从答案正文解析域名，`url` 一律填域名根 URL 并标注 `captured_from: "角标域名"`——`db/persist.js` 的 `prepareCitations` 会把缺 url 的引用整个 skip 掉，不给 url 就会出现「采到了域名却一条没落库」。
 
 **这三条教训合起来是这个平台接入的核心**：`getByText` 与可点性都不可靠（前者漏、无障碍标签缺失），必须靠结构关系和尺寸；平台自陈的元数据（一句话介绍、"19个来源"）比 DOM 结构可靠得多。
+
+## 8. 2026-09-30：真实来源地址与同站多篇文章
+
+服务器批次 153、Run 947 保存的 `page.html` 在答案角标中包含
+`.source-item[data-url]` / `.source-item-num[data-url]`，`data-url` 是完整文章地址。
+页面标注 5 个来源，实际为 5 篇文章、4 个域名，其中新浪有两篇不同文章。
+旧的域名去重只保留 4 条，因此产生 `count_mismatch`，并丢失具体文章地址。
+
+当前 driver 在本轮容器剔除思考与噪声后读取这两个来源节点的属性，按链接去重，
+保留同一站点的不同文章，再与平台自报数量核对；`capturedFrom` 为“角标来源链接”。
+没有来源属性的旧构建继续保留“角标域名”证据；存在属性但解析失败时不编造链接。
+回归测试 `test/zhipu-citations.test.mjs` 使用上述实际来源地址，覆盖 5 篇/4 站、重复角标、
+缺失来源、非法链接。Run 947 与已有报告快照保持原样，不按新解析结果覆盖历史证据。

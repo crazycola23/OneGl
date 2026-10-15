@@ -42,3 +42,6 @@ pnpm-debug.log*
 # 智谱清言冒烟用的项目与关键词池：示例配置，不是产品资产
 examples/project.zhipu-smoke.json
 examples/keyword-pool.zhipu-smoke.json
+
+# Local commit-message drafts
+.git-commit-msgs/

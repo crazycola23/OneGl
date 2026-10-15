@@ -1,4 +1,6 @@
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
+import { citationEvidenceState, conversationEvidence } from "./providers/web-evidence.js";
+import { parseReferenceItems } from "./zhipu-citations.js";
 
 /**
  * 智谱清言（chatglm.cn）匿名面 driver。
@@ -250,7 +252,7 @@ async function dismissGuideDialog(page) {
  * （`clickedNewConversation` + `resetConfirmed` 两个字段），这里沿用它的口径。
  */
 async function startFreshConversation(page, { attempts = 3 } = {}) {
-  const bubbles = () => page.locator(SELECTORS.userBubble).count().catch(() => 0);
+  const bubbles = () => page.locator(SELECTORS.userBubble).count().catch(() => null);
 
   // 平台明确提示过「请等待其他对话生成完毕」：上一题还在生成时新题会被丢弃。
   // 所以先等它空闲，再谈切换 —— 否则即使点了「新对话」，发出去的也可能还是被拒。
@@ -355,13 +357,13 @@ export async function executeZhipuPrompt(page, prompt, config, profile) {
 
   return {
     answer: settled.answer,
-    // 智谱把来源渲染成裸域名角标而非链接，所以 citations 里 url 为 null、只有 host。
-    // 交出空数组会让下游以为「平台没给来源」，而实际有 19 个。
+    // 角标的 data-url 保存真实来源地址；旧构建只有域名时保留显式标注的域名证据。
     citations: settled.citations,
-    citationState: settled.expectedCitationCount ? "self-reported-count" : "dom-only",
+    citationState: citationEvidenceState(settled.citations, settled.expectedCitationCount),
     expectedCitationCount: settled.expectedCitationCount ?? null,
     citationDiagnostics: settled.diagnostics,
     submissionMethod: "keyboard-enter",
+    ...conversationEvidence(reset),
     // 智谱没有可回查的会话 id（URL 不含 conversation），如实记录而不是编一个。
     conversationId: null,
     currentUrl: page.url(),
@@ -517,14 +519,12 @@ async function readAnswer(page) {
           .join("\n")
           .trim();
 
-        // 引用：智谱把来源渲染成**裸域名角标**（askci.com / lbkrs.com / biggo.com.tw），
-        // 不是 <a> 标签 —— 实测 querySelectorAll("a[href^='http']") 恒为 0。
-        //
-        // url 字段必须非空：db/persist.js 的 prepareCitations 会把缺 url 的引用
-        // 整个 skip 掉（reason=missing-url），于是「采到了域名却一条没落库」。
-        // 所以这里用域名根 URL（https://<host>/）占位，并在 capturedFrom 上标注
-        // 「角标」—— 让下游知道这是从角标文本还原的域名，不是平台给出的可点击链接。
-        // 伪造一个带路径的 URL 更糟：那会被当成可回查的证据，而它根本不存在。
+        // 2026-09-30 保存页面实证：角标的 data-url 含完整链接，同域名可能有多篇来源。
+        // 从剔除思考/噪声后的本轮容器取属性，不能按域名去重或把思考中的来源计入回答。
+        const referenceItems = [...clone.querySelectorAll(".source-item[data-url], .source-item-num[data-url]")]
+          .map((el) => ({ url: el.getAttribute("data-url") }));
+
+        // 旧构建没有来源属性时，保留原有域名证据并标明来源形态。
         const domHosts = [...answer.matchAll(/\b([a-z0-9][a-z0-9-]{1,40}\.(?:com|cn|net|org|tw|io|gov|edu|co|me|info))\b/gi)]
           .map((m) => m[1].toLowerCase())
           .filter((host) => !/chatglm|zhipu|z\.ai|bigmodel/i.test(host));
@@ -542,6 +542,7 @@ async function readAnswer(page) {
         return {
           answer,
           citations,
+          referenceItems,
           // 平台自陈的来源数（实测「19个来源」）。与抓到的域名数一起交出去：
           // 两者不等说明有来源没被解析出来，报告侧据此标 partial 而不是
           // 悄悄按抓到的数量出数。
@@ -556,6 +557,16 @@ async function readAnswer(page) {
       },
       { noise: SELECTORS.answerNoise, userBubble: SELECTORS.userBubble },
     )
+    .then(({ referenceItems, ...snapshot }) => {
+      const citations = referenceItems?.length ? parseReferenceItems(referenceItems) : snapshot.citations;
+      const diagnostics = snapshot.answer
+        ? citations.length ? [] : ["zhipu-no-visible-sources"]
+        : ["zhipu-answer-not-located"];
+      if (citationEvidenceState(citations, snapshot.expectedCitationCount) === "count_mismatch") {
+        diagnostics.push("zhipu-source-count-mismatch");
+      }
+      return { ...snapshot, citations, diagnostics };
+    })
     .catch(() => ({ answer: "", citations: [], diagnostics: ["zhipu-scan-failed"], thinkingDone: false }));
 }
 
