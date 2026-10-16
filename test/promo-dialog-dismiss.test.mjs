@@ -73,17 +73,44 @@ test("dismissPromoDialog 的判据与探测函数一致，不再用文案正则"
   );
   // 三路兜底仍在
   assert.match(body, /dialog-close/, "① 关闭控件");
-  assert.match(body, /data-slot="dialog-overlay"/, "② 点遮罩");
+  assert.match(body, /mouse\.click\(8, 8\)/, "② 点遮罩角落");
   assert.match(body, /keyboard\.press\("Escape"\)/, "③ Escape 兜底");
 });
 
-test("关闭控件找不到时按位置兜底（右上角那个 × 没有可访问名）", () => {
+test("关闭控件找不到时按位置兜底（卡片右上角那个 × 没有可访问名）", () => {
   const start = source.indexOf("async function dismissPromoDialog");
   const body = source.slice(start, source.indexOf("\n}", start));
   assert.match(
     body,
-    /r\.top < 120/,
+    /r\.top < frame\.top \+ 120/,
     "应按几何位置兜底找关闭控件 —— 实测那个 × 没有 aria-label",
+  );
+  assert.match(
+    body,
+    /frame\.right - 120/,
+    "位置基准必须是**卡片**右上角，不是视口右上角",
+  );
+});
+
+test("第三次修正：居中卡片变体（2026-10-16）", () => {
+  const start = source.indexOf("async function dismissPromoDialog");
+  const body = source.slice(start, source.indexOf("\n}", start));
+  const jsdoc = source.slice(source.lastIndexOf("/**", start), start);
+
+  // 卡片比视口窄，× 落在卡片右上角 —— 旧的「视口右上角」判据永远找不到它
+  assert.match(body, /window\.innerWidth \* 0\.95/, "应按「比视口窄的卡片」选定位基准");
+  assert.match(
+    body,
+    /if \(before\.overlayFound \|\| before\.covered\)/,
+    "② 的闸门必须是几何判据：新变体没有 data-slot=\"dialog-overlay\"，用它当闸门会整段跳过",
+  );
+  // 挂载是异步的，必须能等
+  assert.match(body, /waitMs/, "应支持等待弹窗挂载");
+  assert.match(source, /PROMO_DIALOG_MOUNT_WAIT_MS/, "应有一个具名的挂载等待常量");
+  assert.match(
+    jsdoc + source.slice(start - 2_000, start + 2_000),
+    /764x560|764×560/,
+    "应记录实测卡片尺寸 —— 它是「× 不在视口右上角」的几何依据",
   );
 });
 

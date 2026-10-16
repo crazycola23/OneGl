@@ -798,9 +798,23 @@ async function isGenerating(page) {
   }, IN_PROGRESS_STEP.source);
 }
 
+/**
+ * 平台限流 / 过载文案。
+ *
+ * 2026-10-16 补充：匿名面经代理 IP 实测，平台给的原文是
+ * 「当前服务访问频繁，请稍后重试」—— 旧正则的两个分支（「请求过于频繁」「稍后再试」）
+ * 都不匹配，于是这条**明确的限流**被归成 ANSWER_NOT_FOUND（「提交后没建会话」）。
+ * 同一个现场，判成限流才会触发退避；判成「没答案」只会让人继续重试，把限流越撞越深。
+ */
+export function isProviderThrottleText(text) {
+  return /请求过于频繁|操作频繁|访问频繁|稍后再试|稍后重试|稍后尝试|服务繁忙|系统繁忙|达到.*上限|额度.*不足/.test(
+    String(text ?? ""),
+  );
+}
+
 async function detectProviderError(page) {
   const text = await page.locator("body").innerText().catch(() => "");
-  if (/请求过于频繁|操作频繁|稍后再试|达到.*上限|额度.*不足/.test(text)) {
+  if (isProviderThrottleText(text)) {
     return { code: ErrorCode.RATE_LIMITED, message: "Doubao appears to be rate limited." };
   }
   if (/网络不给力|网络异常|服务异常|请求失败/.test(text)) {
@@ -1178,6 +1192,19 @@ const FULLSCREEN_OVERLAY_CLASSES = [
 ];
 
 /**
+ * 推广弹窗的**挂载是异步的**，而且比 composer 晚。
+ *
+ * 2026-10-16 实测（有头模式，代理出口 IP）：fill 之后立刻探测得到 `maskPresent: false`，
+ * 2.5 秒后再探测遮罩已铺满视口（`dialogMask-*` 1440x900 = 100% 视口），
+ * 而它的卡片 `fullscreenPopup-*` 只有 764x560（33%）。
+ *
+ * 单次探测的代价很具体：`promoAfterFill=0` 在日志里读起来像「这次没有弹窗」，
+ * 于是「点不到发送按钮」被归因成按钮/网络问题，而真实原因是 2.5 秒后才出现的一层遮罩。
+ * 与其事后靠截图反推，不如在这里等一个明确的窗口。
+ */
+const PROMO_DIALOG_MOUNT_WAIT_MS = 3_000;
+
+/**
  * 页面当前是否被全屏浮层挡住 composer。
  *
  * 返回 `{ covered, overlayFound, textMatched, hitTest }`：
@@ -1279,9 +1306,15 @@ async function inspectFullscreenCover(page) {
  * `run_b5_i5` 与 `run_b5_i3` 的截图右上角标签不同，而按「下载豆包电脑版」匹配的
  * 那一版会漏掉另一半。改判据后不再依赖任何具体文案。
  */
-async function dismissPromoDialog(page) {
+async function dismissPromoDialog(page, { waitMs = 0 } = {}) {
   // 判据：结构 + 几何，而不是文案 —— 详见 PROMO_DIALOG_TEXT 上方的说明。
-  const before = await inspectFullscreenCover(page);
+  let before = await inspectFullscreenCover(page);
+  // 等它挂上来再判。waitMs=0 时行为与旧实现完全一致（只探一次）。
+  const mountDeadline = Date.now() + Math.max(0, waitMs);
+  while (!before.overlayFound && !before.covered && Date.now() < mountDeadline) {
+    await page.waitForTimeout(250).catch(() => undefined);
+    before = await inspectFullscreenCover(page);
+  }
   if (!before.overlayFound && !before.covered) return 0;
 
   // ① 优先点真实的关闭控件（最贴近真人行为）
@@ -1292,17 +1325,28 @@ async function dismissPromoDialog(page) {
       if (!classPrefixes.some((p) => cls.includes(p))) continue;
       const rect = el.getBoundingClientRect();
       if (rect.width * rect.height < viewportArea * 0.7) continue;
+      // 关闭控件是相对**卡片**定位的，不是相对视口。
+      // 2026-10-16 实测：新变体是居中卡片（fullscreenPopup-* 764x560），
+      // × 的 right ≈ 1090，而视口宽 1440 —— 旧的 `right > innerWidth - 160`（1280）
+      // 永远不成立。于是①③两条路同时失效，只剩 Escape，而实测 Escape 也关不掉它，
+      // 结果就是「发送按钮一直点不动」。
+      const card = [...el.querySelectorAll("div,section")]
+        .map((node) => ({ rect: node.getBoundingClientRect() }))
+        .filter(({ rect: r }) => r.width >= 200 && r.height >= 200 && r.width < window.innerWidth * 0.95)
+        .sort((a, b) => a.rect.width - b.rect.width)[0];
+      const frame = card ? card.rect : rect;
+
       const btn = el.querySelector('[data-slot="dialog-close"]')
         ?? el.querySelector('button[aria-label="关闭"]')
         ?? el.querySelector('button[aria-label="close"]')
         ?? el.querySelector('svg[class*="close" i]')?.closest("button,div[role=button]")
-        // 右上角那个 ×：全屏弹窗里它通常没有可访问名，只能按位置找
+        // 卡片右上角那个 ×：它通常没有可访问名，只能按位置找
         ?? [...el.querySelectorAll("svg,button,div[role=button]")]
           .filter((c) => {
             const r = c.getBoundingClientRect();
-            // 右上角、边长 16–56px 的小控件
+            // 卡片右上角、边长 16–56px 的小控件
             return r.width >= 16 && r.width <= 56
-              && r.top < 120 && r.right > window.innerWidth - 160;
+              && r.top < frame.top + 120 && r.right > frame.right - 120;
           })
           .sort((a, b) => a.getBoundingClientRect().width - b.getBoundingClientRect().width)[0];
       if (btn) {
@@ -1320,7 +1364,12 @@ async function dismissPromoDialog(page) {
 
   // ② 点遮罩本体：radix 的 fullscreen dialog 通常把 overlay 绑成点击即关闭。
   //    实测点遮罩比 Escape 可靠 —— 弹窗是 h-full，点遮罩等于点它自己。
-  if (await page.locator('[data-slot="dialog-overlay"]').first().count().catch(() => 0)) {
+  //
+  //    2026-10-16 修正：这一路以前被 `[data-slot="dialog-overlay"]` 当**闸门**守着，
+  //    而新变体的遮罩只有 class 前缀（dialogMask-*），那个 data-slot 根本不存在 ——
+  //    于是它被整段跳过，只剩「找不到 ×」+「Escape 无效」两条失败分支。
+  //    闸门换成几何判据（overlayFound / covered），两条变体都能走到这里。
+  if (before.overlayFound || before.covered) {
     // 遮罩是 fixed inset-0，点它的左上角（避开弹窗内容本体）
     await page.mouse.click(8, 8).catch(() => undefined);
     await page.waitForTimeout(500);
@@ -1374,7 +1423,13 @@ async function submitPrompt(page, prompt) {
 
   await fillVerifiedPrompt(page, prompt);
 
-  const dismissedAfterFill = await dismissPromoDialog(page);
+  // 这里给一个等待窗口：实测弹窗是在 fill 之后才异步挂上来的（见
+  // PROMO_DIALOG_MOUNT_WAIT_MS）。代价是每条提问多等最多 3 秒，换掉的是
+  // 「20 秒点不动按钮 → 退化成 Enter（引用率 7.1%）」那条路 —— 与 tryClickSend
+  // 选择 20 秒窗口是同一种不对称。
+  const dismissedAfterFill = await dismissPromoDialog(page, {
+    waitMs: PROMO_DIALOG_MOUNT_WAIT_MS,
+  });
   trace.promoAfterFill = dismissedAfterFill;
   if (dismissedAfterFill > 0) await page.waitForTimeout(600);
 
@@ -1385,7 +1440,9 @@ async function submitPrompt(page, prompt) {
     // 点不到按钮时**再清一次弹窗**并重试一次：全屏遮罩是点不到按钮的已知原因之一，
     // 而重试比直接落 Enter 更有价值 —— 按钮提交才带得出引用区（实测 enter_key 组
     // 34 条全部零引用、expected_citation_count 全为 0；send_button 组 19 条里 12 条有引用）。
-    const afterRetryClear = await dismissPromoDialog(page);
+    const afterRetryClear = await dismissPromoDialog(page, {
+      waitMs: PROMO_DIALOG_MOUNT_WAIT_MS,
+    });
     trace.promoAfterFailedClick = afterRetryClear;
     if (afterRetryClear > 0) {
       await page.waitForTimeout(500);
