@@ -2407,3 +2407,82 @@ div[role=textbox]
 
 **判据：验一段代码就在真实环境里跑它。
 若必须单独跑，那说明它该独立成一个可执行文件，而不是被剪出来。**
+
+## 第二十节 —— 「换指纹」实测只换了噪声种子（2026-10-16）
+
+### 20.1 起因
+
+换用代理出口（四川成都电信 IDC，`125.64.14.30`）跑豆包匿名面，同一出口连问约 10 次后：
+
+1. 页面弹「**当前服务访问频繁，请稍后重试**」；
+2. 随后出现**人机验证**。
+
+第一个反应是「不是每次冷启动都换指纹吗」。于是去量，而不是去猜。
+
+### 20.2 实测：三次冷启动的指纹差异
+
+    node tools/capture-fingerprint.mjs 3
+
+| 字段 | 结论 |
+|---|---|
+| `canvas`、`hardwareConcurrency`（16 / 8 / 12） | **变** |
+| `userAgent`、`webglRenderer`、`screen`、`platform`、`timezone`、`language` | **完全不变** |
+
+平台用来认设备的是后者。也就是说：**「重启浏览器」当时在平台眼里几乎没换机器。**
+
+根因不在轮换逻辑，在采样方式：`browser.js` 先用 browserforge 采样，
+再把 `os` 和 `screen` 钉死（那是为了修掉「自称 Windows 却报 Mac 屏幕」的自相矛盾），
+结果可变的只剩噪声种子。
+
+**判据：「换指纹」必须以*身份字段*为判据，不能以「进程重启了」为判据。**
+进程重启是手段，身份变化才是证据。
+
+### 20.3 改法：真实设备预设 + 启动后自证
+
+Camoufox 自带 123 个**真实设备预设**（windows 75 / macos 30 / linux 18），
+每条是一台真机的完整组合（UA + platform + oscpu + 核数 + 屏幕 + WebGL + 字体 + 语音），
+结构上不可能出现「自称 Windows 却报 Mac 屏幕」。
+
+1. `src/fingerprint-rotation.js` 持久化游标，**单调递增**；
+2. Python 侧按游标取预设并把它交给 `launch_options(fingerprint_preset=...)`；
+3. 启动后核对**身份摘要**（UA + platform + 核数 + 屏幕 + WebGL vendor/renderer 的 hash）：
+   与上一次相同即抛错；
+4. 再拿页面读数与注入配置逐字段比对（UA / platform / 核数 / 屏幕），不一致即抛错。
+
+**第 3、4 步是这次改动的重点**：没有它们，「轮换成功」只是游标 +1，
+而不是一次可被证伪的观测。
+
+实测 4 轮冷启动：
+
+| 轮次 | platform | 屏幕 | WebGL renderer | 核数 |
+|---|---|---|---|---|
+| 1 | MacIntel | 1920x1200 | Apple M1 | 8 |
+| 2 | Linux x86_64 | 1920x1080 | Intel HD Graphics 400 | 8 |
+| 3 | Win32 | 1920x1080 | NVIDIA GeForce GTX 980 | 8 |
+| 4 | MacIntel | 1920x1080 | Intel HD Graphics 400 | 2 |
+
+### 20.4 中途踩的第二个坑：平铺顺序也是判据
+
+第一版按 `sorted(presets.items())` 平铺，而 `"linux" < "macos" < "windows"`，
+于是游标 1/2/3 全落在 linux 组 —— **屏幕和显卡换了，`platform` 三次都是 `Linux x86_64`**。
+
+改成「跨 OS 组交错」（windows[0], macos[0], linux[0], windows[1] …）之后，
+相邻两次必然换 OS。
+
+**判据：轮换的*顺序*和轮换的*内容*一样是设计的一部分。
+只验证「值变了」，会漏掉「变的方向是死的」。**
+
+### 20.5 顺带记录的两件事
+
+1. **限流文案没被认出**：平台原文是「当前服务访问频繁，请稍后重试」，
+   而 `detectProviderError` 的正则是 `请求过于频繁|操作频繁|稍后再试`，
+   三个分支全不匹配 → 这条**明确的限流**被上报成 `ANSWER_NOT_FOUND`（「提交后没建会话」）。
+   已补 `isProviderThrottleText`。**判错错误码比不报错更贵：它会把退避变成继续重试。**
+2. **推广弹窗第三次改版**：从「全屏」变成「居中卡片」（实测 `fullscreenPopup-*` 764x560，
+   占视口 33%），关闭用的 × 落在**卡片**右上角（`right ≈ 1090`），
+   而旧判据要求 `right > innerWidth - 160`（1280）→ 永远找不到；
+   第 ② 路「点遮罩」又被 `[data-slot="dialog-overlay"]` 当闸门守着，新变体没有这个属性 → 整段跳过。
+   两处都已改（按卡片定位 + 闸门换成几何判据 + 弹窗挂载最多等 3 秒）。
+3. **`session.profilePath` 在 Windows 上恒为 `null`**。按 `browser.js` 自己的注释，
+   这意味着每次冷启动都在 `%TEMP%` 留一个完整浏览器 profile，且孤儿进程树收不掉。
+   未修，单独记录。
