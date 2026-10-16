@@ -84,6 +84,7 @@ const RUN_UPSERT = `
     brand_mentioned, mention_count, first_mention_position, matched_terms, brand_detection_version,
     run_token, job_id, attempt, login_state, answer_truncated, request_slot,
     answer_completion,
+    proxy_pool_id, proxy_exit_id, proxy_mode, observed_egress_ip,
     last_attempt_started_at
   )
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
@@ -91,6 +92,7 @@ const RUN_UPSERT = `
           $19, $20, $21, $22, $23, $24, $25::jsonb, $26,
           $27, $28, $29, $30, $31, $32,
           $33,
+          $34, $35, $36, $37,
           $4)
   ON CONFLICT (local_run_id) DO UPDATE
     SET prompt_id = EXCLUDED.prompt_id,
@@ -134,7 +136,13 @@ const RUN_UPSERT = `
         -- 重放同一条 run 时不该把它已判定的完成来源擦掉：persistRun 可能被
         -- .ops/replay-*.mjs 再调一次，而那次的 driver 结果不一定带这个字段。
         -- COALESCE 让"这次没上报"与"上报了 null"都保持原有判定。
-        answer_completion = COALESCE(EXCLUDED.answer_completion, runs.answer_completion)
+        answer_completion = COALESCE(EXCLUDED.answer_completion, runs.answer_completion),
+        -- 出口信息同理：重放（.ops/replay-*.mjs 从 artifact 再落一次库）时上下文里
+        -- 通常没有出口，用 COALESCE 保留首次写入的实测值，而不是把它擦成 NULL。
+        proxy_pool_id = COALESCE(EXCLUDED.proxy_pool_id, runs.proxy_pool_id),
+        proxy_exit_id = COALESCE(EXCLUDED.proxy_exit_id, runs.proxy_exit_id),
+        proxy_mode = COALESCE(EXCLUDED.proxy_mode, runs.proxy_mode),
+        observed_egress_ip = COALESCE(EXCLUDED.observed_egress_ip, runs.observed_egress_ip)
   RETURNING id
 `;
 
@@ -352,6 +360,7 @@ export async function persistRun({
   jobId = null,
   attempt = null,
   requestSlot = null,
+  proxy = null,
 }) {
   if (!pool) throw new DatabasePersistError("persistRun requires a connection pool");
 
@@ -431,6 +440,12 @@ export async function persistRun({
       // 完成判据的可信度。null = 没上报（旧行 / 该平台未产出这个字段），
       // 与「上报了 unknown」在回填统计里必须分开。见 migrations/0031。
       normalizeAnswerCompletion(run?.answerCompletion),
+      // 出口身份与实测出口 IP，见 migrations/0035。null = 这次采集没走代理池。
+      proxy?.pool_id ?? null,
+      proxy?.exit_id ?? null,
+      proxy?.mode ?? null,
+      // 只接受观测到的 IP；探针没跑成时必须是 NULL，不能退回供应商声明的 host。
+      proxy?.observed_egress_ip ?? null,
     ]);
     const runId = runResult.rows[0].id;
 

@@ -157,6 +157,7 @@ async function persistSavedRun({
   jobId,
   attempt,
   requestSlot = 0,
+  proxy = null,
 }) {
   const persistSummary = await persistRun({
     pool,
@@ -170,6 +171,7 @@ async function persistSavedRun({
     jobId,
     attempt: saved.attempt ?? attempt,
     requestSlot,
+    proxy,
   });
   const next = await store.updateRun(saved.id, {
     dbStatus: "success",
@@ -239,6 +241,7 @@ export async function replayPendingPersistence({
       runToken,
       jobId,
       attempt,
+      proxy: context.proxy ?? null,
     });
     return {
       ok: true,
@@ -294,6 +297,9 @@ export async function runOnePrompt({
   const provider = getProviderAdapter(context.provider ?? config?.provider ?? "doubao");
   // 这次采集实际跑在哪个并发槽位；单槽位时恒为 0，与改造前一致。
   const requestSlot = Number.isInteger(context.requestSlot) && context.requestSlot >= 0 ? context.requestSlot : 0;
+  // 本次会话实测到的出口（见 migrations/0035）。没有代理池时是 null；
+  // 「有代理但这次没验成」靠 proxy.pool_id 非空来区分。
+  const proxy = context.proxy ?? null;
   // The observation surface comes from what the adapter declares, not from what a driver
   // happened to report: an adapter that needs no stored session cannot produce an account run.
   const loginState = provider.requiresStoredAuth === false ? "anonymous" : "account";
@@ -490,6 +496,7 @@ export async function runOnePrompt({
         jobId,
         attempt,
         requestSlot,
+        proxy,
       });
       persistSummary = persisted.persistSummary;
       saved = persisted.saved;

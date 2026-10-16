@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "pool_id": "shared_web",
+  "enabled": false,
+  "required": true,
+  "platforms": ["doubao", "qianwen", "wenxin", "zhipu"],
+
+  "acquisition": {
+    "mode": "per_session"
+  },
+
+  "source": {
+    "kind": "http_api",
+
+    "request": {
+      "method": "GET",
+      "url": "https://proxy-provider.example.invalid/api/getip",
+      "query": { "num": 1, "format": "json" },
+      "auth": {
+        "type": "bearer_env",
+        "env": "ONEGL_PROXY_PROVIDER_TOKEN"
+      },
+      "timeout_ms": 10000
+    },
+
+    "response": {
+      "format": "json",
+      "success": { "path": "code", "equals": 0 },
+      "items_path": "data.list",
+      "fields": {
+        "id": "id",
+        "host": "ip",
+        "port": "port",
+        "expires_at": "expire_time"
+      },
+      "default_scheme": "http",
+      "expiry_format": "iso8601"
+    },
+
+    "default_auth": {
+      "username_env": "ONEGL_PROXY_USERNAME",
+      "password_env": "ONEGL_PROXY_PASSWORD"
+    },
+
+    "stability": { "mode": "until_expiry" },
+
+    "inventory": {
+      "extract_count": 1,
+      "min_refresh_interval_seconds": 30,
+      "max_pool_size": 50
+    }
+  }
+}

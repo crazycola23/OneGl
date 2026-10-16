@@ -21,7 +21,37 @@ function intEnv(name, fallback, min = 1) {
   return parsed;
 }
 
+/**
+ * 设备身份轮换模式。
+ *
+ * 空 / auto = 自动：没有登录态就轮换，有登录态就不轮换（沿用「匿名面换指纹、
+ * 登录态不换」这条既有判据）。off 关闭；force 强制。
+ */
+function rotationEnv(name) {
+  const raw = process.env[name];
+  if (raw == null || String(raw).trim() === "") return null;
+  const value = String(raw).trim().toLowerCase();
+  if (["off", "false", "0", "keep", "none"].includes(value)) return "off";
+  if (["force", "always", "on", "true", "1"].includes(value)) return "force";
+  if (value === "auto") return null;
+  throw new Error(`${name} must be auto, off, or force (got ${JSON.stringify(raw)})`);
+}
+
 const PROVIDER_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+
+/**
+ * 出口自证模式。默认 connect —— 便宜的那条先跑；写错了就报错，不静默降级：
+ * 一个拼错的 ONEGL_PROXY_VERIFY_EGRESS 会让整套验收实验失去出口取证。
+ */
+function egressModeEnv(name) {
+  const raw = process.env[name];
+  if (raw == null || String(raw).trim() === "") return "connect";
+  const value = String(raw).trim().toLowerCase();
+  if (!["connect", "browser", "off"].includes(value)) {
+    throw new Error(`${name} must be connect, browser, or off (got ${JSON.stringify(raw)})`);
+  }
+  return value;
+}
 
 /**
  * A provider id is part of the credential identity, so an unchecked value would let a
@@ -130,6 +160,32 @@ export function loadConfig(overrides = {}) {
     browser,
     browserExecutable:
       overrides.browserExecutable ?? process.env.ONEGL_BROWSER_EXECUTABLE ?? null,
+    // 代理池配置文件入口（契约见 docs/2026-10-15_proxy-pool-interface-v1.md）。
+    // 未设置时保持既有直连行为；一旦设置，读不到或必需池不可用都会在启动浏览器前
+    // 抛错，而不是悄悄退回直连 —— 代理故障必须表现为故障。
+    proxyPoolFile:
+      overrides.proxyPoolFile ?? strEnv("ONEGL_PROXY_POOL_FILE", null),
+    // 出口自证模式（见 src/proxy-egress.js）：
+    //   connect = 只用 Node 的 CONNECT 探针（约 0.5s），证明这条线路真的能把流量送出去
+    //   browser = 额外用页面导航取出口（约 2–4s），取证更强：证明**浏览器**确实走了代理
+    //   off     = 不验（只建议在排查探针本身时用）
+    // 默认 connect：冷启动 11.4s 的会话再加 2–4s 的导航是 20%+ 的固定开销，
+    // 而浏览器级的证明在验收实验时才需要（tools/probe-proxy-egress.mjs 也提供它）。
+    proxyVerifyEgress:
+      overrides.proxyVerifyEgress ?? egressModeEnv("ONEGL_PROXY_VERIFY_EGRESS"),
+    proxyEgressTimeoutMs:
+      overrides.proxyEgressTimeoutMs ??
+      intEnv("ONEGL_PROXY_EGRESS_TIMEOUT_MS", 15_000, 1_000),
+    // 设备身份轮换（见 src/fingerprint-rotation.js）。null = 自动。
+    fingerprintRotation:
+      overrides.fingerprintRotation ?? rotationEnv("ONEGL_FINGERPRINT_ROTATION"),
+    // 身份来源：compose = 把该 OS 的真实屏幕/核数/显卡组合起来（18,638 种）；
+    // preset = 整条真实设备记录轮换（123 种，用于对照与回退）。
+    fingerprintSource: String(
+      overrides.fingerprintSource ?? strEnv("ONEGL_FINGERPRINT_SOURCE", "compose"),
+    )
+      .trim()
+      .toLowerCase(),
     // Context-level environment. These exist so one account presents the *same*
     // browser environment on every cold start: an automation that switches locale,
     // timezone and window size between runs is not behaving like the same user

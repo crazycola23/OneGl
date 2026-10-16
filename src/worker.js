@@ -11,6 +11,7 @@ import {
   beginAccountRun,
   markStorageStatePresent,
   identityPromptsAfterRelaunch,
+  intEnvValue,
   promptCountForBatch,
   randomDelayMs,
   recordAccountFailure,
@@ -216,6 +217,84 @@ function sessionKey(accountKey, provider, slot = 0) {
 }
 
 /**
+ * 空闲会话回收。
+ *
+ * 2026-10-16 实测（生产 192.168.2.110）：worker 空闲 22 小时后仍持有 **8 个会话**
+ * —— 容器里 8.7 GB 内存、27 个浏览器进程，宿主机可用内存被吃掉 9 GB
+ * （重启 worker 后降到 121 MB / 0 个浏览器进程，可用内存 19 GB → 28 GB）。
+ *
+ * 原因是 `sessions` 表只增不减：会话建好之后留着复用，**采完没有任何超时释放**。
+ * 对一天只跑几个小时的采集任务，这是纯浪费 —— 而且浪费会累积，
+ * 因为驻留的浏览器进程还会自己涨（观测到单个 camoufox-bin 涨到 2 GB）。
+ *
+ * 判据用「最后一次服务提问的时刻」，不是创建时刻：正在连续采集的会话必须留活，
+ * 空闲的才该释放。置 0 关闭回收（不建议 —— 那正是这个 bug 的原始行为）。
+ */
+const SESSION_IDLE_MS = intEnvValue("ONEGL_SESSION_IDLE_MS", 15 * 60_000, 0);
+let sessionReaper = null;
+
+/**
+ * **整台机器**同时能开几个浏览器（与账号无关）。
+ *
+ * 2026-10-16 发现：并发的唯一刹车是「账号数 × 每账号 2 槽位」—— 6 个账号就是 12 个浏览器
+ * （实测约 1.1 GB/会话，合计 ~13 GB）。而账号是业务侧随时会加的东西：加到 10 个就是
+ * 20 个浏览器，这台 60 GB 的机器直接进 swap，**代价由同机的 scrm 与 ELK 承担**。
+ *
+ * 它和 MAX_ACCOUNT_SLOTS 是两个不同的额度，别混：
+ *   · MAX_ACCOUNT_SLOTS —— 同一个账号能开几个（**平台风控**，实测 4 会触发惩罚）
+ *   · 这个 —— 本机一共能开几个（**机器内存**，与平台无关）
+ */
+const MAX_CONCURRENT_BROWSERS = intEnvValue("ONEGL_MAX_CONCURRENT_BROWSERS", 6, 1);
+
+/**
+ * 超过全局上限时，关掉**最久没用且当前不在用**的会话，给新会话让位。
+ * 全都在用时等，不硬闯 —— 硬闯的代价是内存，而内存是不可回收的资源。
+ */
+async function ensureBrowserCapacity() {
+  let waited = 0;
+  while (sessions.size + sessionCreating.size >= MAX_CONCURRENT_BROWSERS) {
+    const idle = [...sessions.entries()]
+      .filter(([, session]) => (session.inUse ?? 0) === 0)
+      .sort((a, b) => (a[1].lastUsedAt ?? 0) - (b[1].lastUsedAt ?? 0));
+    if (idle.length === 0) {
+      await sleep(1_000);
+      waited += 1_000;
+      if (waited > 300_000) {
+        throw new Error(
+          `等待浏览器槽位超时：${MAX_CONCURRENT_BROWSERS} 个会话全部在用，300 秒内没有释放`,
+        );
+      }
+      continue;
+    }
+    const [identity, session] = idle[0];
+    log({
+      event: "browser-cap-evict",
+      identity,
+      cap: MAX_CONCURRENT_BROWSERS,
+      idle_ms: Date.now() - (session.lastUsedAt ?? 0),
+    });
+    await closeSession(parseAccountIdentity(identity)).catch(() => undefined);
+  }
+}
+
+function startSessionReaper() {
+  if (SESSION_IDLE_MS <= 0) return;
+  // 扫描间隔取 min(空闲阈值, 60s)：阈值设得很短时也要来得及回收。
+  const everyMs = Math.max(15_000, Math.min(SESSION_IDLE_MS, 60_000));
+  sessionReaper = setInterval(() => {
+    const now = Date.now();
+    for (const [identity, session] of sessions) {
+      const idleMs = now - (session.lastUsedAt ?? now);
+      if (idleMs < SESSION_IDLE_MS) continue;
+      log({ event: "session-idle-reap", identity, idle_ms: idleMs });
+      closeSession(parseAccountIdentity(identity)).catch(() => undefined);
+    }
+  }, everyMs);
+  sessionReaper.unref?.();
+  log({ event: "session-reaper-start", idle_ms: SESSION_IDLE_MS, every_ms: everyMs });
+}
+
+/**
  * 每个 (平台, 账号, 槽位) 一个浏览器会话，复用以免每次任务都重启一次 Camoufox。
  *
  * 建会话这段必须**串行化**，否则并发调用会各建一个浏览器：
@@ -243,22 +322,47 @@ async function getSession({ accountKey, provider }, slot = 0) {
   if (inflight) return inflight;
 
   const creating = (async () => {
+    // 先过全局闸门再启动浏览器：这台机器一共能开几个，是内存决定的，不交给账号数决定。
+    await ensureBrowserCapacity();
     const accountConfig = loadConfig({ accountKey, provider });
     const adapter = getProviderAdapter(provider);
-    const session = await launchBrowserSession(accountConfig);
-    await adapter.openPage(session.page, accountConfig);
-    // 匿名面没有登录态可标记，写进去会让运营以为这个身份已经绑定成功。
-    if (adapter.requiresStoredAuth !== false) {
-      await markStorageStatePresent(pool, accountKey, session.hasStoredAuth, provider).catch(() => undefined);
+    // 把槽位传下去：出口按 (平台, 账号, 槽位) 分配，同账号的多开必须落在不同 IP 上。
+    const session = await launchBrowserSession(accountConfig, { slot });
+    try {
+      await adapter.openPage(session.page, accountConfig);
+      // 匿名面没有登录态可标记，写进去会让运营以为这个身份已经绑定成功。
+      if (adapter.requiresStoredAuth !== false) {
+        await markStorageStatePresent(pool, accountKey, session.hasStoredAuth, provider).catch(() => undefined);
+      }
+    } catch (error) {
+      // ★ 2026-10-16 修：浏览器这时候**已经在跑了**，但这条会话从没进过 sessions 表 ——
+      // 不在这里关掉，它就永远没人回收：closeSession 够不着（表里没有）、
+      // shutdown 遍历不到、reapBrowserTree 也不会被调用（它挂在 session.close() 里）。
+      // 原实现在下面用 `.catch(() => undefined)` 把错误吞了，浏览器进程就此变成
+      // 「连重启 worker 都清理不掉的孤儿」，只能靠手工按 PID 杀。
+      await session.close().catch(() => undefined);
+      log({
+        event: "session-open-failed",
+        account_key: accountKey,
+        provider,
+        slot: Number.isInteger(slot) && slot > 0 ? slot : undefined,
+        code: error?.code ?? error?.name ?? "UNKNOWN",
+      });
+      throw error;
     }
 
     sessions.set(identity, session);
+    session.lastUsedAt = Date.now();
     log({
       event: "session-open",
       account_key: accountKey,
       provider,
       slot: Number.isInteger(slot) && slot > 0 ? slot : undefined,
       stored_auth: session.hasStoredAuth,
+      // 出口身份与**实测**出口 IP：没有这一个观测，「走了代理」就只是配置里的一句话。
+      proxy_exit: session.proxy?.exit_id ?? undefined,
+      egress_ip: session.proxy?.observed_egress_ip ?? undefined,
+      egress_source: session.proxy?.egress_source ?? undefined,
     });
     return session;
   })();
@@ -458,9 +562,17 @@ function createSemaphore(permits) {
  * （180s 内零输出，平台静默丢弃）、1 条 DOUBAO_SUBMISSION_FAILED，失败集中在
  * 13:41–13:45，之后同一账号又恢复成功 —— 平台对「同账号多窗口高频提交」的惩罚。
  *
- * 所以并发度不再交给配置决定：**所有平台一律最多 2 个槽位**，配置写多少都被钳到这里。
+ * ── 2026-10-16：改成可配，但默认不动 ────────────────────────────────
+ * 那次实测的**前提已经被改掉了**：9-30 时没有 IP 池，4 个窗口共用同一个出口 IP，
+ * 于是「同账号多窗口」与「同 IP 高频提交」两个因子混在一起，分不清是哪个触发的。
+ * 现在出口按 (平台, 账号, 槽位) 分配（见 proxy-pool.js 的 selectExit），
+ * 同账号的多开落在不同 IP 上 —— 前提被拆开了。
+ *
+ * 但**上限该提到几必须重新实测**，不能凭「现在有池子了」就放开：同账号这个因子还在。
+ * 所以这里只把写死的 2 换成可配，默认值保持 2（行为不变），
+ * 要放开必须显式设置 ONEGL_MAX_ACCOUNT_SLOTS，并且用实测结论支撑。
  */
-const MAX_ACCOUNT_SLOTS = 2;
+const MAX_ACCOUNT_SLOTS = intEnvValue("ONEGL_MAX_ACCOUNT_SLOTS", 2, 1);
 
 
 /**
@@ -779,6 +891,8 @@ async function handleJob(job, token) {
     throw new DelayedError();
   }
 
+  // 会话的「正在使用」标记：空闲回收与全局闸门都靠它区分「闲着可以关」和「正在跑不能碰」。
+  let activeSession = null;
   try {
     // 两次提问之间在配置区间内随机等待，避免固定节奏的机械化请求
     await sleep(randomDelayMs(safety));
@@ -787,6 +901,8 @@ async function handleJob(job, token) {
     // prepareWindow 换过身份时会返回新的会话（旧浏览器进程已关），必须用它的返回值提问，
     // 否则会拿着一个已经 close 掉的 page 去跑，每个任务都稳定超时。
     const session = await prepareWindow(await getSession(account, slot), account, batchId, slot);
+    activeSession = session;
+    session.inUse = (session.inUse ?? 0) + 1;
     const brandRules = await brandRulesFor(projectName);
 
     // 提交节流放在这里、紧邻 runOnePrompt：runOnePrompt 内部就会提交，中间不再有其他等待，
@@ -813,6 +929,9 @@ async function handleJob(job, token) {
         attempt,
         // 落在 runs.request_slot：指纹轮换的计数按槽位分开算，见 migrations/0028。
         requestSlot: slot,
+        // 落在 runs.proxy_* / observed_egress_ip（migrations/0035）：容量实验要按
+        // 「实际出口 IP」归因，只按平台和账号统计无法区分「限制按 IP 记」和「按账号记」。
+        proxy: session.proxy ?? null,
       },
     });
     // 计的是「这个窗口服务过几次提问」，与成功/失败无关：一个卡住的窗口不该因为
@@ -820,6 +939,8 @@ async function handleJob(job, token) {
     // 提问数（数据库，见 prepareWindow），这个只是当前窗口的计数，rotateContext() 会清零。
     session.contextPrompts += 1;
     session.sessionPrompts = (session.sessionPrompts ?? 0) + 1;
+    // 空闲回收读的是这个：一个正在连续采集的会话必须留活，空闲的才该释放。
+    session.lastUsedAt = Date.now();
 
     const code = outcome.normalized?.code ?? null;
     const durationMs = Date.now() - startedAt;
@@ -902,6 +1023,11 @@ async function handleJob(job, token) {
     }
     throw new Error(`${code}: ${outcome.normalized?.message ?? "未知错误"}`);
   } finally {
+    if (activeSession) {
+      activeSession.inUse = Math.max(0, (activeSession.inUse ?? 1) - 1);
+      // 空闲计时从「用完」开始算，而不是从「上次问答完成」——中间还隔着写库等步骤。
+      activeSession.lastUsedAt = Date.now();
+    }
     slotPool.release(slot);
     await executionLease.release();
   }
@@ -1178,6 +1304,10 @@ async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   log({ event: "shutdown", signal });
+  if (sessionReaper) {
+    clearInterval(sessionReaper);
+    sessionReaper = null;
+  }
 
   await Promise.all([...workers.values()].map((worker) => worker.close().catch(() => undefined)));
   workers.clear();
@@ -1202,6 +1332,7 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 async function main() {
+  startSessionReaper();
   await startSourceIntelligenceWorker();
   const accounts = await discoverAccounts();
   console.log("OneGl 后台采集 Worker 已启动");
@@ -1212,6 +1343,9 @@ async function main() {
   console.log(`  单账号并发    : ${safety.accountParallelism}（有凭证账号，跨进程数据库锁）`);
   console.log(
     `  槽位上限      : ${MAX_ACCOUNT_SLOTS}（配置 ${safety.accountSlots}，已钳到上限）`,
+  );
+  console.log(
+    `  全局浏览器上限: ${MAX_CONCURRENT_BROWSERS}（跨账号，内存闸门）｜空闲回收 ${SESSION_IDLE_MS > 0 ? `${SESSION_IDLE_MS / 60_000} 分钟` : "已关闭"}`,
   );
   console.log(`  引用页分析    : ${sourceIntelligenceQueueName()}（并发 ${SOURCE_INTELLIGENCE_CONCURRENCY}）`);
   console.log(

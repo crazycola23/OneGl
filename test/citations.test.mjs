@@ -46,7 +46,10 @@ test("citation extraction reproduces the recorded result for every real DOM fixt
   assert.ok(fixtures.length > 0, "no fixtures found under test/fixtures");
 
   const config = loadConfig({ browser: "chromium", headless: true });
-  const session = await launchBrowserSession(config, { headless: true });
+  // proxy: null —— 这是离线 DOM 回放：夹具已经在磁盘上，页面请求还会被 route 全部 abort。
+  // 不显式关掉代理，这个测试就会被 .env 里配的池子牵着走（池子挂了这个测试也挂），
+  // 而它要验的只是提取器，不是线路。
+  const session = await launchBrowserSession(config, { headless: true, proxy: null });
 
   try {
     // Fixtures are offline snapshots; a stray asset request must not hang the suite.
@@ -144,7 +147,8 @@ test("citation block must belong to this answer, not the last one on the page", 
 
   const STALE_HOST = "stale-next-turn.example.com";
   const config = loadConfig({ browser: "chromium", headless: true });
-  const session = await launchBrowserSession(config, { headless: true });
+  // 同上：离线夹具回放，不依赖任何出口。
+  const session = await launchBrowserSession(config, { headless: true, proxy: null });
 
   try {
     await session.page.route("**", (route) => route.abort().catch(() => undefined));

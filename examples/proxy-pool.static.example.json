@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "pool_id": "shared_web",
+  "enabled": false,
+  "required": true,
+  "platforms": ["doubao", "qianwen", "wenxin", "zhipu"],
+  "acquisition": { "mode": "pooled" },
+  "source": {
+    "kind": "static",
+    "items": [
+      {
+        "id": "exit_a",
+        "server": "http://proxy-a.example.invalid:3128",
+        "auth": {
+          "username_env": "ONEGL_PROXY_A_USERNAME",
+          "password_env": "ONEGL_PROXY_A_PASSWORD"
+        },
+        "stability": { "mode": "fixed" }
+      },
+      {
+        "id": "exit_b",
+        "server": "http://proxy-b.example.invalid:3128",
+        "auth": {
+          "username_env": "ONEGL_PROXY_B_USERNAME",
+          "password_env": "ONEGL_PROXY_B_PASSWORD"
+        },
+        "stability": { "mode": "fixed" }
+      }
+    ]
+  }
+}

@@ -5,6 +5,15 @@ import { promisify } from "node:util";
 import { chromium, firefox } from "playwright-core";
 import { DoubaoMvpError, ErrorCode } from "./errors.js";
 import {
+  commitRotation,
+  describeIdentity,
+  identityDigest,
+  planRotation,
+  spoofMismatches,
+} from "./fingerprint-rotation.js";
+import { acquireSessionProxy, describeProxy, playwrightProxy, releaseSessionProxy } from "./proxy-pool.js";
+import { DEFAULT_EGRESS_URLS, extractEgressIp, probeEgressThroughProxy } from "./proxy-egress.js";
+import {
   assertStorageStateEncryptionReady,
   loadStoredStorageState,
   saveStoredStorageState,
@@ -26,6 +35,213 @@ except Exception as exc:
     raise
 
 payload = json.loads(os.environ["ONEGL_CAMOUFOX_PAYLOAD"])
+
+
+def _camou_config(options):
+    """Rebuild the full fingerprint config from its CAMOU_CONFIG_N chunks.
+
+    Camoufox splits the config because an environment variable is size-limited:
+    chunk_size is 32767 on Linux but **2047 on Windows**, so the same config is a
+    single variable on Linux and six on Windows. Reading only CAMOU_CONFIG_1 made
+    every local Windows launch die with a JSONDecodeError while production Linux
+    kept working - a platform-specific failure the logs would blame on the proxy.
+    """
+    names = sorted(
+        (name for name in options.get("env", {}) if name.startswith("CAMOU_CONFIG_")),
+        key=lambda name: int(name.rsplit("_", 1)[1]),
+    )
+    return json.loads("".join(options["env"][name] for name in names))
+
+
+# ── 设备身份轮换：真实预设 × 字段组合 ────────────────────────────────────
+#
+# 2026-10-16 三次实测，决定了这里的做法：
+#
+#   1. browserforge 采样 + 钉死 os/screen（原实现）：3 轮冷启动的
+#      UA / platform / screen / webgl 完全一致 —— 只有噪声种子在变。
+#   2. browserforge 不钉任何东西（300 次采样）：只有 **144 个不同的身份**。
+#      因为 UA 的 Firefox 版本会被改写成已安装的构建（防泄漏），UA 于是只剩
+#      3 种（每个 OS 一种），采样库里的核数 8 种、屏幕 18 种、显卡 13 种。
+#   3. 直接用 Camoufox 自带的 123 个真实设备预设：123 种，且顺序固定。
+#
+# 所以「越多越好」不能靠随机采样，只能靠**把真实字段组合起来**：
+# 每个 OS 的屏幕 / 核数 / 显卡 / 触点数池子全部取自该 OS 的真实记录，
+# 组合空间 = windows 16,848 + macos 1,400 + linux 390 = **18,638**。
+#
+# 自相矛盾（自称 Windows 却报 Mac 屏幕、Linux 报 Apple M1）在结构上被排除：
+# 池子按 OS 分开，任何一次组合里每个字段都来自同一个 OS。
+#
+# 游标由 Node 侧持久化（src/fingerprint-rotation.js），并带上最近若干次的
+# 身份摘要做**避重**：组合前先算摘要，命中就换下一个游标重算（最多 24 次）。
+
+
+def _identity_digest(config):
+    """与 src/fingerprint-rotation.js 的 identityDigest 必须逐字节一致。
+
+    两边用同一份数组顺序和同一份 JSON 写法（无多余空格、不转义非 ASCII），
+    否则「避重」比对的就是两个不同的东西，而它不会报错，只会静默失效。
+    """
+    import hashlib
+
+    key = [
+        config.get("navigator.userAgent"),
+        config.get("navigator.platform"),
+        config.get("navigator.hardwareConcurrency"),
+        f"{config.get('screen.width')}x{config.get('screen.height')}",
+        config.get("webGl:renderer"),
+    ]
+    return hashlib.sha256(
+        json.dumps(key, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _pick(values, cursor, salt):
+    """按 (游标, 维度) 取值：不同维度用不同的哈希，避免各维度同步变化（那样等于没组合）。"""
+    import hashlib
+
+    digest = int(hashlib.sha256(f"{cursor}:{salt}".encode()).hexdigest()[:12], 16)
+    return values[digest % len(values)]
+
+
+_preset_info = None
+preset_offset = payload.pop("preset_offset", None)
+_compose = bool(payload.pop("fingerprint_compose", False))
+_avoid = set(payload.pop("fingerprint_avoid", None) or [])
+if preset_offset is not None:
+    from camoufox.fingerprints import from_preset, load_presets
+
+    _catalogue = load_presets() or {}
+    _presets = _catalogue.get("presets", {}) or {}
+    if not _presets:
+        raise RuntimeError(
+            "Camoufox shipped no fingerprint presets; device rotation would be a no-op"
+        )
+
+    # 显卡不能只挑「真实存在」的，还得挑「Camoufox 参数库里查得到」的。
+    # 2026-10-16 实测：预设里有 "ANGLE (Intel, Intel(R) Arc(TM) A750 …)" 这类字符串，
+    # 而 webgl_fingerprints 表只有 33 行、按 OS 带权重（0 表示该 OS 没有）。
+    # 不改的话，pin 了库里没有的组合 → sample_webgl 抛错 → 6 次重试全废 → 启动直接失败。
+    # （这就是它被设计成响亮失败的价值：没有静默降级成一个假显卡。）
+    import sqlite3
+
+    from camoufox.webgl.sample import DB_PATH as _WEBGL_DB
+
+    _webgl_valid = {}
+    try:
+        _conn = sqlite3.connect(_WEBGL_DB)
+        for _vendor, _renderer, _win_weight, _mac_weight, _lin_weight in _conn.execute(
+            "SELECT vendor, renderer, win, mac, lin FROM webgl_fingerprints"
+        ):
+            for _os_key, _weight in (("win", _win_weight), ("mac", _mac_weight), ("lin", _lin_weight)):
+                if _weight and float(_weight) > 0:
+                    _webgl_valid.setdefault(_os_key, set()).add((_vendor, _renderer))
+        _conn.close()
+    except Exception:
+        # 读不到库就退回「不过滤」，让 sample_webgl 自己报错 —— 那比悄悄少一个维度好。
+        _webgl_valid = {}
+
+    # 池子按 OS 分开 —— 这是「不可能自相矛盾」的来源。
+    _pools = []
+    for _os_name, _items in sorted(_presets.items(), key=lambda item: (-len(item[1]), item[0])):
+        def _uniq(values):
+            seen = []
+            for value in values:
+                if value not in seen:
+                    seen.append(value)
+            return seen
+
+        _usable = _webgl_valid.get({"windows": "win", "macos": "mac", "linux": "lin"}.get(_os_name))
+        _webgl_entries = _uniq([item.get("webgl") or {} for item in _items])
+        if _usable:
+            _webgl_entries = [
+                entry
+                for entry in _webgl_entries
+                if (entry.get("unmaskedVendor"), entry.get("unmaskedRenderer")) in _usable
+            ]
+
+        _pools.append(
+            {
+                "os": _os_name,
+                "navigators": _uniq([item.get("navigator") or {} for item in _items]),
+                "screens": _uniq([item.get("screen") or {} for item in _items]),
+                "webgl": _webgl_entries,
+                "cores": _uniq(
+                    [(item.get("navigator") or {}).get("hardwareConcurrency") for item in _items]
+                ),
+                "touch": _uniq(
+                    [(item.get("navigator") or {}).get("maxTouchPoints") for item in _items]
+                ),
+            }
+        )
+    _pools = [pool for pool in _pools if pool["screens"] and pool["cores"] and pool["webgl"]]
+
+    def _candidate(cursor):
+        # 取 OS 也走游标：每次换一个 OS，相邻两次必然不同。
+        pool = _pools[cursor % len(_pools)]
+        navigator = dict(_pick(pool["navigators"], cursor, "navigator"))
+        navigator["hardwareConcurrency"] = _pick(pool["cores"], cursor, "cores")
+        touch = _pick(pool["touch"], cursor, "touch")
+        if touch is not None:
+            navigator["maxTouchPoints"] = touch
+        return pool["os"], {
+            "navigator": navigator,
+            "screen": _pick(pool["screens"], cursor, "screen"),
+            "webgl": _pick(pool["webgl"], cursor, "webgl"),
+        }
+
+    _selected = None
+    if _compose:
+        for _attempt in range(24):
+            _cursor = int(preset_offset) + _attempt
+            _os_name, _candidate_preset = _candidate(_cursor)
+            _digest = _identity_digest(from_preset(_candidate_preset))
+            if _digest not in _avoid:
+                _selected = (_os_name, _candidate_preset, _digest, _cursor, _attempt)
+                break
+        if _selected is None:
+            raise RuntimeError(
+                "Fingerprint composition could not find an unused identity in 24 attempts; "
+                "the avoid-window is larger than the combination space"
+            )
+    else:
+        # 回退路径：整条真实记录轮换（123 种），顺序按 OS 交错。
+        _by_os = [(pool["os"], _presets[pool["os"]]) for pool in _pools]
+        _flat = []
+        _depth = max((len(items) for _, items in _by_os), default=0)
+        for _depth_index in range(_depth):
+            for _os_name, _items in _by_os:
+                if _depth_index < len(_items):
+                    _flat.append((_os_name, _depth_index, _items[_depth_index]))
+        _os_name, _index, _candidate_preset = _flat[int(preset_offset) % len(_flat)]
+        _digest = _identity_digest(from_preset(_candidate_preset))
+        _selected = (_os_name, _candidate_preset, _digest, int(preset_offset), 0)
+
+    _os_name, _preset, _selected_digest, _cursor, _attempts = _selected
+    payload["fingerprint_preset"] = _preset
+    # 预设自带 os 与 screen，再让 browserforge 采样一次等于把它覆盖掉。
+    payload.pop("os", None)
+    payload.pop("screen_size", None)
+    payload.pop("_screen_guard", None)
+
+    _screen = _preset.get("screen", {}) or {}
+    _screen_w = int(_screen.get("width") or 0)
+    _screen_h = int(_screen.get("height") or 0)
+    _want = payload.get("window") or [1440, 900]
+    # 窗口必须装得进这块屏幕：outerWidth > screen.width 是另一种自相矛盾，
+    # 而 1440x900 / 1366x768 这类真实屏幕比默认 viewport 小，不收敛就会造出来。
+    _win_w = min(int(_want[0]), max(800, _screen_w - 16)) if _screen_w else int(_want[0])
+    _win_h = min(int(_want[1]), max(600, _screen_h - 120)) if _screen_h else int(_want[1])
+    payload["window"] = (_win_w, _win_h)
+    _preset_info = {
+        "os": _os_name,
+        "index": _cursor,
+        "id": f"composed-{_os_name}-{_cursor}" if _compose else (_preset.get("id") or _os_name),
+        "composed": _compose,
+        "attempt": _attempts,
+        "screen": [_screen_w, _screen_h],
+        "viewport": [_win_w, _win_h],
+    }
+
 
 # launch_options() takes a Screen object, not a dict, and Camoufox otherwise derives the
 # screen from the physical monitor. Under the virtual Xvfb display that monitor is 1x1, so
@@ -127,7 +343,7 @@ if not _succeeded:
     )
 
 if _screen_guard is not None:
-    _got = json.loads(options["env"]["CAMOU_CONFIG_1"])
+    _got = _camou_config(options)
     _w = _got.get("screen.width")
     _h = _got.get("screen.height")
     if _w != _screen_guard["width"] or _h != _screen_guard["height"]:
@@ -157,8 +373,14 @@ if _screen_guard is not None:
 # 保留 onegl_fingerprint_config 回传：它是审计工具做「配置 vs 页面」双向对照
 # 的唯一可靠数据源（走 /proc 读子进程 environ 会因权限失败：worker 以 onegl
 # 用户运行读不到，而用 root 起浏览器会被 Camoufox 拒绝）。
-cfg = json.loads(options["env"]["CAMOU_CONFIG_1"])
+cfg = _camou_config(options)
 options["onegl_fingerprint_config"] = cfg
+if _preset_info is not None:
+    options["onegl_preset"] = _preset_info
+    options["onegl_viewport"] = {
+        "width": _preset_info["viewport"][0],
+        "height": _preset_info["viewport"][1],
+    }
 print(json.dumps(options))
 `;
 
@@ -181,7 +403,14 @@ print(json.dumps(options))
  */
 export function camoufoxLaunchPayload(
   config,
-  { mode = null, virtualDisplay = null } = {},
+  {
+    mode = null,
+    virtualDisplay = null,
+    proxy = null,
+    presetOffset = null,
+    compose = false,
+    avoidDigests = [],
+  } = {},
 ) {
   const width = Number(config.viewportWidth);
   const height = Number(config.viewportHeight);
@@ -210,7 +439,9 @@ export function camoufoxLaunchPayload(
   }
   // The window cannot be larger than the screen it claims, or the geometry is
   // self-contradictory in a different way (outerWidth > screen.width).
-  if (screenWidth < width || screenHeight < height) {
+  // 走真实设备预设时屏幕由预设决定，Python 侧会按预设收敛窗口，
+  // 这里的「屏幕必须装得下窗口」不适用（否则 1366x768 这类预设会被误杀）。
+  if (presetOffset == null && (screenWidth < width || screenHeight < height)) {
     throw new DoubaoMvpError(
       ErrorCode.UNKNOWN_ERROR,
       `Camoufox screen ${screenWidth}x${screenHeight} is smaller than the window ${width}x${height}.`,
@@ -224,7 +455,17 @@ export function camoufoxLaunchPayload(
     locale: config.locale,
     window: [width, height],
     screen_size: { width: screenWidth, height: screenHeight },
+    // 游标交给 Python 侧选真实设备预设；为空表示沿用旧的 browserforge 采样路径。
+    ...(presetOffset == null ? {} : { preset_offset: presetOffset }),
+    // 组合模式：池子按 OS 分开，屏幕/核数/显卡各自从该 OS 的真实记录里取。
+    ...(presetOffset == null ? {} : { fingerprint_compose: compose === true }),
+    ...(presetOffset == null || avoidDigests.length === 0
+      ? {}
+      : { fingerprint_avoid: avoidDigests }),
     ...(virtualDisplay ? { virtual_display: virtualDisplay } : {}),
+    // Playwright 1.55+ 会对 proxy 做校验，Camoufox 只在非 null 时才回传该键，
+    // 所以「不配代理」必须表现为没有这个键，而不是 proxy: null。
+    ...(proxy ? { proxy } : {}),
   };
 }
 
@@ -490,11 +731,28 @@ async function startVirtualDisplay() {
   }
 }
 
-async function camoufoxLaunchOptions(config, { mode, virtualDisplay = null } = {}) {
+async function camoufoxLaunchOptions(
+  config,
+  {
+    mode,
+    virtualDisplay = null,
+    proxy = null,
+    presetOffset = null,
+    compose = false,
+    avoidDigests = [],
+  } = {},
+) {
   // Do not request Camoufox behavior-humanization. OneGl's operational safety
   // comes from conservative rate limits, explicit backoff and manual handling
   // of verification/access restrictions.
-  const payload = camoufoxLaunchPayload(config, { mode, virtualDisplay });
+  const payload = camoufoxLaunchPayload(config, {
+    mode,
+    virtualDisplay,
+    proxy,
+    presetOffset,
+    compose,
+    avoidDigests,
+  });
 
   try {
     const { stdout } = await execFileAsync(
@@ -527,28 +785,119 @@ async function camoufoxLaunchOptions(config, { mode, virtualDisplay = null } = {
   }
 }
 
-function contextOptionsFrom(config, storedAuth) {
+function contextOptionsFrom(config, storedAuth, viewport = null) {
   return {
     storageState: storedAuth?.present ? storedAuth.state : undefined,
     // Identical on every cold start, per account. Without this a restarted Worker
     // presents a different locale/timezone/window than the session it is resuming.
     locale: config.locale,
     timezoneId: config.timezoneId,
-    viewport: { width: config.viewportWidth, height: config.viewportHeight },
+    // 视口由设备预设的屏幕决定（窗口必须装得进屏幕），没有预设时才用配置值。
+    viewport: viewport ?? { width: config.viewportWidth, height: config.viewportHeight },
+  };
+}
+
+/**
+ * 是否轮换设备身份。
+ *
+ * 默认 auto：**没有登录态就轮换，有登录态就不轮换** —— 沿用既有的
+ * 「匿名面一律换指纹、登录态一律不换」判据（worker.js 里按适配器声明的那条）。
+ * 登录态换身份会让「同一个账号的设备」在平台眼里突变，比不换更可疑。
+ *
+ * ONEGL_FINGERPRINT_ROTATION=off 关闭，=force 强制（即使有登录态）。
+ */
+export function resolveFingerprintRotation(config, { requested = null, hasStoredAuth = false } = {}) {
+  const explicit = requested ?? config?.fingerprintRotation ?? null;
+  if (explicit === true || explicit === "force" || explicit === "rotate") return "rotate";
+  if (explicit === false || explicit === "off" || explicit === "keep") return "keep";
+  return hasStoredAuth ? "keep" : "rotate";
+}
+
+/**
+ * 会话启动时的出口自证。
+ *
+ * 「配置里写了 proxy」和「流量真的从那个出口出去」是两件事，中间隔着 Playwright 的
+ * 启动参数、Camoufox 的 Python 包装层和代理自身的认证。没有这一步，
+ * `observed_egress_ip` 就只是一句声明，而不是一次可被证伪的观测。
+ *
+ * 两种模式刻意分开，因为代价差一个数量级：
+ *   connect —— Node 侧 CONNECT 隧道问一次回显服务（约 0.5s）。证明**这条线路**通的。
+ *   browser —— 用刚启动的这个页面导航到回显服务（约 2–4s）。证明**这个浏览器**走了代理。
+ * 默认 connect：会话冷启动才 11.4s，每次再加 2–4s 是 20%+ 的固定开销；
+ * 而浏览器级的证明在验收实验时用 `tools/probe-proxy-egress.mjs` 单独做。
+ */
+export async function verifySessionEgress(config, { proxy, page, env = process.env } = {}) {
+  const mode = String(config?.proxyVerifyEgress ?? "connect");
+  if (!proxy) return null;
+  if (mode === "off") return { mode, ip: null, url: null, error: null, failed: false, skipped: true };
+
+  if (mode === "browser") {
+    if (!page) return { mode, ip: null, url: null, error: "no page to navigate", failed: true };
+    let lastError = null;
+    for (const url of DEFAULT_EGRESS_URLS) {
+      try {
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: config.proxyEgressTimeoutMs });
+        const body = await page.evaluate(() => document.body?.innerText ?? "");
+        const ip = extractEgressIp(body);
+        if (ip) return { mode, ip, url, error: null, failed: false };
+        lastError = `${url} returned no IPv4`;
+      } catch (error) {
+        lastError = error?.message ?? String(error);
+      }
+    }
+    return { mode, ip: null, url: null, error: lastError, failed: true };
+  }
+
+  const result = await probeEgressThroughProxy(proxy, {
+    timeoutMs: config?.proxyEgressTimeoutMs,
+    env,
+  });
+  return {
+    mode: "connect",
+    ip: result.ip ?? null,
+    url: result.url ?? null,
+    error: result.error ?? null,
+    stage: result.stage ?? null,
+    failed: result.ip == null,
   };
 }
 
 export async function launchBrowserSession(
   config,
-  { forceHeadful = false, ignoreStoredAuth = false } = {},
+  {
+    forceHeadful = false,
+    ignoreStoredAuth = false,
+    proxy,
+    rotateFingerprint = null,
+    // 槽位进出口分配的哈希键：同一账号的多个槽位必须走**不同出口**，
+    // 否则「多开窗口」等于「同一个 IP 高频提交」—— 那正是 9-30 收紧槽位的实测原因。
+    slot = 0,
+  } = {},
 ) {
   let browser;
   let virtualDisplay;
   let profilesBefore = new Set();
   let profilesAfter = new Set();
   let profilePath = null;
+  // 出口在启动前解析：配置了必需代理却拿不到出口时直接抛错，
+  // 不允许「悄悄直连」——那会把代理故障伪装成一次正常采集。
+  // 显式传入 proxy（探针的故障注入）优先于配置解析。
+  // 走 acquire（异步）而不是同步的 resolve：http_api 类型的池子要先调供应商提取接口。
+  const resolvedProxy =
+    proxy === undefined
+      ? await acquireSessionProxy(config, {
+          platform: config.provider,
+          accountKey: config.accountKey,
+          slot,
+        })
+      : proxy;
+  const launchProxy = playwrightProxy(resolvedProxy);
   // 本次启动注入的指纹原样保留，供审计工具核对「配置 vs 页面」。
   let camoufoxFingerprintConfig = null;
+  /** 本次选中的真实设备预设（null = 走旧的 browserforge 采样路径）。 */
+  let camoufoxPreset = null;
+  /** 预设的屏幕决定视口：窗口必须装得进屏幕。 */
+  let sessionViewport = null;
   const headless = forceHeadful ? false : config.headless;
   // Validate the encryption contract even for a fresh remote-auth session. Otherwise a browser
   // could accept a login and only discover at save time that the required key is absent/invalid.
@@ -558,6 +907,13 @@ export async function launchBrowserSession(
   const storedAuth = ignoreStoredAuth
     ? { present: false, encrypted: false, migrated: false, state: null, path: null }
     : await loadStoredStorageState(config);
+  // 换身份发生在**启动之前**：Camoufox 的指纹在进程启动时定型，
+  // rotateContext() 只换上下文、换不掉它（见 session.rotateContext 的注释）。
+  const rotationPlan =
+    resolveFingerprintRotation(config, { requested: rotateFingerprint, hasStoredAuth: storedAuth.present }) ===
+    "rotate"
+      ? planRotation(config)
+      : null;
 
   try {
     if (config.browser === "camoufox") {
@@ -566,8 +922,21 @@ export async function launchBrowserSession(
       const options = await camoufoxLaunchOptions(config, {
         mode,
         virtualDisplay: virtualDisplay?.display ?? null,
+        proxy: launchProxy,
+        // 用 presetOffset（游标 + 随机盐），不是游标本身 ——
+        // 见 fingerprint-rotation.js 里 offset 的说明。
+        presetOffset: rotationPlan?.presetOffset ?? null,
+        compose: config.fingerprintSource !== "preset",
+        avoidDigests: rotationPlan?.avoidDigests ?? [],
       });
       camoufoxFingerprintConfig = options.onegl_fingerprint_config ?? null;
+      camoufoxPreset = options.onegl_preset ?? null;
+      if (options.onegl_viewport) {
+        sessionViewport = {
+          width: options.onegl_viewport.width,
+          height: options.onegl_viewport.height,
+        };
+      }
       // 记录启动前的 profile 目录集合，启动后 diff 出本次会话专属的那个。
       // 这是回收整棵 camoufox 进程树（含 Playwright 不管理的 contentproc）的唯一钥匙。
       profilesBefore = await listProfileDirs();
@@ -580,6 +949,7 @@ export async function launchBrowserSession(
         env: options.env,
         firefoxUserPrefs: options.firefox_user_prefs,
         headless: options.headless ?? (mode === "headless"),
+        ...(launchProxy ? { proxy: launchProxy } : {}),
       });
       profilesAfter = await listProfileDirs();
       profilePath =
@@ -589,23 +959,109 @@ export async function launchBrowserSession(
       browser = await launcher.launch({
         headless,
         executablePath: config.browserExecutable || undefined,
+        ...(launchProxy ? { proxy: launchProxy } : {}),
       });
     }
 
-    let context = await browser.newContext(contextOptionsFrom(config, storedAuth));
+    let context = await browser.newContext(contextOptionsFrom(config, storedAuth, sessionViewport));
     let page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.setDefaultNavigationTimeout(60_000);
+
+    // ── 启动后自证 ──────────────────────────────────────────────────
+    // 「配置里写了」和「浏览器真的报了」是两件事，中间隔着 Camoufox 的 C++ 层、
+    // Playwright 的 context 选项和 Firefox 自己的默认值。没有这一步，
+    // 「轮换成功」就只是游标 +1，而不是一次可被证伪的观测。
+    let spoofFindings = [];
+    if (camoufoxFingerprintConfig) {
+      const facts = await page
+        .evaluate(() => ({
+          userAgent: navigator.userAgent,
+          platform: navigator.platform,
+          hardwareConcurrency: navigator.hardwareConcurrency,
+          screen: `${screen.width}x${screen.height}`,
+        }))
+        .catch(() => null);
+      if (facts) spoofFindings = spoofMismatches(camoufoxFingerprintConfig, facts);
+    }
+
+    if (rotationPlan) {
+      const digest = identityDigest(camoufoxFingerprintConfig);
+      if (digest && digest === rotationPlan.previousDigest) {
+        throw new DoubaoMvpError(
+          ErrorCode.UNKNOWN_ERROR,
+          `Fingerprint rotation handed out the same device identity twice (digest ${digest}). ` +
+            "A repeat defeats the whole point of rotating: the platform sees one machine asking again.",
+          { stage: "fingerprint_rotation", digest, preset: camoufoxPreset },
+        );
+      }
+      commitRotation(config, rotationPlan, { digest, preset: camoufoxPreset });
+    }
+    if (spoofFindings.length > 0) {
+      throw new DoubaoMvpError(
+        ErrorCode.UNKNOWN_ERROR,
+        `Camoufox fingerprint did not reach the page: ${spoofFindings
+          .map((item) => `${item.field} expected ${item.expected} got ${item.actual}`)
+          .join("; ")}`,
+        { stage: "fingerprint_spoof", mismatches: spoofFindings, preset: camoufoxPreset },
+      );
+    }
+
+    // ── 出口自证 ──────────────────────────────────────────────────
+    // 出口不通就让这次启动失败，并把这条线路从池子里摘掉。继续跑下去只会把
+    // 「代理坏了」变成一条看起来像平台风控的采集失败。
+    const egress = await verifySessionEgress(config, { proxy: resolvedProxy, page });
+    if (egress?.failed) {
+      releaseSessionProxy(config.proxyPoolFile, resolvedProxy, {
+        ok: false,
+        reason: egress.error ?? "egress verification failed",
+      });
+      throw new DoubaoMvpError(
+        ErrorCode.UNKNOWN_ERROR,
+        `Proxy exit ${resolvedProxy.server} did not carry traffic (${egress.mode}): ${egress.error}`,
+        { stage: "proxy_egress", proxy: describeProxy(resolvedProxy), egress },
+      );
+    }
 
     // 这里曾经挂过 context.addInitScript(camoufoxInitScript)，试图补上 Camoufox 的
     // canvas/audio/font 噪声注入。A/B 对照证明它对页面读数零影响（移除前后
     // canvasHash 都是 4/4 在变），故已移除。噪声实际由 CAMOU_CONFIG_1 环境变量
     // 交给浏览器内部 C++ 层完成，详见 CAMOUFOX_OPTIONS_SCRIPT 里的实测记录。
 
+    // 出口身份 + 本次实测的出口 IP 一起交给调用方落库：没有 observed_egress_ip，
+    // 「第几条开始被拒」就无法按出口归因，整个容量实验就只剩一个笼统的成功率。
+    const proxyDescription = describeProxy(resolvedProxy);
+    if (proxyDescription) {
+      proxyDescription.observed_egress_ip = egress?.ip ?? null;
+      proxyDescription.egress_source = egress?.mode ?? null;
+      proxyDescription.egress_verified = Boolean(egress && !egress.failed && !egress.skipped);
+      proxyDescription.egress_error = egress?.error ?? null;
+    }
+
+    // 出口的 acquire 发生在这个工厂里，release 也必须收口在这里 —— 两个方向分开写，
+    // 迟早会出现「拿了没人还」。close() 会兜底调一次，调用方也可以提前显式归还。
+    let proxyReleased = false;
+    const releaseProxy = (options = {}) => {
+      if (proxyReleased) return;
+      proxyReleased = true;
+      releaseSessionProxy(config.proxyPoolFile, resolvedProxy, options);
+    };
+
     const session = {
       browser,
+      /** 本次会话的出口身份（不含凭据），供探针与审计核对；null 表示直连。 */
+      proxy: proxyDescription,
+      /**
+       * 归还本次会话的出口。`{ok:false, reason}` 会把这条线路从池子里摘掉，
+       * 下次冷启动重新选一个 —— 摘掉的是**线路**，不是重发当前任务的许可。
+       */
+      releaseProxy,
       /** 本次启动注入的指纹配置（CAMOU_CONFIG_1），供审计工具核对。 */
       camoufoxFingerprintConfig,
+      /** 本次选中的真实设备预设与轮换结果；null 表示没有轮换。 */
+      fingerprintRotation: rotationPlan
+        ? { cursor: rotationPlan.cursor, preset: camoufoxPreset, identity: describeIdentity(camoufoxFingerprintConfig) }
+        : null,
       // Getters, not snapshots: rotateContext() replaces both objects and every caller must
       // see the live page rather than the one it captured at launch.
       get context() {
@@ -664,7 +1120,7 @@ export async function launchBrowserSession(
         const carried = await context.storageState().catch(() => storedAuth.state);
         await context.close().catch(() => undefined);
         context = await browser.newContext(
-          contextOptionsFrom(config, { present: Boolean(carried), state: carried }),
+          contextOptionsFrom(config, { present: Boolean(carried), state: carried }, sessionViewport),
         );
         page = await context.newPage();
         page.setDefaultTimeout(15_000);
@@ -673,6 +1129,7 @@ export async function launchBrowserSession(
         return page;
       },
       async close() {
+        releaseProxy();
         await context.close().catch(() => undefined);
         await browser.close().catch(() => undefined);
         // Playwright 只保证自己 spawn 的 launcher 退出；camoufox 的 contentproc 树不在其管辖内。
