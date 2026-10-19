@@ -74,7 +74,7 @@ test("SaaS task facade returns stable task/execution/result/report/schedule IDs"
       method: "POST",
       body: { account_id: accountId, provider: "doubao", label: "SaaS test" },
     });
-    assert.equal(account.response.status, 201);
+    assert.equal(account.response.status, 201, JSON.stringify(account.payload));
 
     const task = await api(base, "/v1/tasks", {
       method: "POST",
@@ -87,7 +87,7 @@ test("SaaS task facade returns stable task/execution/result/report/schedule IDs"
         account_ids: [accountId],
       },
     });
-    assert.equal(task.response.status, 201);
+    assert.equal(task.response.status, 201, JSON.stringify(task.payload));
     taskId = task.payload.data.task_id;
     assert.match(taskId, /^tsk_[a-f0-9]{32}$/);
     assert.deepEqual(task.payload.data.questions, ["测试品牌值得买吗", "同类产品怎么选"]);

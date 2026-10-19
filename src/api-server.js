@@ -472,19 +472,21 @@ async function routeApi(req, res, url) {
   if (req.method === "POST" && pathname === `${API_PREFIX}/accounts`) {
     requireScope(auth, "accounts:write");
     const body = await readJsonBody(req);
-    const provider = String(body.provider ?? defaultProviderId()).trim().toLowerCase();
-    // 校验用 adapter id 而不是 provider id：匿名面注册为独立 adapter（doubao-anonymous），
-    // 它的 provider 仍是 doubao。先前这里查 supportedProviderIds()，那是一份 **provider** 列表，
-    // 于是 doubao-anonymous 会被当成「不支持的平台」拒掉 —— 功能实现了却调不进来。
-    const adapterIds = listProviderAdapters().map((entry) => entry.id);
-    if (!adapterIds.includes(provider)) {
+    const requestedProvider = String(body.provider ?? defaultProviderId()).trim().toLowerCase();
+    let adapter;
+    try {
+      // Accept an exact adapter id and its unambiguous provider alias. The
+      // account row always stores the canonical provider so task validation
+      // and execution lookup use the same platform key.
+      adapter = getProviderAdapter(requestedProvider);
+    } catch {
+      const adapterIds = listProviderAdapters().map((entry) => entry.id);
       throw new ApiHttpError(
         422,
         "unsupported_provider",
         `only a platform with a registered adapter can be bound: ${adapterIds.join(", ")}`,
       );
     }
-    const adapter = getProviderAdapter(provider);
     const needsStoredAuth = adapter.requiresStoredAuth !== false;
 
     // 并发槽位：账号级，决定这个账号同时跑几个浏览器。
@@ -506,7 +508,7 @@ async function routeApi(req, res, url) {
 
     const account = await ensureTenantAccount(db, {
       tenantId: tenant.id,
-      provider,
+      provider: adapter.provider,
       externalId: body.account_id,
       label: body.label == null ? null : String(body.label).trim() || null,
       // 匿名通道：这一位决定账号行记 account 还是 anonymous，进而决定报表分区。
@@ -515,8 +517,8 @@ async function routeApi(req, res, url) {
     return sendJson(res, 201, {
       data: {
         account_id: account.external_id,
-        provider: account.provider ?? provider,
-        adapter_id: provider,
+        provider: account.provider ?? adapter.provider,
+        adapter_id: adapter.id,
         label: account.label ?? null,
         surface: needsStoredAuth ? "account" : "anonymous",
         requires_stored_auth: needsStoredAuth,
