@@ -2696,10 +2696,10 @@ export interface components {
             mention_count_delta?: number | null;
             mention_rate_delta_percentage_points?: number | null;
             /**
-             * @description Deterministic classification of the change, not a recommendation. gained/declined exceed the sampling resolution; within_noise means the difference exists but is smaller than one answer's worth; flat means no measurable change; not_comparable means the brand appears on one side only.
+             * @description Deterministic classification of the change, not a recommendation. gained/declined exceed the sampling resolution; within_noise means the difference exists but is smaller than one answer's worth; flat means an unchanged non-zero rate; absent_both means never mentioned in either period; not_comparable means the brand appears on one side only.
              * @enum {string}
              */
-            movement: "gained" | "declined" | "within_noise" | "flat" | "not_comparable" | "unknown";
+            movement: "gained" | "declined" | "within_noise" | "absent_both" | "flat" | "not_comparable" | "unknown";
             name: string;
             present_in_base: boolean;
             present_in_current: boolean;
@@ -2729,13 +2729,15 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** @description Competitor names grouped by movement direction. Names only — acting on them is the caller's decision. */
+        /** @description Competitors grouped by movement direction, each group sorted by absolute delta descending and carrying the delta plus both periods' rates, so callers need not re-scan the brands array. Acting on them is the caller's decision. */
         GeoReportCompareBrandMovement: {
-            declined: string[];
-            flat: string[];
-            gained: string[];
-            not_comparable: string[];
-            within_noise: string[];
+            /** @description Not mentioned in either period. Distinct from a stable non-zero rate: this is absence of visibility, not a steady competitive position. */
+            absent_both: components["schemas"]["GeoReportCompareMovementEntry"][];
+            declined: components["schemas"]["GeoReportCompareMovementEntry"][];
+            flat: components["schemas"]["GeoReportCompareMovementEntry"][];
+            gained: components["schemas"]["GeoReportCompareMovementEntry"][];
+            not_comparable: components["schemas"]["GeoReportCompareMovementEntry"][];
+            within_noise: components["schemas"]["GeoReportCompareMovementEntry"][];
         } & {
             [key: string]: unknown;
         };
@@ -2743,6 +2745,14 @@ export interface components {
             citations: number | null;
             covered_runs: number | null;
             domain: string | null;
+        };
+        GeoReportCompareMovementEntry: {
+            base_mention_rate?: number | null;
+            current_mention_rate?: number | null;
+            mention_rate_delta_percentage_points: number | null;
+            name: string;
+        } & {
+            [key: string]: unknown;
         };
         /** @description Per-platform comparison. Aligned by platform, not by period key: period keys are caller-supplied strings and will not match between two reports, so using them as an alignment key silently yields zero comparable rows. When a report holds several periods, the one closest in time is used. */
         GeoReportComparePlatform: {
