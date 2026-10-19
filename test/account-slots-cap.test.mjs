@@ -19,20 +19,17 @@ import { readFileSync } from "node:fs";
  * 看到几次来自「同一台机器、同一个出口 IP」的提交。把它交给一个可以随手改的
  * 环境变量，意味着**配错就直接放大风险**，而且从配置里完全看不出来。
  *
- * 所以上限写死在代码里（MAX_ACCOUNT_SLOTS = 2），配置写多少都被钳到它。
- * 想再降只改这一行常量，不存在「配错了就放大」的情况。
+ * 所以上限默认写死为 2，并且只有显式设置 ONEGL_MAX_ACCOUNT_SLOTS
+ * 才会改变；普通账号配置写多少仍然会被钳到它。
  */
 
 const worker = readFileSync(new URL("../src/worker.js", import.meta.url), "utf8");
 
-function constantValue(name) {
-  const m = worker.match(new RegExp(`const ${name} = (\\d+);`));
-  assert.ok(m, `worker.js 里找不到常量 ${name}`);
-  return Number(m[1]);
-}
-
-test("槽位上限固定为 2，与配置值无关", () => {
-  assert.equal(constantValue("MAX_ACCOUNT_SLOTS"), 2);
+test("槽位上限默认固定为 2，只有显式环境变量才改变", () => {
+  assert.match(
+    worker,
+    /const MAX_ACCOUNT_SLOTS = intEnvValue\("ONEGL_MAX_ACCOUNT_SLOTS", 2, 1\);/,
+  );
 });
 
 test("slotsFor 一律把配置钳到硬上限，不存在「配多少就跑多少」", () => {
